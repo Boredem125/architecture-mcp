@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jailed Agent Sandbox — Architecture</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+  <style>
+    :root {
+      --bg: #ffffff;
+      --fg-primary: #1a202c;
+      --fg-secondary: #4a5568;
+      --border: #e2e8f0;
+      --accent-broker: #2d3748;
+      --accent-jail: #d97706;
+      --accent-safe: #10b981;
+      --accent-warn: #f59e0b;
+      --surface-light: #f7fafc;
+      --surface-dark: #edf2f7;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #0f172a;
+        --fg-primary: #e2e8f0;
+        --fg-secondary: #cbd5e1;
+        --border: #1e293b;
+        --accent-broker: #60a5fa;
+        --accent-jail: #f97316;
+        --accent-safe: #34d399;
+        --accent-warn: #fbbf24;
+        --surface-light: #1e293b;
+        --surface-dark: #334155;
+      }
+    }
+
+    :root[data-theme="dark"] {
+      --bg: #0f172a;
+      --fg-primary: #e2e8f0;
+      --fg-secondary: #cbd5e1;
+      --border: #1e293b;
+      --accent-broker: #60a5fa;
+      --accent-jail: #f97316;
+      --accent-safe: #34d399;
+      --accent-warn: #fbbf24;
+      --surface-light: #1e293b;
+      --surface-dark: #334155;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: var(--bg);
+      color: var(--fg-primary);
+    }
+
+    body {
+      font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      padding: 40px 60px;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: 32px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: var(--fg-primary);
+    }
+
+    .subtitle {
+      font-size: 15px;
+      color: var(--fg-secondary);
+      margin-bottom: 40px;
+    }
+
+    .diagram {
+      background: var(--surface-light);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 32px;
+      margin-bottom: 40px;
+      overflow-x: auto;
+    }
+
+    svg {
+      min-width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    .zones {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 32px;
+      margin-top: 40px;
+    }
+
+    .zone {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      background: var(--surface-dark);
+    }
+
+    .zone h3 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .zone-label {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      padding: 4px 8px;
+      border-radius: 3px;
+      margin-right: 8px;
+    }
+
+    .label-trusted {
+      background: rgba(45, 55, 72, 0.2);
+      color: var(--accent-broker);
+    }
+
+    .label-jailed {
+      background: rgba(217, 119, 6, 0.2);
+      color: var(--accent-jail);
+    }
+
+    .zone ul {
+      list-style: none;
+      font-size: 14px;
+      line-height: 1.8;
+      color: var(--fg-secondary);
+    }
+
+    .zone li {
+      margin-bottom: 8px;
+    }
+
+    .zone li strong {
+      color: var(--fg-primary);
+      font-weight: 600;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 24px;
+      margin-top: 40px;
+      padding: 20px;
+      background: var(--surface-dark);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 13px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .legend-swatch {
+      width: 16px;
+      height: 16px;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+
+    .swatch-broker { background: var(--accent-broker); }
+    .swatch-jail { background: var(--accent-jail); }
+    .swatch-safe { background: var(--accent-safe); }
+    .swatch-warn { background: var(--accent-warn); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Jailed Agent Sandbox Architecture</h1>
+    <p class="subtitle">Milestone 1: Real CLI launcher with privilege broker, live streaming, and comprehensive logging</p>
+
+    <div class="diagram">
+      <svg viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <style>
+            .bg-zone { fill: var(--surface-light); stroke: var(--border); stroke-width: 1; }
+            .bg-jail { fill: rgba(217, 119, 6, 0.05); stroke: var(--accent-jail); stroke-width: 2; }
+            .bg-trusted { fill: rgba(45, 55, 72, 0.05); stroke: var(--accent-broker); stroke-width: 1; }
+            .box { fill: var(--surface-dark); stroke: var(--fg-secondary); stroke-width: 1; rx: 4; }
+            .box-broker { fill: var(--surface-dark); stroke: var(--accent-broker); stroke-width: 2; }
+            .box-jail { fill: var(--surface-dark); stroke: var(--accent-jail); stroke-width: 2; }
+            .arrow { stroke: var(--fg-secondary); stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+            .arrow-safe { stroke: var(--accent-safe); stroke-width: 2; fill: none; marker-end: url(#arrowhead-safe); }
+            .arrow-warn { stroke: var(--accent-warn); stroke-width: 2; fill: none; marker-end: url(#arrowhead-warn); }
+            .text-label { font-family: 'IBM Plex Sans', sans-serif; font-size: 13px; font-weight: 500; }
+            .text-small { font-family: 'IBM Plex Sans', sans-serif; font-size: 11px; fill: var(--fg-secondary); }
+            .text-title { font-family: 'IBM Plex Sans', sans-serif; font-size: 14px; font-weight: 600; }
+          </style>
+          <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+            <polygon points="0 0, 10 3, 0 6" fill="var(--fg-secondary)"/>
+          </marker>
+          <marker id="arrowhead-safe" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+            <polygon points="0 0, 10 3, 0 6" fill="var(--accent-safe)"/>
+          </marker>
+          <marker id="arrowhead-warn" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+            <polygon points="0 0, 10 3, 0 6" fill="var(--accent-warn)"/>
+          </marker>
+        </defs>
+
+        <!-- User/Browser -->
+        <rect class="box" x="480" y="20" width="240" height="50" fill="var(--accent-broker)" opacity="0.1" stroke="var(--accent-broker)"/>
+        <text class="text-title" x="600" y="52" text-anchor="middle" fill="var(--fg-primary)">Browser / User Interface</text>
+
+        <!-- Zones -->
+        <!-- Trusted Zone -->
+        <rect class="bg-trusted" x="20" y="100" width="560" height="680"/>
+        <text class="text-small" x="40" y="120" fill="var(--accent-broker)" font-weight="600">TRUSTED ZONE (Server-side)</text>
+
+        <!-- API Layer -->
+        <rect class="box-broker" x="40" y="140" width="200" height="60"/>
+        <text class="text-title" x="140" y="170" text-anchor="middle" fill="var(--fg-primary)">FastAPI</text>
+        <text class="text-small" x="140" y="188" text-anchor="middle" fill="var(--fg-secondary)">/api/v1/launch</text>
+
+        <!-- AppLauncher -->
+        <rect class="box-broker" x="280" y="140" width="140" height="60"/>
+        <text class="text-title" x="350" y="170" text-anchor="middle" fill="var(--fg-primary)">AppLauncher</text>
+        <text class="text-small" x="350" y="188" text-anchor="middle" fill="var(--fg-secondary)">registry, jail</text>
+
+        <!-- EventBroadcaster -->
+        <rect class="box-broker" x="460" y="140" width="110" height="60"/>
+        <text class="text-title" x="515" y="170" text-anchor="middle" fill="var(--fg-primary)">Broadcaster</text>
+        <text class="text-small" x="515" y="188" text-anchor="middle" fill="var(--fg-secondary)">WebSocket</text>
+
+        <!-- PrivilegeBroker -->
+        <rect class="box-broker" x="40" y="240" width="530" height="80"/>
+        <text class="text-title" x="305" y="270" text-anchor="middle" fill="var(--fg-primary)">Privilege Broker (Non-AI, Human-Approved)</text>
+        <text class="text-small" x="305" y="290" text-anchor="middle" fill="var(--fg-secondary)">Receives privileged requests → Human decision → Execute outside jail → Output to broker_out/</text>
+        <text class="text-small" x="305" y="305" text-anchor="middle" fill="var(--fg-secondary)">Deny-by-default. Every request logged and audited.</text>
+
+        <!-- SessionRecorder -->
+        <rect class="box-broker" x="40" y="350" width="530" height="60"/>
+        <text class="text-title" x="305" y="380" text-anchor="middle" fill="var(--fg-primary)">SessionRecorder</text>
+        <text class="text-small" x="305" y="398" text-anchor="middle" fill="var(--fg-secondary)">logs.txt (actions + output) | modified.txt (files) | .trash/ (originals)</text>
+
+        <!-- Jailed Zone -->
+        <rect class="bg-jail" x="640" y="100" width="540" height="680"/>
+        <text class="text-small" x="660" y="120" fill="var(--accent-jail)" font-weight="600">JAILED ZONE (Process Sandbox)</text>
+
+        <!-- Win32 Job Object -->
+        <rect class="box-jail" x="660" y="140" width="150" height="60"/>
+        <text class="text-title" x="735" y="170" text-anchor="middle" fill="var(--fg-primary)">Win32 Job Object</text>
+        <text class="text-small" x="735" y="188" text-anchor="middle" fill="var(--fg-secondary)">Memory, CPU, PID limits</text>
+
+        <!-- NTFS ACL Jail -->
+        <rect class="box-jail" x="850" y="140" width="150" height="60"/>
+        <text class="text-title" x="925" y="170" text-anchor="middle" fill="var(--fg-primary)">NTFS ACL Jail</text>
+        <text class="text-small" x="925" y="188" text-anchor="middle" fill="var(--fg-secondary)">Filesystem access control</text>
+
+        <!-- Jailed Process (Real CLI or Demo) -->
+        <rect class="box-jail" x="660" y="260" width="340" height="100"/>
+        <text class="text-title" x="830" y="290" text-anchor="middle" fill="var(--fg-primary)">Jailed Process</text>
+        <text class="text-small" x="830" y="310" text-anchor="middle" fill="var(--fg-secondary)">Real CLI (codex, antigravity, ollama, …)</text>
+        <text class="text-small" x="830" y="325" text-anchor="middle" fill="var(--fg-secondary)">OR demo_agent.py (fallback, no install needed)</text>
+        <text class="text-small" x="830" y="345" text-anchor="middle" fill="var(--fg-secondary)">cwd=jail | PATH includes shims | Job Object assigned</text>
+
+        <!-- Shim Interception -->
+        <rect class="box-jail" x="660" y="410" width="340" height="70"/>
+        <text class="text-title" x="830" y="440" text-anchor="middle" fill="var(--fg-primary)">PATH Shim Interception</text>
+        <text class="text-small" x="830" y="458" text-anchor="middle" fill="var(--fg-secondary)">powershell.cmd | pwsh.cmd | cmd.cmd → POST to broker</text>
+
+        <!-- Jail Dir Structure -->
+        <rect class="box-jail" x="660" y="530" width="340" height="100"/>
+        <text class="text-title" x="830" y="560" text-anchor="middle" fill="var(--fg-primary)">Jail Directory</text>
+        <text class="text-small" x="680" y="578" fill="var(--fg-secondary)">.sandbox_logs/    logs.txt, modified.txt</text>
+        <text class="text-small" x="680" y="593" fill="var(--fg-secondary)">.trash/              originals of deleted files</text>
+        <text class="text-small" x="680" y="608" fill="var(--fg-secondary)">broker_out/          output from approved requests</text>
+        <text class="text-small" x="680" y="623" fill="var(--fg-secondary)">(files created by process)</text>
+
+        <!-- Arrows -->
+        <!-- Browser to API -->
+        <path class="arrow" d="M 600 70 L 140 140"/>
+        <text class="text-small" x="360" y="100" fill="var(--fg-secondary)">POST /api/v1/launch</text>
+
+        <!-- API to AppLauncher -->
+        <path class="arrow" d="M 240 170 L 280 170"/>
+
+        <!-- AppLauncher to Jailed Process -->
+        <path class="arrow" d="M 420 180 L 660 290"/>
+        <text class="text-small" x="510" y="215" fill="var(--fg-secondary)">spawn with CREATE_SUSPENDED</text>
+
+        <!-- AppLauncher to Broadcaster -->
+        <path class="arrow" d="M 420 150 L 460 150"/>
+
+        <!-- Jailed Process to Broker (escalation) -->
+        <path class="arrow-warn" d="M 660 300 L 580 300"/>
+        <text class="text-small" x="590" y="295" fill="var(--accent-warn)" font-weight="500">privileged request</text>
+
+        <!-- Broker back to Jailed (result) -->
+        <path class="arrow-safe" d="M 580 330 L 660 410"/>
+        <text class="text-small" x="590" y="360" fill="var(--accent-safe)" font-weight="500">approved output</text>
+
+        <!-- Jailed Process stdout/stderr to Broadcaster -->
+        <path class="arrow" d="M 780 360 L 540 180"/>
+        <text class="text-small" x="650" y="260" fill="var(--fg-secondary)">stdout/stderr streaming</text>
+
+        <!-- Broadcaster to WebSocket (Browser) -->
+        <path class="arrow" d="M 545 170 L 600 70"/>
+        <text class="text-small" x="560" y="110" fill="var(--fg-secondary)">WebSocket live stream</text>
+
+        <!-- Process output to SessionRecorder -->
+        <path class="arrow" d="M 750 530 L 305 410"/>
+        <text class="text-small" x="500" y="480" fill="var(--fg-secondary)">log every line + changes</text>
+
+        <!-- Broker to SessionRecorder -->
+        <path class="arrow" d="M 305 320 L 305 350"/>
+        <text class="text-small" x="380" y="340" fill="var(--fg-secondary)">log request → decision</text>
+      </svg>
+    </div>
+
+    <div class="zones">
+      <div class="zone">
+        <h3>
+          <span class="zone-label label-trusted">Trusted</span>
+          Key Components
+        </h3>
+        <ul>
+          <li><strong>FastAPI Server:</strong> Entry point for launch requests and WebSocket subscriptions</li>
+          <li><strong>AppLauncher:</strong> Resolves app type, creates jail, spawns process with Job Object, streams output</li>
+          <li><strong>EventBroadcaster:</strong> Real-time WebSocket to frontend showing live process output and broker events</li>
+          <li><strong>PrivilegeBroker:</strong> Human-in-the-loop gate for elevated commands—never runs untrusted code</li>
+          <li><strong>SessionRecorder:</strong> Immutable audit trail (logs.txt, modified.txt, .trash/) per jail session</li>
+        </ul>
+      </div>
+
+      <div class="zone">
+        <h3>
+          <span class="zone-label label-jailed">Jailed</span>
+          Isolation Model
+        </h3>
+        <ul>
+          <li><strong>Win32 Job Object:</strong> Resource limits (memory, CPU, process count). Kill-on-close ensures cleanup.</li>
+          <li><strong>NTFS ACL Jail:</strong> Filesystem boundary. Process can only touch its jail directory.</li>
+          <li><strong>PATH Shims:</strong> powershell.cmd, pwsh.cmd, cmd.cmd intercept elevated requests and route to broker.</li>
+          <li><strong>Demo Agent Fallback:</strong> If CLI not installed, runs real jailed Python process—sandbox still demonstrable.</li>
+          <li><strong>Monitored vs. Enforced:</strong> Enforced mode uses dedicated user + ACLs; monitored mode logs out-of-jail attempts.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="legend">
+      <div class="legend-item">
+        <div class="legend-swatch swatch-broker"></div>
+        <span><strong>Broker / Trusted:</strong> Server-side gates and decision points</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch swatch-jail"></div>
+        <span><strong>Jailed:</strong> Untrusted process sandbox with resource limits</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch swatch-warn"></div>
+        <span><strong>Escalation:</strong> Privileged request flowing to broker</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch swatch-safe"></div>
+        <span><strong>Approved:</strong> Broker-approved result flowing back to process</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

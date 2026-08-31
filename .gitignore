@@ -1,0 +1,44 @@
+# IDE & Claude Code
+.claude/
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+*.tmp
+*.log
+temp/
+sandbox-workspace/
+jails/
+broker_out/
+.trash/
+
+# Build
+node_modules/
+.next/
+out/
+
+# Test artifacts
+test_sandbox.txt
+SKILL\ \(3\).md
+SYSTEM_PROMPT.md

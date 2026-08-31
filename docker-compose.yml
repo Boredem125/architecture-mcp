@@ -1,0 +1,117 @@
+version: "3.9"
+
+services:
+  # --- Shared infrastructure ---
+
+  nats:
+    image: nats:2.10-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["--jetstream", "--store_dir=/data", "-m", "8222"]
+    volumes:
+      - nats-data:/data
+    networks:
+      - sandbox-net
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb"]
+    volumes:
+      - redis-data:/data
+    networks:
+      - sandbox-net
+    restart: unless-stopped
+
+  opa:
+    image: openpolicyagent/opa:0.68.0
+    ports:
+      - "8181:8181"
+    command:
+      - "run"
+      - "--server"
+      - "--addr=0.0.0.0:8181"
+      - "--log-level=info"
+      - "/policies"
+    volumes:
+      - ./policies/rego:/policies:ro
+    networks:
+      - sandbox-net
+    restart: unless-stopped
+
+  # --- Zone 2: Sandbox services ---
+
+  sandbox-api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.sandbox
+    ports:
+      - "8000:8000"
+    environment:
+      - SANDBOX_ENVIRONMENT=production
+      - SANDBOX_LOG_LEVEL=INFO
+      - NATS_URL=nats://nats:4222
+      - REDIS_URL=redis://redis:6379/0
+      - OPA_URL=http://opa:8181
+      - AUDIT_LOG_DIR=/data/audit_logs
+      - SNAPSHOT_STORAGE_DIR=/data/snapshots
+    volumes:
+      - audit-data:/data/audit_logs
+      - snapshot-data:/data/snapshots
+    depends_on:
+      - nats
+      - redis
+      - opa
+    networks:
+      - sandbox-net
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  # --- Zone 3: Executor (isolated) ---
+
+  executor:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.executor
+    environment:
+      - NATS_URL=nats://nats:4222
+      - EXECUTOR_MAX_MEMORY_MB=512
+      - EXECUTOR_MAX_PIDS=32
+      - EXECUTOR_EXECUTE_TIMEOUT_SECONDS=120
+    volumes:
+      - workspace:/tmp/workspace
+    depends_on:
+      - nats
+    networks:
+      - executor-net
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+    pids_limit: 64
+    mem_limit: 1g
+    cpus: 2.0
+
+networks:
+  sandbox-net:
+    driver: bridge
+  executor-net:
+    driver: bridge
+    internal: true
+
+volumes:
+  nats-data:
+  redis-data:
+  audit-data:
+  snapshot-data:
+  workspace:

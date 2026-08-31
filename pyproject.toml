@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ai-agent-sandbox"
+version = "1.0.0"
+description = "Enterprise AI Agent Sandbox Security System — 3-zone, 9-agent containment pipeline"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.5.0",
+    "nats-py>=2.9.0",
+    "redis[hiredis]>=5.1.0",
+    "httpx>=0.27.0",
+    "pynacl>=1.5.0",
+    "pyjwt>=2.9.0",
+    "cryptography>=43.0.0",
+    "structlog>=24.4.0",
+    "orjson>=3.10.0",
+    "aiofiles>=24.1.0",
+    "click>=8.1.0",
+    "rich>=13.9.0",
+    "anthropic>=0.40.0",
+    "openai>=1.50.0",
+    "docker>=7.1.0",
+    "mcp>=1.9.0,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=5.0.0",
+    "pytest-timeout>=2.3.0",
+    "ruff>=0.6.0",
+    "mypy>=1.11.0",
+    "fakeredis>=2.25.0",
+]
+
+[project.scripts]
+sandbox = "sandbox.cli.main:cli"
+sandbox-mcp = "sandbox.connector.mcp_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sandbox"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+timeout = 30
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "S", "B", "A", "C4", "SIM", "TCH"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
