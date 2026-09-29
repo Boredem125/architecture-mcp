@@ -42,3 +42,6 @@ out/
 test_sandbox.txt
 SKILL\ \(3\).md
 SYSTEM_PROMPT.md
+
+# benchmark dataset cache (downloaded at run time)
+benchmarks/.cache/
