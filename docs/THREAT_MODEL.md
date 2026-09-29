@@ -75,7 +75,7 @@ The taint lives in `.sandbox/state/`, so the agent can't clear it. Clearing is a
 **Residual risk.**
 - **Detection misses real attacks:** 31/60 on the public held-out set, and instructions dressed as machine output get through.
 - **It can be evaded** by an attacker who tunes wording against the open model.
-- **It can't tell** legitimate instructions to agents (`AGENTS.md`) from malicious ones. Those false alarms cost approvals, not safety.
+- **It can't tell** legitimate instructions to agents (`AGENTS.md`) from malicious ones. Those false alarms cost approvals, not safety. Reviewed files can be trusted with `sandbox semantic trust`, pinned to their SHA-256 in the agent-unwritable policy; any edit re-enables scanning. Trust covers the `Read` tool only, so the same file printed via a shell command is still scanned.
 - **Only the first 6,000 characters** of each output are scanned.
 
 Detection is a tripwire on top of authorization, not a replacement for it. See [benchmarks/injection](../benchmarks/injection/README.md) for the numbers.

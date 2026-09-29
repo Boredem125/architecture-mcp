@@ -77,6 +77,16 @@ class OutputPolicy(BaseModel):
     scrub_secrets: bool = True
 
 
+class TrustedFile(BaseModel):
+    """A file a human reviewed; trusted only while its content hash still matches."""
+
+    path: str  # relative to the folder root, forward slashes
+    sha256: str
+    reviewer: str
+    reason: str
+    approved_at: float
+
+
 class SemanticPolicy(BaseModel):
     """Intent-aware checks via a local jev-os service (``jevos serve``).
 
@@ -101,6 +111,9 @@ class SemanticPolicy(BaseModel):
     # After an injection is seen, these triggers need a human even if allowlisted.
     taint_ttl_seconds: int = 900
     taint_escalates: list[str] = Field(default_factory=lambda: ["shell", "network", "write_outside"])
+    # Reviewed instruction files (e.g. AGENTS.md) that are not scanned while
+    # their content is byte-for-byte what the reviewer approved.
+    trusted_files: list[TrustedFile] = Field(default_factory=list)
 
 
 class TriggerPolicy(BaseModel):

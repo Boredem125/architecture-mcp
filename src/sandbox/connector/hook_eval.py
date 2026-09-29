@@ -551,6 +551,13 @@ def _scan_untrusted_output(payload: dict[str, Any], layout: FolderLayout) -> dic
 
         if not semantic_scan.should_scan(tool_name, sem.scan_tools):
             return {}
+        # A reviewed file whose content is unchanged since review is not scanned.
+        if tool_name == "Read" and sem.trusted_files:
+            from sandbox.semantic.trust import is_trusted
+
+            target = (payload.get("tool_input") or {}).get("file_path")
+            if target and is_trusted(layout.root, policy, target):
+                return {}
         text = semantic_scan.response_text(payload.get("tool_response"), sem.max_scan_chars)
         finding = semantic_scan.scan(tool_name, text, SemanticClient.from_policy(sem), sem.threshold)
         if finding is None:

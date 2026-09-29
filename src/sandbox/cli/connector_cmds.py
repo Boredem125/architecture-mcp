@@ -57,6 +57,12 @@ def semantic_status_cmd(path: str) -> None:
     click.echo(f"Service:  {sem.url}  (key from ${sem.api_key_env})")
     probe = SemanticClient.from_policy(sem).ask("Run the tests before opening a pull request.", INJECTION_CHECKS)
     click.echo(f"Reachable: {'yes, ' + probe.model if probe else 'no (checks are skipped; rules still apply)'}")
+    from sandbox.semantic.trust import file_sha256
+
+    for t in sem.trusted_files:
+        ok = file_sha256(layout.root / t.path) == t.sha256
+        click.echo(f"Trusted:  {t.path} ({'unchanged' if ok else 'CHANGED since review — scanned again'}; "
+                   f"reviewed by {t.reviewer})")
     state = taint.read(layout.state_dir)
     if not state:
         click.echo("Taint:    none")
@@ -95,6 +101,57 @@ def semantic_disable_cmd(path: str) -> None:
     policy.semantic.enabled = False
     save_policy(policy, layout.policy_file)
     click.echo("Semantic layer disabled.")
+
+
+def _audit_folder(layout, record: dict) -> None:
+    import json as _json
+
+    from sandbox.connector.audit import FolderAudit
+
+    try:
+        session_id = _json.loads(layout.session_file.read_text(encoding="utf-8")).get("session_id", "")
+    except (OSError, ValueError):
+        session_id = ""
+    FolderAudit(layout.audit_dir, session_id).append(record)
+
+
+@semantic_group.command("trust")
+@click.argument("file")
+@click.option("--path", "folder", default=".", help="Sandboxed folder (default: here).")
+@click.option("--reviewer", required=True, help="Who reviewed the file's content.")
+@click.option("--reason", required=True, help="Why its instructions are legitimate.")
+def semantic_trust_cmd(file: str, folder: str, reviewer: str, reason: str) -> None:
+    """Skip the injection scan for FILE while its content is unchanged (audited)."""
+    from sandbox.connector.policy import load_policy, save_policy
+    from sandbox.semantic.trust import trust
+
+    layout = _semantic_layout(folder)
+    policy = load_policy(layout.policy_file)
+    try:
+        entry = trust(layout.root, policy, file, reviewer, reason)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    save_policy(policy, layout.policy_file)
+    _audit_folder(layout, {"event": "semantic_trust_added", **entry.model_dump()})
+    click.echo(f"Trusted {entry.path} at sha256 {entry.sha256[:12]}… — any edit makes it scanned again.")
+
+
+@semantic_group.command("untrust")
+@click.argument("file")
+@click.option("--path", "folder", default=".", help="Sandboxed folder (default: here).")
+def semantic_untrust_cmd(file: str, folder: str) -> None:
+    """Scan FILE again like any other content."""
+    from sandbox.connector.policy import load_policy, save_policy
+    from sandbox.semantic.trust import untrust
+
+    layout = _semantic_layout(folder)
+    policy = load_policy(layout.policy_file)
+    if untrust(layout.root, policy, file):
+        save_policy(policy, layout.policy_file)
+        _audit_folder(layout, {"event": "semantic_trust_removed", "path": file})
+        click.echo(f"{file} is scanned again.")
+    else:
+        click.echo(f"{file} was not trusted.")
 
 
 @semantic_group.command("clear-taint")

@@ -101,6 +101,7 @@ jevos serve --api-key "$JEVOS_API_KEY"     # keep running; loads the model once
 sandbox semantic enable .                   # off by default
 sandbox semantic status .                   # reachable? tainted?
 sandbox semantic clear-taint . --reviewer alice --reason "checked: false positive"   # audited
+sandbox semantic trust AGENTS.md --reviewer alice --reason "house rules for agents"  # reviewed file, pinned by hash
 ```
 
 **Measured** against the current regex detector ([benchmarks/injection](benchmarks/injection/README.md)):
@@ -110,7 +111,7 @@ sandbox semantic clear-taint . --reviewer alice --reason "checked: false positiv
 | Public deepset test split (held out) | 4/60 caught, 0/56 false alarms | **31/60 caught, 1/56 false alarms** |
 | Injections embedded in a README (hand-written) | 7/24 caught, 8/24 false alarms | **15/24 caught, 5/24 false alarms** |
 
-It still misses real attacks, mostly instructions wrapped in machine-looking output. And it confuses legitimate `AGENTS.md`-style instructions to AI agents with attacks. That's why it only ever *raises* scrutiny while authorization stays in charge. Costs ~1 s per scanned tool output on a laptop CPU.
+It still misses real attacks. And it can't tell legitimate instructions to AI agents (`AGENTS.md`, `CLAUDE.md`) from malicious ones. For those files, a human reviews once with `sandbox semantic trust`: the file isn't scanned while its content is byte-for-byte what was reviewed, and any edit (say, a pull request that slips in a line) makes it scanned again. That's why it only ever *raises* scrutiny while authorization stays in charge. Costs ~1 s per scanned tool output on a laptop CPU.
 
 ## Key Design Decisions
 
