@@ -690,12 +690,17 @@ def _write_change_entry(
 # module entry point (subprocess fallback path for the stub)
 # ---------------------------------------------------------------------------
 
-def main() -> int:
-    """Read a PreToolUse payload on stdin, emit the decision on stdout.
+def main(argv: list[str] | None = None) -> int:
+    """Read a hook payload on stdin, emit the result on stdout.
 
-    Fails **closed** (exit 2) on any internal error, so a broken connector
-    blocks rather than silently allowing.
+    Default is PreToolUse, which fails **closed** (exit 2) on any internal
+    error so a broken connector blocks rather than silently allowing.
+    ``--post`` runs PostToolUse instead (the PostToolUse stub's fallback path):
+    it emits only a PostToolUse-shaped result, never a PreToolUse decision.
     """
+    argv = sys.argv[1:] if argv is None else argv
+    if "--post" in argv:
+        return _main_post()
     try:
         raw = sys.stdin.read()
         payload = json.loads(raw) if raw.strip() else {}
@@ -710,6 +715,23 @@ def main() -> int:
         sys.stderr.write(f"SANDBOX: internal error, blocking (fail-closed): {exc}")
         sys.stderr.flush()
         return 2
+
+
+def _main_post() -> int:
+    """PostToolUse entry point. The tool already ran, so there is nothing to
+    block: errors are reported on stderr and the hook exits 0."""
+    try:
+        raw = sys.stdin.read()
+        payload = json.loads(raw) if raw.strip() else {}
+        layout = FolderLayout.discover(payload.get("cwd") or ".")
+        if layout is None:
+            return 0
+        result = asyncio.run(post_tool_use(payload, layout))
+        return _emit(result) if result else 0
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"SANDBOX: PostToolUse error (tool already ran): {exc}")
+        sys.stderr.flush()
+        return 0
 
 
 if __name__ == "__main__":

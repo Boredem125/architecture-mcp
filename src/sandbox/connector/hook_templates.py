@@ -165,7 +165,7 @@ def main():
             existing = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = package_src + (os.pathsep + existing if existing else "")
         proc = subprocess.run(
-            [python, "-m", "sandbox.connector.hook_eval"],
+            [python, "-m", "sandbox.connector.hook_eval", "--post"],
             input=raw, capture_output=True, text=True, env=env, timeout=120,
         )
         if proc.stdout:
