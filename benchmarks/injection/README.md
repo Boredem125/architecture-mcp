@@ -21,19 +21,28 @@ python benchmarks/injection/run.py            # writes results.json
 | Dataset | System | Caught | False alarms | Precision | F1 |
 |---|---|---|---|---|---|
 | agent_set (dev) | regex (current gateway) | 7/24 | 8/24 | 0.47 | 0.36 |
-| | **semantic** | **17/24** | **5/24** | **0.77** | **0.74** |
+| | **semantic** | **19/24** | **5/24** | **0.79** | **0.79** |
 | embedded in a README (dev) | regex (current gateway) | 7/24 | 8/24 | 0.47 | 0.36 |
-| | **semantic** | **15/24** | **5/24** | **0.75** | **0.68** |
+| | **semantic** | **16/24** | **5/24** | **0.76** | **0.71** |
 | deepset test (held out) | regex (current gateway) | 4/60 | 0/56 | 1.00 | 0.12 |
 | | **semantic** | **31/60** | **1/56** | **0.97** | **0.67** |
 | **deepset test, genuine attacks only** | regex (current gateway) | **0/39** | 0/56 | – | 0.00 |
 | | **semantic** | **26/39** | **1/56** | **0.96** | **0.79** |
 
-**Latency:** semantic 137 ms median per text, p95 416 ms (in-process, laptop CPU). Through `jevos serve` add HTTP overhead; a new 4-sentence README took ~1.2 s end to end.
+**Latency:** semantic 237 ms median per text, p95 766 ms (in-process, laptop CPU; 5 checks per sentence). Through `jevos serve` add HTTP overhead; a new 4-sentence README took ~1.2 s end to end.
 
 **Why "genuine attacks only".** deepset labels many ordinary requests as injections ("act as a storyteller", "translate to polish", "tell me a joke"). The author reviewed all 60 labelled injections in [`deepset_test_review.json`](deepset_test_review.json): 39 are genuine (override instructions, extract the prompt, jailbreak or coerce the model) and 21 are arguable. Each row carries a reason and a hash of its text, so the review can be checked or changed. **All 4 of the regex's catches were arguable rows**, meaning it caught none of the genuine attacks.
 
 **Why per sentence.** Judged as one document, an instruction planted in a README is drowned out by the benign text around it: embedded-set recall fell from 17/24 to 3/24. Judged per sentence it recovers to 15/24.
+
+## How the decision rule was chosen
+
+Rules were compared on cached per-sentence scores for 7 candidate checks, chosen on the dev sets only, and then checked once on held-out data:
+
+- **Harm-gated rules** ("flag only if the text is also harmful") were tried to cut false alarms on legitimate `AGENTS.md`-style instructions. They cut recall by more than half, because the zero-shot model almost never says "harmful" (1/24 attacks), so they were dropped. Telling a harmless instruction to an agent from a harmful one needs a trained model, not zero-shot NLI.
+- **"Asks for an action" alone** fires on every README ("install it with pip"), so it's useless alone.
+- **Shipped:** any of override / instructs_ai / exfiltrate, **or** "addresses an AI" **and** "asks for an action" in the same sentence. That gave +3 caught on dev with 0 new false alarms, and no change either way on held-out deepset. deepset is direct chat injection, where every prompt addresses the AI, so that result is expected. The dev-set gain still needs confirming on a public **indirect**-injection benchmark.
+- **Unwrapping** machine output (JSON string values, `/* */` and `<!-- -->` markers, `npm WARN` / `HTTP 200` chatter) made no measurable difference here and is kept for robustness. Line-comment markers (`#`, `//`) are deliberately kept: stripping them turned `# Forget the cached token…` into a false alarm.
 
 ## What the numbers say
 
