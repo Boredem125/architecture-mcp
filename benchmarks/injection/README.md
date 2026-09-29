@@ -16,16 +16,28 @@ python benchmarks/injection/run.py            # writes results.json
 
 ## Results (jev-os `base`, laptop CPU i7-1360P, 30 Sep 2026)
 
+"Whole text" asks the model about the entire text at once. "Per sentence" asks about each sentence and takes the worst, which is what the gateway's PostToolUse scan does ([`src/sandbox/semantic/scan.py`](../../src/sandbox/semantic/scan.py)).
+
 | Dataset | System | Caught | False alarms | Precision | F1 |
 |---|---|---|---|---|---|
 | agent_set (dev) | regex (current gateway) | 7/24 | 8/24 | 0.47 | 0.36 |
-| | **jev-os base** | **17/24** | **5/24** | **0.77** | **0.74** |
-| | regex OR jev-os | 20/24 | 11/24 | 0.65 | 0.73 |
+| | jev-os, whole text | 17/24 | 5/24 | 0.77 | 0.74 |
+| | **jev-os, per sentence** | **17/24** | **5/24** | **0.77** | **0.74** |
+| **embedded in a README** (dev) | regex (current gateway) | 7/24 | 8/24 | 0.47 | 0.36 |
+| | jev-os, whole text | 3/24 | 1/24 | 0.75 | 0.21 |
+| | **jev-os, per sentence** | **15/24** | **5/24** | **0.75** | **0.68** |
 | deepset test (held out) | regex (current gateway) | 4/60 | 0/56 | 1.00 | 0.12 |
-| | **jev-os base** | **27/60** | **1/56** | **0.96** | **0.61** |
-| | regex OR jev-os | 31/60 | 1/56 | 0.97 | 0.67 |
+| | jev-os, whole text | 27/60 | 1/56 | 0.96 | 0.61 |
+| | **jev-os, per sentence** | **31/60** | **1/56** | **0.97** | **0.67** |
 
-The jev-os latency is 0.5–0.6 s median per text for the 3 checks, with p95 0.9–1.4 s. That's too slow to run on every tool call, so the gateway uses it selectively (on untrusted content and on actions already headed for escalation).
+The **embedded** set plants each agent_set text inside an ordinary README (a few benign sentences before and after), as a real repository would. Judged as a whole document, the planted instruction is drowned out by the benign text: 17/24 falls to 3/24. Judged per sentence it recovers to 15/24. That's why the gateway scans per sentence.
+
+**Latency:**
+- Whole text is 0.3–0.9 s median per text for the 3 checks.
+- Per-sentence numbers here are flattered by caching, since the same README filler repeats in every embedded row.
+- The fairer figure comes from the end-to-end run: **~1.2 s** for a new 4-sentence README through the real `jevos serve` service.
+
+That's too slow for every tool call, so the gateway only scans the output of tools that return untrusted content, and fails open to today's behavior if the service is slow or down.
 
 ## What the numbers say
 

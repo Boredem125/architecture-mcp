@@ -95,6 +95,17 @@ class RiskAssessment:
             "factors": [f.to_dict() for f in self.factors],
         }
 
+    def raise_by(self, factor: RiskFactor) -> None:
+        """Add a factor that can only raise the score (the semantic ratchet).
+
+        Model-derived factors go through here so a fooled or misbehaving model
+        can never lower risk: negative points are rejected outright.
+        """
+        if factor.points < 0:
+            raise ValueError(f"{factor.name}: risk factors from this path must be >= 0")
+        self.factors.append(factor)
+        self.score = max(0, min(100, self.score + factor.points))
+
     def explain(self) -> str:
         lines = [f"Risk {self.score}/100 -> {self.band.upper()}"]
         for f in sorted(self.factors, key=lambda x: -abs(x.points)):

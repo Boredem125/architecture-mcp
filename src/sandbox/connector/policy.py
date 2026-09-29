@@ -77,6 +77,32 @@ class OutputPolicy(BaseModel):
     scrub_secrets: bool = True
 
 
+class SemanticPolicy(BaseModel):
+    """Intent-aware checks via a local jev-os service (``jevos serve``).
+
+    Off by default. The layer can only add scrutiny: if the service is down or
+    slow, the gateway behaves exactly as it does without it.
+    """
+
+    enabled: bool = False
+    url: str = "http://127.0.0.1:8321"
+    # Name of the env var holding the jev-os API key — never the key itself,
+    # since policy.json lives in the workspace.
+    api_key_env: str = "JEVOS_API_KEY"
+    # Whole-call budget. Output is scored sentence by sentence, which took
+    # ~2 s for a short README on a laptop CPU, so this is generous.
+    timeout_seconds: float = 8.0
+    threshold: float = 0.5
+    # Tools whose *output* is untrusted content to scan (fnmatch patterns).
+    scan_tools: list[str] = Field(
+        default_factory=lambda: ["WebFetch", "WebSearch", "Read", "Bash", "PowerShell", "mcp__*"]
+    )
+    max_scan_chars: int = 6000
+    # After an injection is seen, these triggers need a human even if allowlisted.
+    taint_ttl_seconds: int = 900
+    taint_escalates: list[str] = Field(default_factory=lambda: ["shell", "network", "write_outside"])
+
+
 class TriggerPolicy(BaseModel):
     shell: str = "escalate"
     write_outside: str = "deny"
@@ -100,6 +126,7 @@ class FolderPolicy(BaseModel):
     network: NetworkPolicy = Field(default_factory=NetworkPolicy)
     scan: ScanPolicy = Field(default_factory=ScanPolicy)
     output: OutputPolicy = Field(default_factory=OutputPolicy)
+    semantic: SemanticPolicy = Field(default_factory=SemanticPolicy)
 
     def _inject_protections(self) -> None:
         """Ensure the self-protection rules are present (non-removable)."""

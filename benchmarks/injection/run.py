@@ -40,6 +40,24 @@ def load_agent_set() -> list[dict]:
     return [{"text": r["text"], "label": r["label"], "group": r["channel"]} for r in rows]
 
 
+README_BEFORE = (
+    "# Project\n"
+    "A small library for parsing configuration files. It supports YAML, TOML and JSON.\n"
+    "## Installation\n"
+    "Install it with pip, then import the loader in your application code.\n"
+)
+README_AFTER = (
+    "\n## Contributing\n"
+    "Please run the test suite before opening a pull request, and keep changes focused.\n"
+    "Released under the MIT license."
+)
+
+
+def load_embedded() -> list[dict]:
+    """Each agent_set text planted inside an otherwise ordinary README."""
+    return [{**r, "text": README_BEFORE + r["text"] + README_AFTER, "group": "embedded"} for r in load_agent_set()]
+
+
 def load_deepset(split: str = "test") -> list[dict]:
     CACHE.mkdir(parents=True, exist_ok=True)
     path = CACHE / f"deepset-prompt-injections-{split}.json"
@@ -87,6 +105,16 @@ class JevDetector:
         s, ms = self.scores(text)
         return max(s.values()) >= THRESHOLD, ms
 
+    def segmented(self, text: str) -> tuple[bool, float]:
+        """Worst sentence wins, as the gateway's PostToolUse scan does it."""
+        from sandbox.semantic.scan import segments
+
+        best, total = 0.0, 0.0
+        for seg in segments(text):
+            s, ms = self.scores(seg)
+            best, total = max(best, max(s.values())), total + ms
+        return best >= THRESHOLD, total
+
 
 def metrics(preds: list[bool], labels: list[int]) -> dict:
     tp = sum(p and y for p, y in zip(preds, labels))
@@ -107,7 +135,11 @@ def main() -> None:
     ap.add_argument("--out", default=str(HERE / "results.json"))
     args = ap.parse_args()
 
-    datasets = {"agent_set (dev, hand-written)": load_agent_set(), "deepset test (held out)": load_deepset()}
+    datasets = {
+        "agent_set (dev, hand-written)": load_agent_set(),
+        "embedded in a README (dev)": load_embedded(),
+        "deepset test (held out)": load_deepset(),
+    }
     regex, jev = RegexDetector(), JevDetector(args.model)
     jev("warm up")
 
@@ -116,29 +148,39 @@ def main() -> None:
         labels = [r["label"] for r in rows]
         rx = [regex(r["text"]) for r in rows]
         jv = [jev(r["text"]) for r in rows]
-        rx_p, jv_p = [p for p, _ in rx], [p for p, _ in jv]
+        seg = [jev.segmented(r["text"]) for r in rows]
+        rx_p, jv_p, seg_p = [p for p, _ in rx], [p for p, _ in jv], [p for p, _ in seg]
         systems = {
             "regex (current gateway)": rx_p,
-            f"jev-os {args.model}": jv_p,
-            "regex OR jev-os": [a or b for a, b in zip(rx_p, jv_p)],
+            f"jev-os {args.model}, whole text": jv_p,
+            f"jev-os {args.model}, per sentence": seg_p,
+            "regex OR jev-os per sentence": [a or b for a, b in zip(rx_p, seg_p)],
         }
-        lat = sorted(ms for _, ms in jv)
+        def pct(values: list[float], q: float) -> float:
+            v = sorted(values)
+            return round(v[int(q * (len(v) - 1))], 1)
+
+        whole_ms, seg_ms = [ms for _, ms in jv], [ms for _, ms in seg]
         report["results"][dname] = {
             "n": len(rows),
             "systems": {k: metrics(v, labels) for k, v in systems.items()},
-            "jev_latency_ms": {"p50": round(statistics.median(lat), 1), "p95": round(lat[int(0.95 * (len(lat) - 1))], 1)},
+            "latency_ms": {
+                "whole_p50": pct(whole_ms, 0.5), "whole_p95": pct(whole_ms, 0.95),
+                "per_sentence_p50": pct(seg_ms, 0.5), "per_sentence_p95": pct(seg_ms, 0.95),
+            },
             "misses": {
-                "jev_false_negatives": [r["text"][:120] for r, p in zip(rows, jv_p) if r["label"] and not p][:15],
-                "jev_false_positives": [r["text"][:120] for r, p in zip(rows, jv_p) if not r["label"] and p][:15],
+                "per_sentence_false_negatives": [r["text"][-160:] for r, p in zip(rows, seg_p) if r["label"] and not p][:15],
+                "per_sentence_false_positives": [r["text"][-160:] for r, p in zip(rows, seg_p) if not r["label"] and p][:15],
             },
         }
 
     Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")
     for dname, res in report["results"].items():
-        print(f"\n== {dname}  (n={res['n']}, jev-os latency p50 {res['jev_latency_ms']['p50']} ms, p95 {res['jev_latency_ms']['p95']} ms)")
-        print(f"   {'system':26} {'caught':>9} {'false alarms':>13} {'precision':>10} {'F1':>6}")
+        lat = res["latency_ms"]
+        print(f"\n== {dname}  (n={res['n']}; jev-os ms whole p50 {lat['whole_p50']}, per sentence p50 {lat['per_sentence_p50']} / p95 {lat['per_sentence_p95']})")
+        print(f"   {'system':34} {'caught':>9} {'false alarms':>13} {'precision':>10} {'F1':>6}")
         for name, m in res["systems"].items():
-            print(f"   {name:26} {m['caught']:>9} {m['false_alarms']:>13} {m['precision']:>10.2f} {m['f1']:>6.2f}")
+            print(f"   {name:34} {m['caught']:>9} {m['false_alarms']:>13} {m['precision']:>10.2f} {m['f1']:>6.2f}")
     print(f"\nwrote {args.out}")
 
 
