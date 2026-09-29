@@ -14,6 +14,23 @@ difficulty; each is intentionally *not* built yet so the core stays tight and de
 - Restorable file originals + tamper-evident chained audit
 - Threat model, TCB, compliance mapping, security posture
 
+## Shipped (Stage 1.5): intent-aware layer
+
+- Optional local semantic checks (jev-os): per-sentence injection scan of untrusted tool
+  output, folder taint that escalates allowlisted shell, network and out-of-folder actions,
+  model-derived risk factors that can only raise scrutiny, and an audited `clear-taint`
+- Benchmark vs the regex detector on public held-out data (`benchmarks/injection`)
+
+## Next for the intent-aware layer
+
+- **Command intent:** "does this command send data somewhere?" on escalated commands, and
+  **description vs command mismatch** on the approver panel (Goal 6).
+- **Plain-language policy clauses** compiled into typed checks, next to Rego.
+- **Distillation:** a small single-pass model trained on hard cases labelled by a larger LLM
+  (PII redacted first) to beat the zero-shot baseline on speed and accuracy.
+- **Red-team loop:** generate new injection variants, retrain on the misses, and publish the
+  before/after numbers.
+
 ## Stage 2 — bank-resonant, moderate cost
 
 - **Environment dimension** (dev / staging / prod → different verdicts) = segregation of duties.

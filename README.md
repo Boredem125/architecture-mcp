@@ -58,7 +58,7 @@ The MCP channel works identically: `run_privileged` returns a tool result with c
 ## Testing
 
 ```bash
-# Run all tests (117 passing)
+# Run all tests (225 passing)
 python -m pytest -q
 
 # Test the loop with a real hook subprocess and background approver
@@ -82,12 +82,43 @@ src/sandbox/
 └── ...
 ```
 
+## Intent-aware layer (optional)
+
+Every decision above is rule-based: regex, allowlists and path containment. That's fast and predictable, but it can't tell what text *means*. So a reworded prompt injection sails past the regex, and harmless docs ("this middleware can **act as** a cache") trip it.
+
+The optional semantic layer adds intent, using a local [jev-os](https://github.com/Boredem125/jev-os) service: an open, CPU-only zero-shot model. No data leaves the machine.
+
+- **PostToolUse:** the output of tools that return untrusted content (web pages, files, command output, MCP results) is checked **sentence by sentence** for instructions aimed at the AI. On a hit:
+  - the agent is told to treat the content as data;
+  - an audit event records the scores, the model and hashes (never the content);
+  - the folder is **tainted** for 15 minutes.
+- **PreToolUse:** while tainted, shell, network and out-of-folder actions need a human **even when allowlisted**. So a poisoned README followed by an allowlisted `npm run build` (after the agent was told to edit the build script) or a fetch from an allowlisted host still reaches the approver, and the approver sees why (`+20 semantic-taint — Read output looked like instructions to the AI (p=0.99)`).
+- **One-way ratchet:** the layer can only add scrutiny. Model-derived risk factors can't be negative (enforced in `RiskAssessment.raise_by`). If the service is down or slow, the gateway behaves exactly as it does without it.
+
+```bash
+pip install -e ".[semantic]"
+jevos serve --api-key "$JEVOS_API_KEY"     # keep running; loads the model once
+sandbox semantic enable .                   # off by default
+sandbox semantic status .                   # reachable? tainted?
+sandbox semantic clear-taint . --reviewer alice --reason "checked: false positive"   # audited
+```
+
+**Measured** against the current regex detector ([benchmarks/injection](benchmarks/injection/README.md)):
+
+| Dataset | Regex (current) | Semantic layer |
+|---|---|---|
+| Public deepset test split (held out) | 4/60 caught, 0/56 false alarms | **31/60 caught, 1/56 false alarms** |
+| Injections embedded in a README (hand-written) | 7/24 caught, 8/24 false alarms | **15/24 caught, 5/24 false alarms** |
+
+It still misses real attacks, mostly instructions wrapped in machine-looking output. And it confuses legitimate `AGENTS.md`-style instructions to AI agents with attacks. That's why it only ever *raises* scrutiny while authorization stays in charge. Costs ~1 s per scanned tool output on a laptop CPU.
+
 ## Key Design Decisions
 
 - **The folder is the bus**: Atomic file operations on NTFS coordinate four independent processes (no in-memory state, no open ports, survives restarts)
 - **`deny` carries the output**: Tool never executes in the agent; output is pasted back in the reason string
 - **CLI-first approval**: Headless, works over SSH, no browser dependency
 - **Fail-closed**: Internal errors block rather than silently allow
+- **Semantic checks only raise scrutiny**: the intent-aware layer can escalate an allowlisted action, never allow a denied one; if it is unavailable, rules decide alone
 - **Non-removable self-protection**: `.sandbox/**` in write denials and `\.sandbox` in shell denials are re-injected on every policy load — agent cannot remove its own constraints
 
 ## License

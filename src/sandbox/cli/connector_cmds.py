@@ -22,6 +22,107 @@ def register(cli: click.Group) -> None:
     cli.add_command(uninstall_cmd)
     cli.add_command(explain_cmd)
     cli.add_command(logs_cmd)
+    cli.add_command(semantic_group)
+
+
+@click.group("semantic")
+def semantic_group() -> None:
+    """Intent-aware checks via a local jev-os service (optional)."""
+
+
+def _semantic_layout(path: str):
+    from sandbox.connector.layout import FolderLayout
+
+    layout = FolderLayout.discover(path)
+    if layout is None:
+        click.echo("No .sandbox/ found here or above. Run `sandbox init` first.")
+        raise SystemExit(1)
+    return layout
+
+
+@semantic_group.command("status")
+@click.argument("path", default=".")
+def semantic_status_cmd(path: str) -> None:
+    """Show whether the layer is on, whether jev-os answers, and any taint."""
+    import datetime as _dt
+
+    from sandbox.connector.policy import load_policy
+    from sandbox.semantic import taint
+    from sandbox.semantic.checks import INJECTION_CHECKS
+    from sandbox.semantic.client import SemanticClient
+
+    layout = _semantic_layout(path)
+    sem = load_policy(layout.policy_file).semantic
+    click.echo(f"Enabled:  {sem.enabled}")
+    click.echo(f"Service:  {sem.url}  (key from ${sem.api_key_env})")
+    probe = SemanticClient.from_policy(sem).ask("Run the tests before opening a pull request.", INJECTION_CHECKS)
+    click.echo(f"Reachable: {'yes, ' + probe.model if probe else 'no (checks are skipped; rules still apply)'}")
+    state = taint.read(layout.state_dir)
+    if not state:
+        click.echo("Taint:    none")
+        return
+    until = _dt.datetime.fromtimestamp(state["until"]).strftime("%H:%M:%S")
+    click.echo(f"Taint:    ACTIVE until {until} — shell, network and out-of-folder actions need approval")
+    for ev in state["events"][-5:]:
+        click.echo(f"  - {ev.get('tool')}: {ev.get('top_check')} p={ev.get('top_score')} "
+                   f"(segment {ev.get('segment_index')}/{ev.get('segment_count')}, sha {str(ev.get('text_sha256'))[:12]})")
+
+
+@semantic_group.command("enable")
+@click.argument("path", default=".")
+@click.option("--url", default=None, help="jev-os service URL (default http://127.0.0.1:8321).")
+def semantic_enable_cmd(path: str, url: str | None) -> None:
+    """Turn the semantic layer on for this folder."""
+    from sandbox.connector.policy import load_policy, save_policy
+
+    layout = _semantic_layout(path)
+    policy = load_policy(layout.policy_file)
+    policy.semantic.enabled = True
+    if url:
+        policy.semantic.url = url
+    save_policy(policy, layout.policy_file)
+    click.echo(f"Semantic layer enabled ({policy.semantic.url}). Start the service with `jevos serve`.")
+
+
+@semantic_group.command("disable")
+@click.argument("path", default=".")
+def semantic_disable_cmd(path: str) -> None:
+    """Turn the semantic layer off (rules keep working as before)."""
+    from sandbox.connector.policy import load_policy, save_policy
+
+    layout = _semantic_layout(path)
+    policy = load_policy(layout.policy_file)
+    policy.semantic.enabled = False
+    save_policy(policy, layout.policy_file)
+    click.echo("Semantic layer disabled.")
+
+
+@semantic_group.command("clear-taint")
+@click.argument("path", default=".")
+@click.option("--reviewer", required=True, help="Who reviewed the flagged content (recorded in the audit).")
+@click.option("--reason", required=True, help="Why it is safe to continue.")
+def semantic_clear_taint_cmd(path: str, reviewer: str, reason: str) -> None:
+    """End a taint after a human reviewed the flagged content (audited)."""
+    import json as _json
+
+    from sandbox.connector.audit import FolderAudit
+    from sandbox.semantic import taint
+
+    layout = _semantic_layout(path)
+    state = taint.read(layout.state_dir)
+    if not state:
+        click.echo("No active taint.")
+        return
+    try:
+        session_id = _json.loads(layout.session_file.read_text(encoding="utf-8")).get("session_id", "")
+    except (OSError, ValueError):
+        session_id = ""
+    FolderAudit(layout.audit_dir, session_id).append({
+        "event": "taint_cleared", "reviewer": reviewer, "reason": reason,
+        "taint_events": state.get("events", []),
+    })
+    taint.clear(layout.state_dir)
+    click.echo(f"Taint cleared by {reviewer} (recorded in the audit chain).")
 
 
 @click.command("init")

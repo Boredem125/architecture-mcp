@@ -41,9 +41,15 @@ dev = [
     "fakeredis>=2.25.0",
 ]
 
+# Optional intent-aware layer: runs the local jev-os service (`jevos serve`).
+semantic = ["jev-os[server] @ git+https://github.com/Boredem125/jev-os"]
+
 [project.scripts]
 sandbox = "sandbox.cli.main:cli"
 sandbox-mcp = "sandbox.connector.mcp_server:main"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sandbox"]
