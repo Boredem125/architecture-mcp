@@ -95,12 +95,22 @@ def response_text(tool_response: Any, limit: int) -> str:
     return "\n".join(parts)[:limit]
 
 
+def prepare(text: str) -> list[str]:
+    """Text → the segments the model judges. Shared by the gateway and the benchmark."""
+    return segments(text)
+
+
+def verdict(scores: dict[str, float], threshold: float) -> str:
+    """One segment's scores → "high" (taint) or "none"."""
+    return "high" if max(scores.values()) >= threshold else "none"
+
+
 def scan(tool_name: str, text: str, client: SemanticClient, threshold: float) -> InjectionFinding | None:
-    """A finding if any injection check reaches the threshold, else None.
+    """A finding if any segment's verdict is "high", else None.
 
     None also covers "service unavailable": no extra scrutiny, never less.
     """
-    segs = segments(text)
+    segs = prepare(text)
     if not segs:
         return None
     results = client.ask_many(segs, INJECTION_CHECKS)
@@ -108,7 +118,7 @@ def scan(tool_name: str, text: str, client: SemanticClient, threshold: float) ->
         return None
     worst = max(range(len(results)), key=lambda i: results[i].top()[1])
     top_check, top_score = results[worst].top()
-    if top_score < threshold:
+    if verdict(results[worst].scores, threshold) != "high":
         return None
     return InjectionFinding(
         tool=tool_name,

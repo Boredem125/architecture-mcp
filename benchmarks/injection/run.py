@@ -1,24 +1,26 @@
-"""Prompt-injection benchmark: the gateway's regex detector vs jev-os (semantic).
+"""Prompt-injection benchmark: the gateway's regex detector vs its semantic layer.
 
-    python benchmarks/injection/run.py                  # both datasets, base model
+    python benchmarks/injection/run.py                  # base model
     python benchmarks/injection/run.py --model xsmall
 
+The semantic system here is the gateway's own pipeline, imported from
+src/sandbox/semantic/scan.py (prepare → per-segment checks → verdict), so
+the benchmark measures exactly what runs in PostToolUse.
+
 Datasets
-- agent_set.jsonl  hand-written, agent-context (indirect injection in READMEs,
-                   web pages, tool output, code comments + benign developer text).
-                   The jev-os statements were chosen with this set in view, so
-                   treat it as a development set.
-- deepset          deepset/prompt-injections, test split (Apache-2.0), fetched
-                   from Hugging Face and cached in benchmarks/.cache. Held out:
-                   nothing was tuned on it. Note its labels are broad (role-play
-                   requests such as "act as an interviewer" count as injection)
-                   and some rows are German.
+- agent_set.jsonl   hand-written, agent context (indirect injection in READMEs,
+                    web pages, tool output, code comments + benign developer
+                    text). Checks were chosen with it in view: a development set.
+- embedded          each agent_set text planted inside an ordinary README.
+- deepset           deepset/prompt-injections test split (Apache-2.0), fetched
+                    and cached in benchmarks/.cache. Held out: nothing tuned on it.
+- deepset, genuine  the same rows, keeping only the injections the author judged
+                    genuine (deepset_test_review.json); arguable rows dropped.
 """
 from __future__ import annotations
 
 import argparse
 import json
-import statistics
 import sys
 import time
 import urllib.request
@@ -30,6 +32,7 @@ CACHE = ROOT / "benchmarks" / ".cache"
 sys.path.insert(0, str(ROOT / "src"))
 
 from sandbox.safety.injection_detector import InjectionDetector  # noqa: E402
+from sandbox.semantic import scan as pipeline  # noqa: E402
 from sandbox.semantic.checks import INJECTION_CHECKS  # noqa: E402
 
 THRESHOLD = 0.5
@@ -37,7 +40,7 @@ THRESHOLD = 0.5
 
 def load_agent_set() -> list[dict]:
     rows = [json.loads(line) for line in (HERE / "agent_set.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
-    return [{"text": r["text"], "label": r["label"], "group": r["channel"]} for r in rows]
+    return [{"id": r["id"], "text": r["text"], "label": r["label"]} for r in rows]
 
 
 README_BEFORE = (
@@ -55,7 +58,7 @@ README_AFTER = (
 
 def load_embedded() -> list[dict]:
     """Each agent_set text planted inside an otherwise ordinary README."""
-    return [{**r, "text": README_BEFORE + r["text"] + README_AFTER, "group": "embedded"} for r in load_agent_set()]
+    return [{**r, "text": README_BEFORE + r["text"] + README_AFTER} for r in load_agent_set()]
 
 
 def load_deepset(split: str = "test") -> list[dict]:
@@ -74,59 +77,65 @@ def load_deepset(split: str = "test") -> list[dict]:
                 break
         path.write_text(json.dumps(rows), encoding="utf-8")
     rows = json.loads(path.read_text(encoding="utf-8"))
-    return [{"text": r["text"], "label": int(r["label"]), "group": "deepset"} for r in rows]
+    return [{"id": str(i), "text": r["text"], "label": int(r["label"])} for i, r in enumerate(rows)]
 
 
-class RegexDetector:
-    name = "regex (current gateway)"
+def genuine_view(rows: list[dict]) -> list[dict]:
+    """deepset rows with the author-judged 'arguable' injections removed."""
+    import hashlib
 
+    review = json.loads((HERE / "deepset_test_review.json").read_text(encoding="utf-8"))["rows"]
+    keep = []
+    for r in rows:
+        v = review.get(r["id"])
+        if r["label"] == 1:
+            if v is None or v["sha256"] != hashlib.sha256(r["text"].encode()).hexdigest():
+                raise SystemExit(f"review out of date for row {r['id']}")
+            if v["verdict"] != "genuine":
+                continue
+        keep.append(r)
+    return keep
+
+
+class Regex:
     def __init__(self) -> None:
         self.d = InjectionDetector()
 
-    def __call__(self, text: str) -> tuple[bool, float]:
-        start = time.perf_counter()
-        flagged = self.d.scan(text)[0]
-        return flagged, (time.perf_counter() - start) * 1000
+    def __call__(self, text: str) -> str:
+        return "high" if self.d.scan(text)[0] else "none"
 
 
-class JevDetector:
+class Semantic:
+    """The gateway pipeline, run in-process instead of through `jevos serve`."""
+
     def __init__(self, model: str) -> None:
         from jevos import Client, questions_from_dict
 
         self.client = Client(model=model)
         self.questions = questions_from_dict(INJECTION_CHECKS)
-        self.name = f"jev-os ({model})"
+        self.ms: list[float] = []
 
-    def scores(self, text: str) -> tuple[dict[str, float], float]:
-        r = self.client.system_one(text, self.questions)
-        return {k: a.noul for k, a in r.answers.items()}, r.latency_ms
-
-    def __call__(self, text: str) -> tuple[bool, float]:
-        s, ms = self.scores(text)
-        return max(s.values()) >= THRESHOLD, ms
-
-    def segmented(self, text: str) -> tuple[bool, float]:
-        """Worst sentence wins, as the gateway's PostToolUse scan does it."""
-        from sandbox.semantic.scan import segments
-
-        best, total = 0.0, 0.0
-        for seg in segments(text):
-            s, ms = self.scores(seg)
-            best, total = max(best, max(s.values())), total + ms
-        return best >= THRESHOLD, total
+    def __call__(self, text: str) -> str:
+        start = time.perf_counter()
+        tiers = []
+        for seg in pipeline.prepare(text):
+            r = self.client.system_one(seg, self.questions)
+            tiers.append(pipeline.verdict({k: a.noul for k, a in r.answers.items()}, THRESHOLD))
+        self.ms.append((time.perf_counter() - start) * 1000)
+        if "high" in tiers:
+            return "high"
+        return "medium" if "medium" in tiers else "none"
 
 
-def metrics(preds: list[bool], labels: list[int]) -> dict:
-    tp = sum(p and y for p, y in zip(preds, labels))
-    fp = sum(p and not y for p, y in zip(preds, labels))
-    fn = sum((not p) and y for p, y in zip(preds, labels))
-    tn = sum((not p) and not y for p, y in zip(preds, labels))
-    pos, neg = tp + fn, fp + tn
+def metrics(flags: list[bool], labels: list[int]) -> dict:
+    tp = sum(f and y for f, y in zip(flags, labels))
+    fp = sum(f and not y for f, y in zip(flags, labels))
+    pos, neg = sum(labels), len(labels) - sum(labels)
     precision = tp / (tp + fp) if tp + fp else 0.0
     recall = tp / pos if pos else 0.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-    return {"caught": f"{tp}/{pos}", "false_alarms": f"{fp}/{neg}", "recall": recall,
-            "fpr": fp / neg if neg else 0.0, "precision": precision, "f1": f1}
+    return {"caught": f"{tp}/{pos}", "false_alarms": f"{fp}/{neg}", "recall": round(recall, 3),
+            "precision": round(precision, 3), "f1": round(f1, 3)}
 
 
 def main() -> None:
@@ -135,53 +144,45 @@ def main() -> None:
     ap.add_argument("--out", default=str(HERE / "results.json"))
     args = ap.parse_args()
 
-    datasets = {
-        "agent_set (dev, hand-written)": load_agent_set(),
-        "embedded in a README (dev)": load_embedded(),
-        "deepset test (held out)": load_deepset(),
-    }
-    regex, jev = RegexDetector(), JevDetector(args.model)
-    jev("warm up")
+    regex, sem = Regex(), Semantic(args.model)
+    sem("warm up")
+    sem.ms.clear()
 
-    report = {"model": args.model, "threshold": THRESHOLD, "results": {}}
-    for dname, rows in datasets.items():
+    deepset = load_deepset()
+    sources = {"agent_set (dev, hand-written)": load_agent_set(),
+               "embedded in a README (dev)": load_embedded(),
+               "deepset test (held out)": deepset}
+    preds: dict[str, dict[str, tuple[str, str]]] = {}
+    for name, rows in sources.items():
+        preds[name] = {r["id"]: (regex(r["text"]), sem(r["text"])) for r in rows}
+    views = {**sources, "deepset test, genuine attacks only": genuine_view(deepset)}
+    preds["deepset test, genuine attacks only"] = preds["deepset test (held out)"]
+
+    report = {"model": args.model, "threshold": THRESHOLD, "checks": list(INJECTION_CHECKS), "results": {}}
+    for name, rows in views.items():
+        p = preds[name]
         labels = [r["label"] for r in rows]
-        rx = [regex(r["text"]) for r in rows]
-        jv = [jev(r["text"]) for r in rows]
-        seg = [jev.segmented(r["text"]) for r in rows]
-        rx_p, jv_p, seg_p = [p for p, _ in rx], [p for p, _ in jv], [p for p, _ in seg]
-        systems = {
-            "regex (current gateway)": rx_p,
-            f"jev-os {args.model}, whole text": jv_p,
-            f"jev-os {args.model}, per sentence": seg_p,
-            "regex OR jev-os per sentence": [a or b for a, b in zip(rx_p, seg_p)],
-        }
-        def pct(values: list[float], q: float) -> float:
-            v = sorted(values)
-            return round(v[int(q * (len(v) - 1))], 1)
-
-        whole_ms, seg_ms = [ms for _, ms in jv], [ms for _, ms in seg]
-        report["results"][dname] = {
+        rx = [p[r["id"]][0] == "high" for r in rows]
+        taint = [p[r["id"]][1] == "high" for r in rows]
+        warn = [p[r["id"]][1] in ("high", "medium") for r in rows]
+        systems = {"regex (current gateway)": rx, "semantic: taint": taint, "semantic: warn or taint": warn}
+        report["results"][name] = {
             "n": len(rows),
             "systems": {k: metrics(v, labels) for k, v in systems.items()},
-            "latency_ms": {
-                "whole_p50": pct(whole_ms, 0.5), "whole_p95": pct(whole_ms, 0.95),
-                "per_sentence_p50": pct(seg_ms, 0.5), "per_sentence_p95": pct(seg_ms, 0.95),
-            },
-            "misses": {
-                "per_sentence_false_negatives": [r["text"][-160:] for r, p in zip(rows, seg_p) if r["label"] and not p][:15],
-                "per_sentence_false_positives": [r["text"][-160:] for r, p in zip(rows, seg_p) if not r["label"] and p][:15],
-            },
+            "missed": [r["text"][-200:] for r, f in zip(rows, taint) if r["label"] and not f][:40],
+            "false_alarms": [r["text"][-200:] for r, f in zip(rows, taint) if not r["label"] and f][:40],
         }
+    ms = sorted(sem.ms)
+    report["semantic_ms_per_text"] = {"p50": round(ms[len(ms) // 2], 1), "p95": round(ms[int(0.95 * (len(ms) - 1))], 1)}
 
     Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")
-    for dname, res in report["results"].items():
-        lat = res["latency_ms"]
-        print(f"\n== {dname}  (n={res['n']}; jev-os ms whole p50 {lat['whole_p50']}, per sentence p50 {lat['per_sentence_p50']} / p95 {lat['per_sentence_p95']})")
-        print(f"   {'system':34} {'caught':>9} {'false alarms':>13} {'precision':>10} {'F1':>6}")
-        for name, m in res["systems"].items():
-            print(f"   {name:34} {m['caught']:>9} {m['false_alarms']:>13} {m['precision']:>10.2f} {m['f1']:>6.2f}")
-    print(f"\nwrote {args.out}")
+    for name, res in report["results"].items():
+        print(f"\n== {name}  (n={res['n']})")
+        print(f"   {'system':26} {'caught':>9} {'false alarms':>13} {'precision':>10} {'F1':>6}")
+        for sname, m in res["systems"].items():
+            print(f"   {sname:26} {m['caught']:>9} {m['false_alarms']:>13} {m['precision']:>10.2f} {m['f1']:>6.2f}")
+    print(f"\nsemantic ms per text: p50 {report['semantic_ms_per_text']['p50']}, p95 {report['semantic_ms_per_text']['p95']}")
+    print(f"wrote {args.out}")
 
 
 if __name__ == "__main__":

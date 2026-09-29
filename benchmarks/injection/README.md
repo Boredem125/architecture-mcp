@@ -14,30 +14,26 @@ python benchmarks/injection/run.py            # writes results.json
 | `agent_set.jsonl` | 24 attacks + 24 benign | **Indirect** injection in agent context: instructions planted in READMEs, web pages, tool output, code comments, issues and emails. Benign developer text is full of trigger words ("act as a cache", "You are now ready…"), plus legitimate `AGENTS.md`-style instructions to AI agents | Hand-written by the author; the jev-os statements were chosen with it in view, so it's a **development set** |
 | [deepset/prompt-injections](https://huggingface.co/datasets/deepset/prompt-injections), test split | 60 injections + 56 benign | Public (Apache-2.0), mostly **direct** injection in chat prompts, some German | **Held out**, nothing tuned on it. Labels are broad: role-play ("act as a storyteller") and even "translate to polish" count as injections |
 
-## Results (jev-os `base`, laptop CPU i7-1360P, 30 Sep 2026)
+## Results (jev-os `base`, laptop CPU i7-1360P)
 
-"Whole text" asks the model about the entire text at once. "Per sentence" asks about each sentence and takes the worst, which is what the gateway's PostToolUse scan does ([`src/sandbox/semantic/scan.py`](../../src/sandbox/semantic/scan.py)).
+"Semantic" is the gateway's own PostToolUse pipeline ([`scan.py`](../../src/sandbox/semantic/scan.py)), imported by the benchmark: each text is split into sentences, each sentence gets the checks, and the worst sentence decides.
 
 | Dataset | System | Caught | False alarms | Precision | F1 |
 |---|---|---|---|---|---|
 | agent_set (dev) | regex (current gateway) | 7/24 | 8/24 | 0.47 | 0.36 |
-| | jev-os, whole text | 17/24 | 5/24 | 0.77 | 0.74 |
-| | **jev-os, per sentence** | **17/24** | **5/24** | **0.77** | **0.74** |
-| **embedded in a README** (dev) | regex (current gateway) | 7/24 | 8/24 | 0.47 | 0.36 |
-| | jev-os, whole text | 3/24 | 1/24 | 0.75 | 0.21 |
-| | **jev-os, per sentence** | **15/24** | **5/24** | **0.75** | **0.68** |
+| | **semantic** | **17/24** | **5/24** | **0.77** | **0.74** |
+| embedded in a README (dev) | regex (current gateway) | 7/24 | 8/24 | 0.47 | 0.36 |
+| | **semantic** | **15/24** | **5/24** | **0.75** | **0.68** |
 | deepset test (held out) | regex (current gateway) | 4/60 | 0/56 | 1.00 | 0.12 |
-| | jev-os, whole text | 27/60 | 1/56 | 0.96 | 0.61 |
-| | **jev-os, per sentence** | **31/60** | **1/56** | **0.97** | **0.67** |
+| | **semantic** | **31/60** | **1/56** | **0.97** | **0.67** |
+| **deepset test, genuine attacks only** | regex (current gateway) | **0/39** | 0/56 | – | 0.00 |
+| | **semantic** | **26/39** | **1/56** | **0.96** | **0.79** |
 
-The **embedded** set plants each agent_set text inside an ordinary README (a few benign sentences before and after), as a real repository would. Judged as a whole document, the planted instruction is drowned out by the benign text: 17/24 falls to 3/24. Judged per sentence it recovers to 15/24. That's why the gateway scans per sentence.
+**Latency:** semantic 137 ms median per text, p95 416 ms (in-process, laptop CPU). Through `jevos serve` add HTTP overhead; a new 4-sentence README took ~1.2 s end to end.
 
-**Latency:**
-- Whole text is 0.3–0.9 s median per text for the 3 checks.
-- Per-sentence numbers here are flattered by caching, since the same README filler repeats in every embedded row.
-- The fairer figure comes from the end-to-end run: **~1.2 s** for a new 4-sentence README through the real `jevos serve` service.
+**Why "genuine attacks only".** deepset labels many ordinary requests as injections ("act as a storyteller", "translate to polish", "tell me a joke"). The author reviewed all 60 labelled injections in [`deepset_test_review.json`](deepset_test_review.json): 39 are genuine (override instructions, extract the prompt, jailbreak or coerce the model) and 21 are arguable. Each row carries a reason and a hash of its text, so the review can be checked or changed. **All 4 of the regex's catches were arguable rows**, meaning it caught none of the genuine attacks.
 
-That's too slow for every tool call, so the gateway only scans the output of tools that return untrusted content, and fails open to today's behavior if the service is slow or down.
+**Why per sentence.** Judged as one document, an instruction planted in a README is drowned out by the benign text around it: embedded-set recall fell from 17/24 to 3/24. Judged per sentence it recovers to 15/24.
 
 ## What the numbers say
 
