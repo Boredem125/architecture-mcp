@@ -103,6 +103,13 @@ class SemanticPolicy(BaseModel):
     # ~2 s for a short README on a laptop CPU, so this is generous.
     timeout_seconds: float = 8.0
     threshold: float = 0.5
+    # Optional fast screen: a second service (e.g. the xsmall model) scores
+    # every sentence first, and only those at or above screen_threshold are
+    # re-scored by the main service. Empty = off. If the screen fails, the
+    # main service scores everything, as without it.
+    screen_url: str = ""
+    # Recall-oriented: a sentence dropped here never reaches the main model.
+    screen_threshold: float = 0.2
     # Tools whose *output* is untrusted content to scan (fnmatch patterns).
     scan_tools: list[str] = Field(
         default_factory=lambda: ["WebFetch", "WebSearch", "Read", "Bash", "PowerShell", "mcp__*"]

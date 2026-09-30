@@ -631,11 +631,14 @@ def _scan_untrusted_output(payload: dict[str, Any], layout: FolderLayout) -> dic
             return {}
 
         # Content-hash cache: re-reading the same content doesn't re-scan.
-        key = scan_cache.key_for(text, INJECTION_CHECKS, sem.threshold)
+        key = scan_cache.key_for(text, INJECTION_CHECKS, sem.threshold, sem.screen_url, sem.screen_threshold)
         hit, evidence = scan_cache.get(layout.state_dir, key, sem.taint_ttl_seconds)
         if not hit:
+            # Optional fast screen first; if it is off or fails, the main
+            # service scores every segment.
             status, finding = semantic_scan.scan_detailed(
-                tool_name, text, SemanticClient.from_policy(sem), sem.threshold)
+                tool_name, text, SemanticClient.from_policy(sem), sem.threshold,
+                SemanticClient.screen_from_policy(sem), sem.screen_threshold)
             if status != "ok":
                 return {}  # service down: no scrutiny added, and don't cache it
             evidence = finding.evidence() if finding is not None else None

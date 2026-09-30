@@ -2,7 +2,7 @@
 
 Agents re-read the same files constantly, and each scan is ~0.2-0.8 s. Caching
 by content hash makes a repeat scan of unchanged content free. The cache is
-keyed by the text hash AND a fingerprint of the checks/model/threshold, so
+keyed by the text hash AND a fingerprint of the checks/threshold/screen, so
 changing any of those invalidates old entries automatically.
 
 Correctness note: a cached "no finding" persists for the TTL, so if the model
@@ -58,8 +58,13 @@ def put(state_dir: Path, key: str, finding: Any, now: float | None = None) -> No
         pass
 
 
-def key_for(text: str, checks: dict, threshold: float) -> str:
+def key_for(text: str, checks: dict, threshold: float, screen_url: str = "", screen_threshold: float = 0.2) -> str:
     import hashlib
 
-    sig = json.dumps({"c": checks, "t": threshold}, sort_keys=True)
+    fingerprint: dict[str, Any] = {"c": checks, "t": threshold}
+    # The screen can drop segments, so it changes results and joins the key.
+    # Without one the key is unchanged, so existing entries stay valid.
+    if screen_url:
+        fingerprint["s"] = [screen_url, screen_threshold]
+    sig = json.dumps(fingerprint, sort_keys=True)
     return hashlib.sha256((sig + "\0" + text).encode("utf-8", "replace")).hexdigest()
