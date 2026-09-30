@@ -17,4 +17,8 @@ RUN mkdir -p /tmp/workspace && chown executor:executor /tmp/workspace
 WORKDIR /app
 USER executor
 
+# A one-shot worker with no port: there is nothing meaningful to probe, and
+# the orchestrator sees its exit code. Declared so the choice is explicit.
+HEALTHCHECK NONE
+
 ENTRYPOINT ["python", "-m", "sandbox.agents.executor"]

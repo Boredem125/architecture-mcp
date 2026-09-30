@@ -57,6 +57,12 @@ broadcaster = EventBroadcaster()
 
 @router.websocket("/ws/events")
 async def websocket_events(ws: WebSocket) -> None:
+    # Browsers can't set headers on a WebSocket, so the token is a query parameter.
+    from sandbox.api.auth import role_for
+
+    if role_for(ws.query_params.get("token")) != "approver":
+        await ws.close(code=1008)  # policy violation
+        return
     await broadcaster.connect(ws)
     try:
         for event in broadcaster.recent_events(20):

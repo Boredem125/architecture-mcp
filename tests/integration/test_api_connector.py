@@ -19,7 +19,10 @@ from sandbox.connector.queue import EscalationQueue
 
 @pytest.fixture
 def client():
-    return TestClient(create_app())
+    from sandbox.api.auth import ensure_tokens
+
+    app = create_app()
+    return TestClient(app, headers={"Authorization": f"Bearer {ensure_tokens()[1]}"})
 
 
 @pytest.fixture

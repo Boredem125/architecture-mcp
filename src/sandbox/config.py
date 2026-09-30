@@ -119,7 +119,7 @@ class SandboxConfig(BaseSettings):
 
     environment: str = Field(default="development")
     log_level: str = Field(default="INFO")
-    api_host: str = Field(default="0.0.0.0")
+    api_host: str = Field(default="127.0.0.1")
     api_port: int = Field(default=8000)
 
     nats: NATSSettings = Field(default_factory=NATSSettings)

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Shield, Square, CheckCircle, XCircle, Terminal, MessageSquare, ArrowLeft } from 'lucide-react';
-import { apiFetch } from '../api/client';
+import { apiFetch, apiToken } from '../api/client';
 
 interface OutputLine {
   stream: string;
@@ -62,7 +62,7 @@ export default function LiveSession() {
   // WebSocket for live streaming
   useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/events`);
+    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/events?token=${encodeURIComponent(apiToken())}`);
     wsRef.current = ws;
 
     ws.onmessage = (evt) => {

@@ -8,6 +8,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from sandbox.api.auth import TokenAuthMiddleware, ensure_tokens
 from sandbox.api.routes import agent_runtime, agents, audit, connector, dashboard, e2b, health, hitl, hook, launcher, policies, requests, security, sessions
 from sandbox.api.websocket import broadcaster, router as ws_router
 from sandbox.agents.runtime import AgentRuntime
@@ -130,6 +131,8 @@ def create_app(config: SandboxConfig | None = None) -> FastAPI:
         lifespan=lifespan,
     )
 
+    ensure_tokens()
+    app.add_middleware(TokenAuthMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://localhost:3000"],

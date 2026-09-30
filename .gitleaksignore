@@ -1,0 +1,5 @@
+# Reviewed false positives (commit:file:rule:line). Keep each with a reason.
+
+# The public jwt.io example token ({"sub": "1234567890"}), a fixture for the
+# secret scanner's own JWT test. Not a credential.
+f303cc5651900177fc210661e11365db39bf976c:tests/security/test_secret_scanning.py:jwt:45

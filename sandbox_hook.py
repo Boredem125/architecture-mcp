@@ -16,6 +16,14 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 _SESSION_FILE = os.path.join(_DIR, "sandbox_session.json")
 
 
+def _agent_token():
+    try:
+        with open(_SESSION_FILE, encoding="utf-8") as f:
+            return json.load(f).get("agent_token", "")
+    except Exception:
+        return ""
+
+
 def _load_session() -> tuple[str, str]:
     try:
         with open(_SESSION_FILE, encoding="utf-8") as f:
@@ -40,7 +48,7 @@ def evaluate(tool_name: str, tool_input: dict) -> None:
     req = urllib.request.Request(
         sandbox_url,
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {_agent_token()}"},
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:

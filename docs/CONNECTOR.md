@@ -219,6 +219,20 @@ sandbox uninstall [PATH] [--keep-data] [--yes]
 
 ## The REST view (optional dashboard surface)
 
+**API authentication.** Every route except `/health`, `/ready` and the
+OpenAPI docs needs a bearer token. There are two, with different powers:
+
+| token | env var | can |
+|---|---|---|
+| agent | `SANDBOX_AGENT_TOKEN` | submit broker requests, have hook calls evaluated, use `/e2b/v1` |
+| approver | `SANDBOX_APPROVER_TOKEN` | everything, including approve/deny, launch, policies, the dashboard and `/ws/events` |
+
+`sandbox serve` binds `127.0.0.1` and, if the tokens are unset, generates
+them for that run and prints the dashboard URL with the approver token once.
+It refuses a non-loopback `--host` unless both are set. The launcher gives
+jailed agents the agent token only, so an agent can ask for a privileged
+command but can't approve it.
+
 When the API server is running (`sandbox serve` / uvicorn), a thin, read-through
 view over any folder's `.sandbox/` is mounted at `/api/v1/connector`. It holds
 **no** in-memory state — every call reads the folder fresh:

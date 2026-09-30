@@ -17,6 +17,7 @@ if "%BROKER_URL%"=="" (
 
 curl -s -X POST "%BROKER_URL%/request" ^
     -H "Content-Type: application/json" ^
+    -H "Authorization: Bearer %SANDBOX_AGENT_TOKEN%" ^
     -d "{\"session_id\":\"%SESSION_ID%\",\"run_id\":\"%RUN_ID%\",\"command\":\"cmd %FULL_CMD%\",\"jail_dir\":\"%JAIL_DIR%\"}" ^
     > "%TEMP%\broker_response.json" 2>nul
 

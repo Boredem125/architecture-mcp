@@ -42,6 +42,6 @@ class TestSecretScanner:
         assert "[REDACTED:" in redacted
 
     def test_jwt_detected(self):
-        text = "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+        text = "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"  # gitleaks:allow (public jwt.io example token)
         has_secrets, matches = self.scanner.scan(text)
         assert has_secrets

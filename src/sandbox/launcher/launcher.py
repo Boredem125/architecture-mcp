@@ -229,6 +229,11 @@ class AppLauncher:
         env["SANDBOX_RUN_ID"] = run_id
         env["SANDBOX_JAIL_DIR"] = str(jail_dir)
         env["SANDBOX_BROKER_URL"] = "http://localhost:8000/api/v1/broker"
+        # The agent token can submit broker requests but never approve them.
+        from sandbox.api.auth import APPROVER_ENV, ensure_tokens
+
+        env["SANDBOX_AGENT_TOKEN"] = ensure_tokens()[0]
+        env.pop(APPROVER_ENV, None)
         env["SANDBOX_APP_TYPE"] = app_type
         env["SANDBOX_APP_DISPLAY"] = entry.display_name
         env["SANDBOX_TASK"] = task_description

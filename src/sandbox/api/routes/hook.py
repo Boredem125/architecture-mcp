@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from sandbox.api.auth import ensure_tokens
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -252,7 +253,8 @@ def _auto_install(workspace: str, session_id: str, hook_script: str, hooks_confi
     session_config_path = workspace_path / "sandbox_session.json"
     try:
         session_config_path.write_text(
-            json.dumps({"session_id": session_id, "sandbox_url": "http://localhost:8000/api/v1/hook/evaluate"}, indent=2),
+            json.dumps({"session_id": session_id, "sandbox_url": "http://localhost:8000/api/v1/hook/evaluate",
+                        "agent_token": ensure_tokens()[0]}, indent=2),
             encoding="utf-8",
         )
     except Exception as e:
@@ -336,6 +338,14 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 _SESSION_FILE = os.path.join(_DIR, "sandbox_session.json")
 
 
+def _agent_token():
+    try:
+        with open(_SESSION_FILE, encoding="utf-8") as f:
+            return json.load(f).get("agent_token", "")
+    except Exception:
+        return ""
+
+
 def _load_session():
     try:
         with open(_SESSION_FILE, encoding="utf-8") as f:
@@ -391,7 +401,7 @@ def evaluate(tool_name, tool_input):
     req = urllib.request.Request(
         sandbox_url,
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {_agent_token()}"},
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:

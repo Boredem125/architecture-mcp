@@ -18,6 +18,20 @@ documents the project's own attack surface, not just the security it provides.
 - **Self-protection is non-removable.** `.sandbox/**` write-deny and `\.sandbox` shell-deny
   are re-injected on every policy load; the control plane cannot be edited via the agent.
 
+## Fixed: unauthenticated HTTP API (1 Oct 2026)
+
+The optional HTTP API (`sandbox serve`) had no authentication and bound
+`0.0.0.0` by default. Anyone who could reach it, including a jailed agent,
+could submit a command to the privilege broker, approve it with a made-up
+reviewer ID, and have it run outside the jail (`shell=True`). Found while
+triaging a Semgrep `subprocess-shell-true` note on the broker.
+
+Fix: loopback bind by default; bearer tokens on every route except health
+and docs; separate agent and approver tokens, where the agent token can only
+reach submit/evaluate routes (see [docs/CONNECTOR.md](docs/CONNECTOR.md)).
+Regression tests: `tests/security/test_api_auth.py`. The folder connector
+(hooks + MCP over stdio) opens no port and was not affected.
+
 ## Known trust assumptions
 
 See [docs/TCB.md](docs/TCB.md). In brief: the `.sandbox/` folder is trusted infrastructure,

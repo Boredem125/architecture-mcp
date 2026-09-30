@@ -49,10 +49,14 @@ services:
       context: .
       dockerfile: docker/Dockerfile.sandbox
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       - SANDBOX_ENVIRONMENT=production
       - SANDBOX_LOG_LEVEL=INFO
+      # Required: the API refuses unauthenticated requests, and with several
+      # workers per-process generated tokens would differ between workers.
+      - SANDBOX_AGENT_TOKEN=${SANDBOX_AGENT_TOKEN:?set SANDBOX_AGENT_TOKEN}
+      - SANDBOX_APPROVER_TOKEN=${SANDBOX_APPROVER_TOKEN:?set SANDBOX_APPROVER_TOKEN}
       - NATS_URL=nats://nats:4222
       - REDIS_URL=redis://redis:6379/0
       - OPA_URL=http://opa:8181

@@ -296,9 +296,12 @@ class PrivilegeBroker:
         try:
             result = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: subprocess.run(
+                # shell=True is the point: the approver approved this exact
+                # shell string (pipes, redirects). Only the approver token can
+                # approve (sandbox/api/auth.py); agents can only submit.
+                lambda: subprocess.run(  # nosemgrep: python.lang.security.audit.subprocess-shell-true.subprocess-shell-true
                     req.command,
-                    shell=True,
+                    shell=True,  # nosemgrep: python.lang.security.audit.subprocess-shell-true.subprocess-shell-true
                     capture_output=True,
                     text=True,
                     timeout=self._exec_timeout,

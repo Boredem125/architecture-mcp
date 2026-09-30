@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { apiToken } from '../api/client';
 
 export interface PipelineEvent {
   event: string;
@@ -33,7 +34,7 @@ export function useWebSocket(maxEvents = 200) {
     const host = window.location.hostname;
     // In dev, Vite proxies /api but not /ws — connect directly to backend
     const port = import.meta.env.DEV ? '8000' : window.location.port;
-    const ws = new WebSocket(`${protocol}//${host}:${port}/ws/events`);
+    const ws = new WebSocket(`${protocol}//${host}:${port}/ws/events?token=${encodeURIComponent(apiToken())}`);
 
     ws.onopen = () => {
       setConnected(true);
