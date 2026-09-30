@@ -115,6 +115,8 @@ sandbox semantic trust AGENTS.md --reviewer alice --reason "house rules for agen
 
 It still misses real attacks. And it can't tell legitimate instructions to AI agents (`AGENTS.md`, `CLAUDE.md`) from malicious ones. For those files, a human reviews once with `sandbox semantic trust`: the file isn't scanned while its content is byte-for-byte what was reviewed, and any edit (say, a pull request that slips in a line) makes it scanned again. That's why it only ever *raises* scrutiny while authorization stays in charge. Costs ~1 s per scanned tool output on a laptop CPU.
 
+**Optional two-stage screen.** Set `semantic.screen_url` in `.sandbox/policy.json` to a second `jevos serve` running the `xsmall` model. It scores every sentence first, and only sentences whose top score reaches `semantic.screen_threshold` (default 0.2, set low to favor recall) are re-scored by the main service, whose scores alone decide. If the screen is down or errors, the main service scores every sentence, as without it. Off by default. Its effect on speed and accuracy has not been measured yet; a sentence the screen drops is never seen by the main model, so benchmark it before relying on it.
+
 ## Governance-as-code (optional)
 
 Beyond the security checks, you can write **plain-language governance clauses** ("no customer data to external services", "no production changes without a human", "no moving money on its own"), each compiled to a jev-os check plus a deterministic gate, evaluated on escalated commands, and recorded as evidence with a framework mapping (EU AI Act, GDPR, SR 11-7). Clauses only raise scrutiny.

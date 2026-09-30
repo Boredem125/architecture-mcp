@@ -180,46 +180,89 @@ def reason(scores: dict[str, float], threshold: float) -> tuple[str, float]:
     return "addresses_ai+requests_action", min(scores["addresses_ai"], scores["requests_action"])
 
 
-def scan_detailed(tool_name: str, text: str, client: SemanticClient, threshold: float) -> tuple[str, "InjectionFinding | None"]:
+def screened(segs: list[str], screen: SemanticClient | None, screen_threshold: float) -> tuple[list[int], float]:
+    """(indices the main service must score, screen latency in ms).
+
+    Stage 1 of the optional two-stage scan: a fast model scores every segment
+    and only those whose top score reaches screen_threshold go on. No screen,
+    or any screen failure, keeps every segment: an outage must never skip a scan.
+    """
+    everything = list(range(len(segs)))
+    if screen is None:
+        return everything, 0.0
+    try:
+        results = screen.ask_many(segs, INJECTION_CHECKS)
+    except Exception:  # noqa: BLE001 — a broken screen falls back, never skips
+        results = None
+    if results is None or len(results) != len(segs):
+        return everything, 0.0
+    keep = [i for i, r in enumerate(results) if r.top()[1] >= screen_threshold]
+    return keep, sum(r.latency_ms for r in results)
+
+
+def scan_detailed(
+    tool_name: str,
+    text: str,
+    client: SemanticClient,
+    threshold: float,
+    screen: SemanticClient | None = None,
+    screen_threshold: float = 0.2,
+) -> tuple[str, "InjectionFinding | None"]:
     """(status, finding). status is "ok" (the model answered) or "unavailable"
     (service down/slow). finding is None when nothing reached the threshold.
 
     The distinction matters for caching: an "ok"/None is a real clean result and
     may be cached; "unavailable" must not be, or an outage would suppress scans.
+
+    With a screen, the main service only scores the segments the screen passes
+    on (see screened()); the verdict still uses main-service scores only.
+    "unavailable" refers to the main service; a screen outage is not one.
     """
     segs = prepare(text)
     if not segs:
         return "ok", None
-    results = client.ask_many(segs, INJECTION_CHECKS)
-    if not results:
+    keep, screen_ms = screened(segs, screen, screen_threshold)
+    if not keep:
+        return "ok", None  # the screen cleared every segment
+    results = client.ask_many([segs[i] for i in keep], INJECTION_CHECKS)
+    if not results or len(results) != len(keep):
         return "unavailable", None
-    flagged = [i for i, r in enumerate(results) if verdict(r.scores, threshold) == "high"]
+    flagged = [j for j, r in enumerate(results) if verdict(r.scores, threshold) == "high"]
     if not flagged:
         return "ok", None
-    worst = max(flagged, key=lambda i: reason(results[i].scores, threshold)[1])
+    worst = max(flagged, key=lambda j: reason(results[j].scores, threshold)[1])
     top_check, top_score = reason(results[worst].scores, threshold)
-    return "ok", _finding(tool_name, results, worst, top_check, top_score, text, segs)
+    return "ok", _finding(tool_name, results, worst, keep[worst], top_check, top_score, text, segs, screen_ms)
 
 
-def scan(tool_name: str, text: str, client: SemanticClient, threshold: float) -> InjectionFinding | None:
+def scan(
+    tool_name: str,
+    text: str,
+    client: SemanticClient,
+    threshold: float,
+    screen: SemanticClient | None = None,
+    screen_threshold: float = 0.2,
+) -> InjectionFinding | None:
     """A finding if any segment's verdict is "high", else None (also when the
     service is unavailable — no extra scrutiny, never less)."""
-    return scan_detailed(tool_name, text, client, threshold)[1]
+    return scan_detailed(tool_name, text, client, threshold, screen, screen_threshold)[1]
 
 
-def _finding(tool_name, results, worst, top_check, top_score, text, segs) -> InjectionFinding:
+def _finding(tool_name, results, worst, seg_index, top_check, top_score, text, segs, screen_ms=0.0) -> InjectionFinding:
+    # worst indexes results (the segments the main service scored); seg_index is
+    # the same segment's position in the full text.
     return InjectionFinding(
         tool=tool_name,
         scores=results[worst].scores,
         top_check=top_check,
         top_score=top_score,
         model=results[worst].model,
-        latency_ms=sum(r.latency_ms for r in results),
+        latency_ms=screen_ms + sum(r.latency_ms for r in results),
         text_sha256=_sha(text),
         text_chars=len(text),
-        segment_index=worst,
+        segment_index=seg_index,
         segment_count=len(segs),
-        segment_sha256=_sha(segs[worst]),
+        segment_sha256=_sha(segs[seg_index]),
     )
 
 

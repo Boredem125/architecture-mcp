@@ -37,6 +37,15 @@ class SemanticClient:
     def from_policy(cls, semantic_policy: Any) -> "SemanticClient":
         return cls(semantic_policy.url, semantic_policy.api_key_env, semantic_policy.timeout_seconds)
 
+    @classmethod
+    def screen_from_policy(cls, semantic_policy: Any) -> "SemanticClient | None":
+        """The fast stage-1 screen (a second service, e.g. the xsmall model), or
+        None when no screen is configured. Same key and timeout as the main one."""
+        url = getattr(semantic_policy, "screen_url", "")
+        if not url:
+            return None
+        return cls(url, semantic_policy.api_key_env, semantic_policy.timeout_seconds)
+
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
