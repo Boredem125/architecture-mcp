@@ -57,7 +57,7 @@ cannot silently fork it); every terminal record is Ed25519-signed (non-repudiati
 fatigue** — burying one bad request in a flood of benign ones.
 **Control.** The approver panel shows *identity + risk band + reason code + the itemized
 risk factors* (including any `semantic-taint` factor that explains *why* an ordinarily
-allowlisted action is in front of them), not just the command string, so the human sees why it matters. Critical-risk
+allowlisted action is in front of them), and — for a shell command — *what the command actually does* (network, download-and-run, delete, privilege, exfiltration; [safety/command_actions.py](../src/sandbox/safety/command_actions.py)) next to the agent's own one-line description, so a description like "check git status" on a command that deletes files is visible to the human. (Judging the match automatically was tried with the model and was too noisy to ship — it is shown for the human to compare, not auto-blocked.), not just the command string, so the human sees why it matters. Critical-risk
 actions require **two** approvers (dual control). *Roadmap:* approval-fatigue detection
 raises scrutiny when approval rate spikes (see [ROADMAP.md](ROADMAP.md)).
 

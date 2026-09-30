@@ -359,6 +359,11 @@ async def _escalate_shell(
     queue = EscalationQueue(layout)
     tool_input = payload.get("tool_input", {}) or {}
     ident_dict = identity.to_dict() if identity is not None else {}
+    # What the command actually does, shown to the approver next to the agent's
+    # own description so a misleading description (Goal 6) is visible.
+    from sandbox.safety.command_actions import describe as _describe_command
+
+    actual_actions = [{"tag": t, "label": lbl} for t, lbl in _describe_command(result.command)]
     record = {
         "root": str(layout.root),
         "session_id": session_id,
@@ -369,6 +374,8 @@ async def _escalate_shell(
         "command": result.command,
         "exec_cwd": str(layout.root),
         "reason": tool_input.get("description", "") or "Model requested a shell command",
+        "described_as": tool_input.get("description", ""),
+        "actual_actions": actual_actions,
         "tool_name": tool_name,
         "identity": ident_dict,
         "risk": result.risk,

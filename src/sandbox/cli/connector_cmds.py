@@ -383,7 +383,10 @@ def watch_cmd(path: str, reviewer: str, once: bool) -> None:
             dual = "  *** DUAL CONTROL ***" if rec.get("requires_dual") else ""
             click.echo(f"Risk    : {risk.get('score','?')}/100 -> {band}{dual}")
         click.echo(f"Command : {rec.get('command', '')}")
-        click.echo(f"Reason  : {rec.get('reason', '')}")
+        click.echo(f"Agent says: {rec.get('described_as') or '(no description)'}")
+        actions = rec.get("actual_actions") or []
+        if actions:
+            click.echo("Actually: " + "; ".join(a["label"] for a in actions))
         click.echo(f"          (use `sandbox explain {rid}` for the full breakdown)")
         choice = click.prompt("[a]pprove / [d]eny / [s]kip", default="s").strip().lower()
         if choice == "a":
@@ -672,6 +675,12 @@ def explain_cmd(request_id: str, path: str, as_json: bool) -> None:
                f"(model {ident.get('model') or '?'}, trust {ident.get('trust_level','?')})")
     click.echo(f"Operator:  {ident.get('user') or '?'}   project {ident.get('project') or '?'}")
     click.echo(f"Action:    {rec.get('command') or rec.get('path') or rec.get('url') or '?'}")
+    if rec.get("described_as"):
+        click.echo(f"Agent says: {rec['described_as']}")
+    actions = rec.get("actual_actions") or []
+    if actions:
+        click.echo("Actually:  " + "; ".join(a["label"] for a in actions)
+                   + "  (compare with what the agent says above)")
     click.echo(f"Trigger:   {', '.join(rec.get('trigger', []))}   "
                f"reason_code {rec.get('reason_code','?')}")
     if risk:
