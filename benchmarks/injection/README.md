@@ -53,3 +53,29 @@ Rules were compared on cached per-sentence scores for 7 candidate checks, chosen
 - **Neither is enough alone, which is why detection only ever raises scrutiny.** Authorization still decides what can run.
 
 These are baseline numbers. The planned distilled single-pass model and the red-team loop have to beat them.
+
+## Larger held-out set: neuralchemy (942 texts)
+
+[neuralchemy/Prompt-injection-dataset](https://huggingface.co/datasets/neuralchemy/Prompt-injection-dataset), `core` test split (Apache-2.0), fetched and cached at run time. Nothing was tuned on it.
+
+| System | Caught | False alarms | Precision | F1 |
+|---|---|---|---|---|
+| regex (current gateway) | 156/552 | **3/390** | 0.98 | 0.44 |
+| semantic | **324/552** | 86/390 | 0.79 | 0.67 |
+
+Per category (rows flagged):
+
+| Category | Rows | Regex | Semantic |
+|---|---|---|---|
+| direct_injection | 314 | 28 | **200** |
+| jailbreak | 50 | 6 | **27** |
+| adversarial (obfuscated suffixes) | 79 | **72** | 33 |
+| encoding | 30 | **26** | 8 |
+| benign (false alarms) | 381 | **3** | 83 |
+
+What this set shows that the small ones didn't:
+
+- **The two detectors are complementary.** The semantic layer catches about 2x more overall and ~7x more plain-language injections. The regex wins clearly on obfuscated and encoded attacks, which a language model can't read. Combining them is the next measurement.
+- **False alarms are much higher here (86/390).** Most come from ordinary chat requests ("Write a haiku about autumn leaves", "Can you help me plan a birthday party?"). This dataset is chat prompts, where every message is an instruction to an AI. The checks are built for untrusted *content* (a README, a web page, tool output), where text addressing the AI is itself the anomaly. So this set measures the detector partly outside its job. Some rows labelled benign are also plainly harmful requests carrying attack suffixes (label noise).
+- **It is not an agent benchmark.** It has a single `indirect_injection` row. The better fit, [prodnull/prompt-injection-repo-dataset](https://huggingface.co/datasets/prodnull/prompt-injection-repo-dataset) (injections in repository files, Apache-2.0), is gated and needs a Hugging Face token.
+- **Latency on longer texts:** 633 ms median, 3.3 s p95 per text (in-process, laptop CPU).
