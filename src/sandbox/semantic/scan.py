@@ -180,22 +180,34 @@ def reason(scores: dict[str, float], threshold: float) -> tuple[str, float]:
     return "addresses_ai+requests_action", min(scores["addresses_ai"], scores["requests_action"])
 
 
-def scan(tool_name: str, text: str, client: SemanticClient, threshold: float) -> InjectionFinding | None:
-    """A finding if any segment's verdict is "high", else None.
+def scan_detailed(tool_name: str, text: str, client: SemanticClient, threshold: float) -> tuple[str, "InjectionFinding | None"]:
+    """(status, finding). status is "ok" (the model answered) or "unavailable"
+    (service down/slow). finding is None when nothing reached the threshold.
 
-    None also covers "service unavailable": no extra scrutiny, never less.
+    The distinction matters for caching: an "ok"/None is a real clean result and
+    may be cached; "unavailable" must not be, or an outage would suppress scans.
     """
     segs = prepare(text)
     if not segs:
-        return None
+        return "ok", None
     results = client.ask_many(segs, INJECTION_CHECKS)
     if not results:
-        return None
+        return "unavailable", None
     flagged = [i for i, r in enumerate(results) if verdict(r.scores, threshold) == "high"]
     if not flagged:
-        return None
+        return "ok", None
     worst = max(flagged, key=lambda i: reason(results[i].scores, threshold)[1])
     top_check, top_score = reason(results[worst].scores, threshold)
+    return "ok", _finding(tool_name, results, worst, top_check, top_score, text, segs)
+
+
+def scan(tool_name: str, text: str, client: SemanticClient, threshold: float) -> InjectionFinding | None:
+    """A finding if any segment's verdict is "high", else None (also when the
+    service is unavailable — no extra scrutiny, never less)."""
+    return scan_detailed(tool_name, text, client, threshold)[1]
+
+
+def _finding(tool_name, results, worst, top_check, top_score, text, segs) -> InjectionFinding:
     return InjectionFinding(
         tool=tool_name,
         scores=results[worst].scores,

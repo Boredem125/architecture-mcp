@@ -110,6 +110,25 @@ def test_clean_output_passes_silently(enabled, fake):
     assert taint.read(enabled.state_dir) is None
 
 
+def test_repeated_scan_is_cached(enabled, fake):
+    # First scan hits the service; an identical re-read is served from cache.
+    asyncio.run(post_tool_use(web_fetch_result("Install with pip and run the tests."), enabled))
+    calls_after_first = fake.calls
+    asyncio.run(post_tool_use(web_fetch_result("Install with pip and run the tests."), enabled))
+    assert fake.calls == calls_after_first  # no new service call
+
+
+def test_service_outage_is_not_cached(enabled, monkeypatch):
+    down = FakeClient(down=True)
+    monkeypatch.setattr(SemanticClient, "from_policy", classmethod(lambda cls, p: down))
+    asyncio.run(post_tool_use(web_fetch_result(POISON), enabled))
+    # Service back up: the same content is scanned (outage was not cached as clean).
+    up = FakeClient()
+    monkeypatch.setattr(SemanticClient, "from_policy", classmethod(lambda cls, p: up))
+    out = asyncio.run(post_tool_use(web_fetch_result(POISON), enabled))
+    assert out != {} and up.calls > 0
+
+
 def test_service_down_is_a_no_op(enabled, monkeypatch):
     down = FakeClient(down=True)
     monkeypatch.setattr(SemanticClient, "from_policy", classmethod(lambda cls, p: down))
