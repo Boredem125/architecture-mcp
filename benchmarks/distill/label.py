@@ -2,6 +2,10 @@
 
     python benchmarks/distill/label.py --select        # choose what to label
     python benchmarks/distill/label.py --run           # label it (resumable)
+    python benchmarks/distill/label.py --run --kind docs --model openai/gpt-oss-20b --limit 1500
+
+Groq rate limits are per model, so the two kinds can run in parallel on
+different models; each model appends to its own labels file.
 
 What gets labelled (never a held-out row):
 - "disputed" pool rows: 5-fold out-of-fold student predictions that disagree
@@ -45,7 +49,18 @@ from sandbox.semantic.redact import redact  # noqa: E402
 URL = "https://api.groq.com/openai/v1/chat/completions"
 MODEL = "openai/gpt-oss-120b"
 QUEUE = bench.CACHE / "distill-label-queue.jsonl"
-LABELS = bench.CACHE / "distill-groq-labels.jsonl"
+LABELS = bench.CACHE / "distill-groq-labels.jsonl"  # gpt-oss-120b; other models get their own file
+
+
+def labels_file(model: str) -> Path:
+    return LABELS if model == MODEL else bench.CACHE / f"distill-groq-labels-{model.split('/')[-1]}.jsonl"
+
+
+def labelled_ids() -> set[str]:
+    done = set()
+    for path in bench.CACHE.glob("distill-groq-labels*.jsonl"):
+        done |= {json.loads(line)["id"] for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
+    return done
 BATCH = 20
 
 CATEGORIES = ["override_instructions", "exfiltration", "unrequested_action", "behaviour_change",
@@ -83,9 +98,9 @@ def schema(n: int) -> dict:
         "properties": {"labels": {"type": "array", "items": item, "minItems": n, "maxItems": n}}}}
 
 
-def ask(key: str, items: list[str]) -> list[dict]:
+def ask(key: str, items: list[str], model: str = MODEL) -> list[dict]:
     listing = "\n\n".join(f"<item i={i}>\n{t[:1500]}\n</item>" for i, t in enumerate(items))
-    body = {"model": MODEL, "temperature": 0, "reasoning_effort": "low",
+    body = {"model": model, "temperature": 0, "reasoning_effort": "low",
             "messages": [{"role": "system", "content": SYSTEM},
                          {"role": "user", "content": f"Label all {len(items)} items.\n\n{listing}"}],
             "response_format": {"type": "json_schema", "json_schema": schema(len(items))}}
@@ -154,20 +169,18 @@ def select() -> None:
     print(f"queued {len(disputed)} disputed pool rows (of {len(rows)}) and {len(docs)} documentation lines")
 
 
-def run_labels(limit: int) -> None:
+def run_labels(limit: int, kind: str, model: str) -> None:
     key = api_key()
     queue = [json.loads(line) for line in QUEUE.read_text(encoding="utf-8").splitlines() if line.strip()]
-    done = set()
-    if LABELS.exists():
-        done = {json.loads(line)["id"] for line in LABELS.read_text(encoding="utf-8").splitlines() if line.strip()}
-    todo = [q for q in queue if q["id"] not in done][:limit]
-    print(f"{len(done)} already labelled, {len(todo)} to go")
-    with LABELS.open("a", encoding="utf-8") as out:
+    done = labelled_ids()
+    todo = [q for q in queue if q["id"] not in done and (not kind or q["kind"] == kind)][:limit]
+    print(f"{len(done)} already labelled, {len(todo)} to go with {model}")
+    with labels_file(model).open("a", encoding="utf-8") as out:
         for start in range(0, len(todo), BATCH):
             chunk = todo[start:start + BATCH]
-            for q, lab in zip(chunk, ask(key, [q["text"] for q in chunk])):
+            for q, lab in zip(chunk, ask(key, [q["text"] for q in chunk], model)):
                 out.write(json.dumps({"id": q["id"], "kind": q["kind"], "injection": lab["injection"],
-                                      "category": lab["category"], "model": MODEL}) + "\n")
+                                      "category": lab["category"], "model": model}) + "\n")
             out.flush()
             print(f"  {start + len(chunk)}/{len(todo)}", flush=True)
 
@@ -177,11 +190,13 @@ def main() -> None:
     ap.add_argument("--select", action="store_true")
     ap.add_argument("--run", action="store_true")
     ap.add_argument("--limit", type=int, default=100_000)
+    ap.add_argument("--kind", choices=["disputed", "docs"], default=None)
+    ap.add_argument("--model", default=MODEL)
     args = ap.parse_args()
     if args.select:
         select()
     if args.run:
-        run_labels(args.limit)
+        run_labels(args.limit, args.kind, args.model)
 
 
 if __name__ == "__main__":

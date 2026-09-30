@@ -36,15 +36,23 @@ QUEUE = bench.CACHE / "distill-label-queue.jsonl"
 
 
 def load_pool(labels: str) -> list[dict]:
-    """The training pool. With labels="groq", disputed rows take the labeller's
-    answer and the labelled documentation lines are added."""
+    """The training pool.
+
+    dataset  the datasets' own labels
+    groq     disputed rows take the labeller's answer
+    agree    disputed rows where the labeller and the dataset disagree are dropped
+    Both labeller modes also add the labelled documentation lines.
+    """
     rows = [json.loads(line) for line in POOL.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if labels == "groq":
+    if labels in ("groq", "agree"):
         groq = {}
-        for line in LABELS.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                g = json.loads(line)
-                groq[g["id"]] = int(g["injection"])
+        for path in sorted(LABELS.parent.glob("distill-groq-labels*.jsonl")):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    g = json.loads(line)
+                    groq[g["id"]] = int(g["injection"])
+        if labels == "agree":
+            rows = [r for r in rows if groq.get(r["id"], r["label"]) == r["label"]]
         for r in rows:
             r["label"] = groq.get(r["id"], r["label"])
         queue = [json.loads(line) for line in QUEUE.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -120,7 +128,7 @@ class _RuntimeAdapter:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--labels", choices=["dataset", "groq"], default="dataset")
+    ap.add_argument("--labels", choices=["dataset", "groq", "agree"], default="dataset")
     ap.add_argument("--exclude-source", default="",
                     help="train without this pool source (repo, neuralchemy, deepset) to measure transfer")
     ap.add_argument("--export", default="", help="also write the gateway model file here")
