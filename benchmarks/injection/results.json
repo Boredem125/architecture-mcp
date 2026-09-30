@@ -19,19 +19,19 @@
           "precision": 0.467,
           "f1": 0.359
         },
-        "semantic: taint": {
+        "semantic": {
           "caught": "19/24",
           "false_alarms": "5/24",
           "recall": 0.792,
           "precision": 0.792,
           "f1": 0.792
         },
-        "semantic: warn or taint": {
-          "caught": "19/24",
-          "false_alarms": "5/24",
-          "recall": 0.792,
-          "precision": 0.792,
-          "f1": 0.792
+        "regex OR semantic": {
+          "caught": "21/24",
+          "false_alarms": "11/24",
+          "recall": 0.875,
+          "precision": 0.656,
+          "f1": 0.75
         }
       },
       "missed": [
@@ -59,19 +59,19 @@
           "precision": 0.467,
           "f1": 0.359
         },
-        "semantic: taint": {
+        "semantic": {
           "caught": "16/24",
           "false_alarms": "5/24",
           "recall": 0.667,
           "precision": 0.762,
           "f1": 0.711
         },
-        "semantic: warn or taint": {
-          "caught": "16/24",
-          "false_alarms": "5/24",
-          "recall": 0.667,
-          "precision": 0.762,
-          "f1": 0.711
+        "regex OR semantic": {
+          "caught": "19/24",
+          "false_alarms": "11/24",
+          "recall": 0.792,
+          "precision": 0.633,
+          "f1": 0.704
         }
       },
       "missed": [
@@ -102,19 +102,19 @@
           "precision": 1.0,
           "f1": 0.125
         },
-        "semantic: taint": {
+        "semantic": {
           "caught": "31/60",
           "false_alarms": "1/56",
           "recall": 0.517,
           "precision": 0.969,
           "f1": 0.674
         },
-        "semantic: warn or taint": {
-          "caught": "31/60",
+        "regex OR semantic": {
+          "caught": "32/60",
           "false_alarms": "1/56",
-          "recall": 0.517,
-          "precision": 0.969,
-          "f1": 0.674
+          "recall": 0.533,
+          "precision": 0.97,
+          "f1": 0.688
         }
       },
       "missed": [
@@ -162,19 +162,19 @@
           "precision": 0.981,
           "f1": 0.439
         },
-        "semantic: taint": {
+        "semantic": {
           "caught": "324/552",
           "false_alarms": "86/390",
           "recall": 0.587,
           "precision": 0.79,
           "f1": 0.674
         },
-        "semantic: warn or taint": {
-          "caught": "324/552",
-          "false_alarms": "86/390",
-          "recall": 0.587,
-          "precision": 0.79,
-          "f1": 0.674
+        "regex OR semantic": {
+          "caught": "399/552",
+          "false_alarms": "88/390",
+          "recall": 0.723,
+          "precision": 0.819,
+          "f1": 0.768
         }
       },
       "missed": [
@@ -272,14 +272,14 @@
           "precision": 0.0,
           "f1": 0.0
         },
-        "semantic: taint": {
+        "semantic": {
           "caught": "26/39",
           "false_alarms": "1/56",
           "recall": 0.667,
           "precision": 0.963,
           "f1": 0.788
         },
-        "semantic: warn or taint": {
+        "regex OR semantic": {
           "caught": "26/39",
           "false_alarms": "1/56",
           "recall": 0.667,
@@ -440,7 +440,7 @@
     }
   },
   "semantic_ms_per_text": {
-    "p50": 633.3,
-    "p95": 3287.1
+    "p50": 300.1,
+    "p95": 3453.9
   }
 }

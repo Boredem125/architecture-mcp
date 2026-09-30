@@ -23,6 +23,7 @@ import argparse
 import json
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -90,6 +91,48 @@ def load_neuralchemy(split: str = "test") -> list[dict]:
     rows = _fetch_hf("neuralchemy/Prompt-injection-dataset", "core", split, f"neuralchemy-core-{split}.json")
     return [{"id": f"n{i}", "text": r["text"], "label": int(r["label"]), "category": r.get("category") or "?"}
             for i, r in enumerate(rows)]
+
+
+REPO_FILES = "prodnull/prompt-injection-repo-dataset"
+REPO_SAMPLE = 600  # the full 5,671 rows take ~1 h on a laptop CPU
+
+
+def load_repo_files(sample: int = REPO_SAMPLE, seed: int = 20260930) -> list[dict] | None:
+    """Injections planted in repository files (Apache-2.0, gated on Hugging Face).
+
+    Needs HF_TOKEN from an account that accepted the dataset's terms; returns
+    None (dataset skipped) without it. A fixed-seed stratified sample keeps the
+    run short and repeatable. Held out: nothing was tuned on it.
+    """
+    import os
+    import random
+
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    path = CACHE / "prodnull-repo-files-train.jsonl"
+    if not path.exists():
+        if not token:
+            return None
+        CACHE.mkdir(parents=True, exist_ok=True)
+        req = urllib.request.Request(
+            f"https://huggingface.co/datasets/{REPO_FILES}/resolve/main/train.jsonl",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                path.write_bytes(resp.read())
+        except urllib.error.HTTPError as e:
+            print(f"skipping {REPO_FILES}: HTTP {e.code} (accept the dataset terms on Hugging Face?)")
+            return None
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rng = random.Random(seed)
+    by_label: dict[int, list[int]] = {0: [], 1: []}
+    for i, r in enumerate(rows):
+        by_label[int(r["label"])].append(i)
+    picked = []
+    for label, idx in by_label.items():
+        share = round(sample * len(idx) / len(rows))
+        picked += rng.sample(idx, min(share, len(idx)))
+    return [{"id": f"r{i}", "text": rows[i]["text"], "label": int(rows[i]["label"])} for i in sorted(picked)]
 
 
 def genuine_view(rows: list[dict]) -> list[dict]:
@@ -166,6 +209,11 @@ def main() -> None:
                "embedded in a README (dev)": load_embedded(),
                "deepset test (held out)": deepset,
                "neuralchemy test (held out)": neural}
+    repo = load_repo_files()
+    if repo is None:
+        print(f"note: {REPO_FILES} skipped (gated; set HF_TOKEN after accepting its terms)")
+    else:
+        sources[f"repo files, {len(repo)}-row sample (held out)"] = repo
     preds: dict[str, dict[str, tuple[str, str]]] = {}
     for name, rows in sources.items():
         preds[name] = {r["id"]: (regex(r["text"]), sem(r["text"])) for r in rows}
@@ -179,7 +227,8 @@ def main() -> None:
         rx = [p[r["id"]][0] == "high" for r in rows]
         taint = [p[r["id"]][1] == "high" for r in rows]
         warn = [p[r["id"]][1] in ("high", "medium") for r in rows]
-        systems = {"regex (current gateway)": rx, "semantic: taint": taint, "semantic: warn or taint": warn}
+        systems = {"regex (current gateway)": rx, "semantic": taint,
+                   "regex OR semantic": [a or b for a, b in zip(rx, taint)]}
         report["results"][name] = {
             "n": len(rows),
             "systems": {k: metrics(v, labels) for k, v in systems.items()},
@@ -195,6 +244,10 @@ def main() -> None:
         c["regex"] += p[r["id"]][0] == "high"
         c["semantic"] += p[r["id"]][1] == "high"
     report["neuralchemy_by_category"] = cats
+
+    # Per-row predictions (not committed) so other combinations can be computed
+    # later without re-running the model.
+    (CACHE / f"preds-{args.model}.json").write_text(json.dumps(preds), encoding="utf-8")
 
     ms = sorted(sem.ms)
     report["semantic_ms_per_text"] = {"p50": round(ms[len(ms) // 2], 1), "p95": round(ms[int(0.95 * (len(ms) - 1))], 1)}

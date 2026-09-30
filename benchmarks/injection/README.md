@@ -79,3 +79,17 @@ What this set shows that the small ones didn't:
 - **False alarms are much higher here (86/390).** Most come from ordinary chat requests ("Write a haiku about autumn leaves", "Can you help me plan a birthday party?"). This dataset is chat prompts, where every message is an instruction to an AI. The checks are built for untrusted *content* (a README, a web page, tool output), where text addressing the AI is itself the anomaly. So this set measures the detector partly outside its job. Some rows labelled benign are also plainly harmful requests carrying attack suffixes (label noise).
 - **It is not an agent benchmark.** It has a single `indirect_injection` row. The better fit, [prodnull/prompt-injection-repo-dataset](https://huggingface.co/datasets/prodnull/prompt-injection-repo-dataset) (injections in repository files, Apache-2.0), is gated and needs a Hugging Face token.
 - **Latency on longer texts:** 633 ms median, 3.3 s p95 per text (in-process, laptop CPU).
+
+## Both detectors combined (regex OR semantic)
+
+| Dataset | Regex | Semantic | **Regex OR semantic** |
+|---|---|---|---|
+| neuralchemy test (held out, 942) | 156/552 caught, 3/390 FA | 324/552, 86/390 | **399/552, 88/390** (F1 0.77, best) |
+| deepset test (held out) | 4/60, 0/56 | 31/60, 1/56 | **32/60, 1/56** |
+| deepset, genuine attacks only | 0/39, 0/56 | 26/39, 1/56 | 26/39, 1/56 |
+| agent_set (dev) | 7/24, 8/24 | 19/24, 5/24 | 21/24, **11/24** |
+| embedded in a README (dev) | 7/24, 8/24 | 16/24, 5/24 | 19/24, **11/24** |
+
+- **On held-out data, combining is the best system.** On neuralchemy it catches 399 of 552 attacks (72%) for only 2 more false alarms than the semantic layer alone. The regex adds the obfuscated and encoded attacks the model can't read.
+- **On developer text the regex's noise comes back.** Combined false alarms roughly double (5 → 11 of 24) on the README-style sets, from phrases like "act as a cache" and `system: linux`. In the gateway every false alarm is an approval prompt, so combining the whole regex isn't free.
+- **The likely best design is selective:** keep the semantic layer as the main detector, and add only the regex rules for obfuscation and encoding (base64 blobs, chat-template tokens, entropy), which is where the regex wins, rather than its plain-language phrase list, where it's noisy. That is the next experiment; per-row predictions are saved (`benchmarks/.cache/preds-base.json`) so it can be computed without re-running the model.
