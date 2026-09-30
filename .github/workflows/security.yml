@@ -1,0 +1,182 @@
+# Security scans on every push and pull request.
+#
+#   Semgrep   SAST           fails on ERROR findings
+#   Gitleaks  secrets        fails on any finding (full git history)
+#   Trivy     dependencies,  fails on HIGH/CRITICAL
+#             config, secrets
+#   ZAP       DAST: API scan of the gateway's own FastAPI endpoints,
+#             from its OpenAPI spec; fails on High risk alerts
+#
+# Every tool's findings upload to code scanning as SARIF (one category per
+# tool), and the gate runs after the upload so findings are visible even when
+# the build fails. Reviewed false positives are suppressed in place with a
+# reason: .gitleaksignore, `# nosemgrep`, trivy --skip-files.
+name: security
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    container: semgrep/semgrep:1.178.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Scan
+        run: >
+          semgrep scan --metrics off
+          --config p/python --config p/secrets --config p/dockerfile --config p/github-actions
+          --sarif --output semgrep.sarif .
+      - uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+      - name: Gate (ERROR fails)
+        run: python3 .github/scripts/sarif_gate.py semgrep.sarif:error
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      GITLEAKS_VERSION: 8.30.1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0  # scan every commit, not just the tip
+      - name: Install (checksum-verified release binary)
+        run: |
+          base=https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}
+          tarball=gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz
+          curl -sSfLO "$base/$tarball" -O "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          grep " $tarball\$" gitleaks_${GITLEAKS_VERSION}_checksums.txt | sha256sum -c -
+          tar -xzf "$tarball" gitleaks
+      - name: Scan
+        run: ./gitleaks git . --redact --no-banner --exit-code 0 --report-format sarif --report-path gitleaks.sarif
+      - uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
+        if: always()
+        with:
+          sarif_file: gitleaks.sarif
+          category: gitleaks
+      - name: Gate (any secret fails)
+        run: python3 .github/scripts/sarif_gate.py gitleaks.sarif:note
+
+  trivy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      TRIVY_VERSION: 0.74.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install (checksum-verified release binary)
+        run: |
+          base=https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}
+          tarball=trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz
+          curl -sSfLO "$base/$tarball" -O "$base/trivy_${TRIVY_VERSION}_checksums.txt"
+          grep " $tarball\$" trivy_${TRIVY_VERSION}_checksums.txt | sha256sum -c -
+          tar -xzf "$tarball" trivy
+      # There's no Python lock file, so resolve the dependencies the way a
+      # user would and scan what actually got installed.
+      - name: Install the gateway's runtime dependencies
+        run: |
+          python -m venv /tmp/deps
+          /tmp/deps/bin/pip install --quiet .
+      - name: Scan installed dependencies
+        # pip's vendor.txt lists pip's own vendored msgpack/setuptools
+        # (pkg_resources only); pip is a build tool, not a gateway dependency.
+        run: >
+          ./trivy rootfs /tmp/deps --scanners vuln --skip-files '**/pip/_vendor/vendor.txt'
+          --format sarif --output trivy-deps.sarif
+      - name: Scan the repository (npm lock, Dockerfiles, compose, secrets)
+        run: >
+          ./trivy fs . --scanners vuln,misconfig,secret --skip-dirs .git
+          --format sarif --output trivy-repo.sarif
+      - uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
+        if: always()
+        with:
+          sarif_file: trivy-deps.sarif
+          category: trivy-dependencies
+      - uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
+        if: always()
+        with:
+          sarif_file: trivy-repo.sarif
+          category: trivy-repository
+      - name: Gate (HIGH/CRITICAL fails)
+        run: python3 .github/scripts/sarif_gate.py trivy-deps.sarif:error trivy-repo.sarif:error
+
+  zap-api:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install the gateway
+        run: pip install --quiet .
+      - name: Start the API
+        # Throwaway tokens for this run only. ZAP scans with the approver
+        # token so it reaches every route, the widest attack surface.
+        run: |
+          agent=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+          approver=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+          echo "::add-mask::$agent"
+          echo "::add-mask::$approver"
+          echo "SANDBOX_AGENT_TOKEN=$agent" >> "$GITHUB_ENV"
+          echo "SANDBOX_APPROVER_TOKEN=$approver" >> "$GITHUB_ENV"
+          SANDBOX_AGENT_TOKEN=$agent SANDBOX_APPROVER_TOKEN=$approver \
+            nohup sandbox serve --host 127.0.0.1 --port 8000 > api.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/health && exit 0; sleep 1; done
+          cat api.log; exit 1
+      - name: Check auth is enforced before scanning
+        run: |
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/v1/broker/pending)" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $SANDBOX_AGENT_TOKEN" http://127.0.0.1:8000/api/v1/broker/pending)" = 403
+      - name: ZAP API scan
+        run: |
+          mkdir -p zap && chmod 777 zap
+          docker run --rm --network host -v "$PWD/zap:/zap/wrk:rw" \
+            -e ZAP_AUTH_HEADER=Authorization \
+            -e ZAP_AUTH_HEADER_VALUE="Bearer $SANDBOX_APPROVER_TOKEN" \
+            -e ZAP_AUTH_HEADER_SITE=127.0.0.1 \
+            zaproxy/zap-stable:2.17.0 \
+            zap-api-scan.py -t http://127.0.0.1:8000/openapi.json -f openapi \
+              -J zap.json -r zap.html -I || true
+          test -s zap/zap.json
+          python .github/scripts/zap_to_sarif.py zap/zap.json zap.sarif
+      - uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
+        if: always()
+        with:
+          sarif_file: zap.sarif
+          category: zap-api
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: zap-report
+          path: |
+            zap/zap.html
+            zap/zap.json
+            api.log
+      - name: Gate (High risk fails)
+        run: python .github/scripts/sarif_gate.py zap.sarif:error
