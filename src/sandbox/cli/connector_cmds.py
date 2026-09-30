@@ -23,6 +23,95 @@ def register(cli: click.Group) -> None:
     cli.add_command(explain_cmd)
     cli.add_command(logs_cmd)
     cli.add_command(semantic_group)
+    cli.add_command(governance_group)
+
+
+@click.group("governance")
+def governance_group() -> None:
+    """Plain-language governance clauses evaluated at runtime."""
+
+
+@governance_group.command("use")
+@click.argument("policy_file")
+@click.option("--path", "folder", default=".")
+def governance_use_cmd(policy_file: str, folder: str) -> None:
+    """Point this folder at a governance policy JSON (evaluated on escalated commands)."""
+    from sandbox.connector.policy import load_policy, save_policy
+    from sandbox.governance.policy import load as gov_load
+
+    layout = _semantic_layout(folder)
+    gov = gov_load(policy_file)  # validate before saving the path
+    policy = load_policy(layout.policy_file)
+    policy.semantic.governance_policy = str(policy_file)
+    save_policy(policy, layout.policy_file)
+    click.echo(f"Using governance policy '{gov.name}' with {len(gov.clauses)} clauses.")
+    if not policy.semantic.enabled:
+        click.echo("Note: run `sandbox semantic enable` and `jevos serve` for it to take effect.")
+
+
+@governance_group.command("list")
+@click.argument("path", default=".")
+def governance_list_cmd(path: str) -> None:
+    """Show the clauses in the folder's governance policy."""
+    from sandbox.connector.policy import load_policy
+    from sandbox.governance.policy import load as gov_load
+
+    layout = _semantic_layout(path)
+    ref = load_policy(layout.policy_file).semantic.governance_policy
+    if not ref:
+        click.echo("No governance policy set. Use `sandbox governance use <file>`.")
+        return
+    gov = gov_load(ref)
+    click.echo(f"{gov.name}  ({len(gov.clauses)} clauses)")
+    for c in gov.clauses:
+        click.echo(f"  [{c.id}] {c.title}  -> {c.action}")
+        click.echo(f"      check: {c.check}")
+        if c.requires_actions:
+            click.echo(f"      only when the command does: {', '.join(c.requires_actions)}")
+        if c.framework_refs:
+            click.echo(f"      maps to: {', '.join(c.framework_refs)}")
+
+
+@governance_group.command("test")
+@click.argument("path", default=".")
+@click.option("--policy", "policy_file", default=None, help="Test this policy file instead of the folder's.")
+def governance_test_cmd(path: str, policy_file: str | None) -> None:
+    """Measure each clause against its own example cases (needs `jevos serve`)."""
+    from sandbox.connector.policy import load_policy
+    from sandbox.governance.policy import example_policy_path
+    from sandbox.governance.policy import load as gov_load
+    from sandbox.semantic.client import SemanticClient
+
+    layout = _semantic_layout(path)
+    sem = load_policy(layout.policy_file).semantic
+    ref = policy_file or sem.governance_policy or str(example_policy_path())
+    gov = gov_load(ref)
+    client = SemanticClient.from_policy(sem)
+    if client.ask("probe", {"p": {"type": "noul", "instructions": "probe"}}) is None:
+        raise click.ClickException("jev-os service not reachable — start it with `jevos serve`.")
+
+    click.echo(f"{gov.name}\n")
+    total_ok = total = 0
+    for c in gov.clauses:
+        rows = [(t, True) for t in c.examples_violating] + [(t, False) for t in c.examples_allowed]
+        if not rows:
+            click.echo(f"  [{c.id}] no examples")
+            continue
+        ok = 0
+        misses = []
+        for text, should_fire in rows:
+            res = client.ask(text, {c.id: c.question()})
+            fired = res is not None and res.scores[c.id] >= c.threshold
+            ok += fired == should_fire
+            if fired != should_fire:
+                misses.append(("missed" if should_fire else "false-alarm", text))
+        total_ok += ok
+        total += len(rows)
+        flag = "" if ok == len(rows) else "   <-- needs calibration"
+        click.echo(f"  [{c.id}] {ok}/{len(rows)} examples correct{flag}")
+        for kind, text in misses:
+            click.echo(f"        {kind}: {text}")
+    click.echo(f"\nOverall: {total_ok}/{total} example cases correct.")
 
 
 @click.group("semantic")

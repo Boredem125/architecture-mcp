@@ -115,6 +115,17 @@ sandbox semantic trust AGENTS.md --reviewer alice --reason "house rules for agen
 
 It still misses real attacks. And it can't tell legitimate instructions to AI agents (`AGENTS.md`, `CLAUDE.md`) from malicious ones. For those files, a human reviews once with `sandbox semantic trust`: the file isn't scanned while its content is byte-for-byte what was reviewed, and any edit (say, a pull request that slips in a line) makes it scanned again. That's why it only ever *raises* scrutiny while authorization stays in charge. Costs ~1 s per scanned tool output on a laptop CPU.
 
+## Governance-as-code (optional)
+
+Beyond the security checks, you can write **plain-language governance clauses** ("no customer data to external services", "no production changes without a human", "no moving money on its own"), each compiled to a jev-os check plus a deterministic gate, evaluated on escalated commands, and recorded as evidence with a framework mapping (EU AI Act, GDPR, SR 11-7). Clauses only raise scrutiny.
+
+```bash
+sandbox governance use policy.json
+sandbox governance test          # measures each clause's reliability against its examples
+```
+
+The reliability of a zero-shot clause varies, so the tool measures it: on the example policy two clauses score 6/6 and the payments clause 3/6 (flagged "needs calibration"). See [docs/GOVERNANCE.md](docs/GOVERNANCE.md).
+
 ## Key Design Decisions
 
 - **The folder is the bus**: Atomic file operations on NTFS coordinate four independent processes (no in-memory state, no open ports, survives restarts)

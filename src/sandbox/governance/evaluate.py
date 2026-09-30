@@ -1,0 +1,64 @@
+"""Evaluate governance clauses against an action.
+
+A clause fires when its jev-os check passes AND (if it lists required actions)
+the command deterministically does one of them. The deterministic gate keeps a
+noisy zero-shot check from firing on unrelated text.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from sandbox.governance.policy import Clause, GovernancePolicy
+from sandbox.safety.command_actions import describe as _describe_command
+from sandbox.semantic.client import SemanticClient
+
+
+@dataclass
+class Violation:
+    clause_id: str
+    title: str
+    description: str
+    action: str            # escalate | deny
+    score: float
+    framework_refs: list[str]
+
+    def evidence(self) -> dict[str, Any]:
+        return {
+            "clause_id": self.clause_id,
+            "title": self.title,
+            "action": self.action,
+            "score": round(self.score, 4),
+            "framework_refs": self.framework_refs,
+        }
+
+
+def _gate_ok(clause: Clause, command: str) -> bool:
+    if not clause.requires_actions:
+        return True
+    tags = {t for t, _ in _describe_command(command or "")}
+    return bool(tags & set(clause.requires_actions))
+
+
+def evaluate(
+    policy: GovernancePolicy,
+    text: str,
+    client: SemanticClient,
+    *,
+    command: str = "",
+) -> list[Violation]:
+    """Clauses violated by this action, worst `action` first. Empty on any
+    service failure (no extra scrutiny, never less)."""
+    gated = [c for c in policy.clauses if _gate_ok(c, command or text)]
+    if not gated:
+        return []
+    result = client.ask(text, {c.id: c.question() for c in gated})
+    if result is None:
+        return []
+    violations = []
+    for c in gated:
+        score = result.scores.get(c.id, 0.0)
+        if score >= c.threshold:
+            violations.append(Violation(c.id, c.title, c.description, c.action, score, c.framework_refs))
+    violations.sort(key=lambda v: 0 if v.action == "deny" else 1)
+    return violations

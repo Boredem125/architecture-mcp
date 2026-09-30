@@ -19,13 +19,13 @@ difficulty; each is intentionally *not* built yet so the core stays tight and de
 - Optional local semantic checks (jev-os): per-sentence injection scan of untrusted tool
   output, folder taint that escalates allowlisted shell, network and out-of-folder actions,
   model-derived risk factors that can only raise scrutiny, and an audited `clear-taint`
+- Command exfiltration detection, actual-actions on the approver panel, trusted-file pinning, and **plain-language governance clauses** with per-clause reliability testing (`docs/GOVERNANCE.md`)
 - Benchmark vs the regex detector on public held-out data (`benchmarks/injection`)
 
 ## Next for the intent-aware layer
 
 - **Command intent:** "does this command send data somewhere?" on escalated commands, and
   **description vs command mismatch** on the approver panel (Goal 6).
-- **Plain-language policy clauses** compiled into typed checks, next to Rego.
 - **Distillation:** a small single-pass model trained on hard cases labelled by a larger LLM
   (PII redacted first) to beat the zero-shot baseline on speed and accuracy.
 - **Red-team loop:** generate new injection variants, retrain on the misses, and publish the

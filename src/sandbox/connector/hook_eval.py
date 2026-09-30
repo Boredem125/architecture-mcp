@@ -320,6 +320,31 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
     return _pre_output("deny", _format_escalate_redirect(result))
 
 
+def _evaluate_governance(policy: Any, result: Any, tool_input: dict) -> tuple[list[dict], dict | None]:
+    """Governance clauses violated by this command. Returns (evidence, deny-clause-or-None).
+
+    Best-effort: no policy, or the jev-os service down, → ([], None), i.e. no
+    extra scrutiny. The evaluation runs only here on an already-escalating
+    command, so it never adds latency to the common allowlisted path.
+    """
+    sem = getattr(policy, "semantic", None)
+    if not sem or not sem.enabled or not sem.governance_policy:
+        return [], None
+    try:
+        from sandbox.governance.evaluate import evaluate as _gov_eval
+        from sandbox.governance.policy import load as _gov_load
+        from sandbox.semantic.client import SemanticClient
+
+        gov = _gov_load(sem.governance_policy)
+        text = " ".join(x for x in (tool_input.get("description", ""), result.command) if x)
+        violations = _gov_eval(gov, text, SemanticClient.from_policy(sem), command=result.command)
+        evidence = [v.evidence() for v in violations]
+        deny = next((v.evidence() | {"description": v.description} for v in violations if v.action == "deny"), None)
+        return evidence, deny
+    except Exception:  # noqa: BLE001 — governance must never break the hook
+        return [], None
+
+
 def _blocklist() -> Any:
     """Best-effort CommandBlocklist instance; None if unavailable."""
     try:
@@ -364,6 +389,21 @@ async def _escalate_shell(
     from sandbox.safety.command_actions import describe as _describe_command
 
     actual_actions = [{"tag": t, "label": lbl} for t, lbl in _describe_command(result.command)]
+
+    # Governance clauses (plain-language policy) on the command + its description.
+    # Only raises scrutiny: a "deny" clause blocks, others add an approver reason.
+    gov_violations, gov_deny = _evaluate_governance(policy, result, tool_input)
+    if gov_deny is not None:
+        _audit(layout, session_id, {
+            "event": "governance_denied", "reason_code": "GOVERNANCE",
+            "clause": gov_deny["clause_id"], "command": result.command,
+            "identity": ident_dict, "governance": gov_violations,
+        })
+        return _pre_output("deny", (
+            f"SANDBOX DENIED [GOVERNANCE]: {gov_deny['title']} — {gov_deny['description']} "
+            f"(policy clause {gov_deny['clause_id']}). Choose a different approach."
+        ))
+
     record = {
         "root": str(layout.root),
         "session_id": session_id,
@@ -376,6 +416,7 @@ async def _escalate_shell(
         "reason": tool_input.get("description", "") or "Model requested a shell command",
         "described_as": tool_input.get("description", ""),
         "actual_actions": actual_actions,
+        "governance_violations": gov_violations,
         "tool_name": tool_name,
         "identity": ident_dict,
         "risk": result.risk,

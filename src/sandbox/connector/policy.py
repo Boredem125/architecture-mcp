@@ -114,6 +114,9 @@ class SemanticPolicy(BaseModel):
     # Reviewed instruction files (e.g. AGENTS.md) that are not scanned while
     # their content is byte-for-byte what the reviewer approved.
     trusted_files: list[TrustedFile] = Field(default_factory=list)
+    # Path to a governance policy (plain-language clauses); empty = none.
+    # Evaluated on escalated shell commands; clauses only raise scrutiny.
+    governance_policy: str = ""
 
 
 class TriggerPolicy(BaseModel):
