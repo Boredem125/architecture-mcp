@@ -113,6 +113,11 @@ _NOISE_LINE = re.compile(
 )
 
 
+# Letter-spaced words ("I g n o r e   a l l"), an obfuscation that defeats both
+# keyword rules and the model. Collapsed per word; wider gaps stay word breaks.
+_SPACED = re.compile(r"(?<![\w])(?:[A-Za-z] ){2,}[A-Za-z](?![\w])")
+
+
 def unwrap(text: str) -> str:
     """Pull the prose out of machine formatting before judging it.
 
@@ -140,6 +145,7 @@ def unwrap(text: str) -> str:
         i = end
     prose = "".join(out)
     prose = _NOISE_LINE.sub("", prose)
+    prose = _SPACED.sub(lambda m: m.group(0).replace(" ", ""), prose)
     return _COMMENT.sub(" ", prose)
 
 

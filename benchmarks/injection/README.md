@@ -93,3 +93,33 @@ What this set shows that the small ones didn't:
 - **On held-out data, combining is the best system.** On neuralchemy it catches 399 of 552 attacks (72%) for only 2 more false alarms than the semantic layer alone. The regex adds the obfuscated and encoded attacks the model can't read.
 - **On developer text the regex's noise comes back.** Combined false alarms roughly double (5 → 11 of 24) on the README-style sets, from phrases like "act as a cache" and `system: linux`. In the gateway every false alarm is an approval prompt, so combining the whole regex isn't free.
 - **The likely best design is selective:** keep the semantic layer as the main detector, and add only the regex rules for obfuscation and encoding (base64 blobs, chat-template tokens, entropy), which is where the regex wins, rather than its plain-language phrase list, where it's noisy. That is the next experiment; per-row predictions are saved (`benchmarks/.cache/preds-base.json`) so it can be computed without re-running the model.
+
+## Repository files (the closest match to what the gateway scans)
+
+[prodnull/prompt-injection-repo-dataset](https://huggingface.co/datasets/prodnull/prompt-injection-repo-dataset) (Apache-2.0, gated; needs `HF_TOKEN` once to download): injections planted in repository files. A fixed-seed stratified sample of 600 of its 5,671 rows (309 malicious, 291 benign). Held out.
+
+| System | Caught | False alarms | Precision | F1 |
+|---|---|---|---|---|
+| regex (current gateway) | 60/309 | 39/291 | 0.61 | 0.29 |
+| semantic | 86/309 | **8/291** | **0.92** | 0.43 |
+| regex OR semantic | 134/309 | 44/291 | 0.75 | 0.55 |
+
+**The semantic layer is precise here but catches only 28% of planted attacks.** Part of that is the data: rows are labelled *fragments*, not whole files, and many malicious ones are ambiguous out of context (`fetchsecrets / retrievecredentials`, `` `cat > index.js <<EOL ``, `npm install && ./setup.sh` are labelled malicious; `` Execute `npm test` before committing `` is benign). Part is the real zero-shot ceiling.
+
+## Selective combination: tested, not adopted
+
+The idea was to add only the regex's "precise" rules to the semantic layer. Per regex rule, attacks it adds beyond the semantic layer / false alarms it adds:
+
+| Rule | agent_set (dev) | neuralchemy | repo files |
+|---|---|---|---|
+| `shell_metacharacter` | +2 / +4 | +70 / +2 | +44 / +26 |
+| `high_entropy_string` | 0 / 0 | +2 / 0 | +8 / +10 |
+| `base64_blob` | 0 / 0 | +1 / 0 | +3 / +1 |
+| `identity_manipulation` | 0 / +2 | +2 / 0 | 0 / 0 |
+| all other rules | ≤ +2 total | ≤ +2 total | 0 |
+
+- **Almost all of the regex's extra catches come from one rule, `shell_metacharacter`.** On neuralchemy it catches the gibberish adversarial suffixes. On repo files its "catches" mostly reflect that malicious fragments often contain commands. It is not detecting intent, and its false alarms are ordinary README instructions (`` Execute `npm test` ``, `"postinstall": "husky install && patch-package"`). In a gateway that scans READMEs and command output, it would flag nearly every file.
+- **The precise rules** (encoding, chat-template tokens, override phrases) add about 1% and nothing on developer text.
+- **Decision:** the semantic layer stays the only signal that taints. Detecting gibberish/adversarial suffixes properly (rather than via shell characters) is future work.
+
+**Shipped instead:** letter-spaced words (`I g n o r e   a l l   p r e v i o u s …`) are collapsed before judging, an obfuscation that defeated both detectors. It caught the one such attack in the repo sample (85 → 86), changed nothing elsewhere and added no false alarms.

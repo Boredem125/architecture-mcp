@@ -197,6 +197,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="base")
     ap.add_argument("--out", default=str(HERE / "results.json"))
+    ap.add_argument("--only", default="",
+                    help="re-run only datasets whose name contains this; the rest reuse cached predictions")
     args = ap.parse_args()
 
     regex, sem = Regex(), Semantic(args.model)
@@ -214,9 +216,17 @@ def main() -> None:
         print(f"note: {REPO_FILES} skipped (gated; set HF_TOKEN after accepting its terms)")
     else:
         sources[f"repo files, {len(repo)}-row sample (held out)"] = repo
-    preds: dict[str, dict[str, tuple[str, str]]] = {}
+    # Per-row predictions are cached so other combinations (and --only runs)
+    # don't need the model again.
+    preds_path = CACHE / f"preds-{args.model}.json"
+    preds: dict[str, dict[str, list[str]]] = {}
+    if args.only and preds_path.exists():
+        preds = json.loads(preds_path.read_text(encoding="utf-8"))
     for name, rows in sources.items():
-        preds[name] = {r["id"]: (regex(r["text"]), sem(r["text"])) for r in rows}
+        if args.only and args.only not in name and name in preds:
+            continue
+        preds[name] = {r["id"]: [regex(r["text"]), sem(r["text"])] for r in rows}
+    preds_path.write_text(json.dumps(preds), encoding="utf-8")
     views = {**sources, "deepset test, genuine attacks only": genuine_view(deepset)}
     preds["deepset test, genuine attacks only"] = preds["deepset test (held out)"]
 
@@ -245,12 +255,11 @@ def main() -> None:
         c["semantic"] += p[r["id"]][1] == "high"
     report["neuralchemy_by_category"] = cats
 
-    # Per-row predictions (not committed) so other combinations can be computed
-    # later without re-running the model.
-    (CACHE / f"preds-{args.model}.json").write_text(json.dumps(preds), encoding="utf-8")
-
     ms = sorted(sem.ms)
-    report["semantic_ms_per_text"] = {"p50": round(ms[len(ms) // 2], 1), "p95": round(ms[int(0.95 * (len(ms) - 1))], 1)}
+    if ms:
+        report["semantic_ms_per_text"] = {"p50": round(ms[len(ms) // 2], 1), "p95": round(ms[int(0.95 * (len(ms) - 1))], 1)}
+    elif Path(args.out).exists():  # nothing re-run: keep the last measured latency
+        report["semantic_ms_per_text"] = json.loads(Path(args.out).read_text(encoding="utf-8")).get("semantic_ms_per_text", {})
 
     Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")
     for name, res in report["results"].items():
@@ -262,7 +271,8 @@ def main() -> None:
     print(f"   {'category':22} {'rows':>5} {'regex':>7} {'semantic':>9}")
     for cat, c in sorted(report["neuralchemy_by_category"].items(), key=lambda kv: -kv[1]["n"]):
         print(f"   {cat:22} {c['n']:>5} {c['regex']:>7} {c['semantic']:>9}")
-    print(f"\nsemantic ms per text: p50 {report['semantic_ms_per_text']['p50']}, p95 {report['semantic_ms_per_text']['p95']}")
+    lat = report.get("semantic_ms_per_text") or {}
+    print(f"\nsemantic ms per text (this run): p50 {lat.get('p50')}, p95 {lat.get('p95')}")
     print(f"wrote {args.out}")
 
 
