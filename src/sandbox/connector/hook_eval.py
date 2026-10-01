@@ -233,6 +233,12 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
             # (dual control, enforced in connector/approval.py).
             result.verdict = "escalate"
 
+    # Data classification (policy.classification): itemized factor, verdict floor
+    # by level, dual control when a CONFIDENTIAL/RESTRICTED file is sent out.
+    from sandbox.connector import context_rules as _ctx
+
+    _ctx.apply_classification(result, assessment, policy, layout, tool_name, tool_input, cwd=cwd)
+
     result.risk = assessment.to_dict()
 
     # Tainted folder: untrusted content recently tried to instruct the agent, so
@@ -264,7 +270,8 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
     # clause saw them: an allowlisted mcp__stripe__create_refund ran silently.
     # Only raises scrutiny; a hard deny stays a deny.
     if result.verdict != "deny" and _is_governed_tool(tool_name):
-        gov_violations, gov_deny = _tool_governance(policy, tool_name, tool_input)
+        gov_violations, gov_deny = _tool_governance(
+            policy, tool_name, tool_input, result.metadata.get("data_tags", ()))
         if gov_deny is not None or gov_violations:
             return _govern_tool_call(
                 tool_name, tool_input, gov_violations, gov_deny, result, layout, session_id, identity,
@@ -277,6 +284,8 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
         result.verdict = "escalate"
     if result.verdict == "escalate" and assessment.band == "critical":
         result.requires_dual = True
+    # Environment (policy.environment): staging/prod audit some allowlisted calls.
+    _ctx.apply_environment(result, assessment, policy, tool_name)
 
     # A remembered decision can upgrade escalate → allow (never the reverse), but
     # never for a critical/dual-control action — those always face a human.
@@ -343,7 +352,9 @@ def _is_governed_tool(tool_name: str) -> bool:
     return tool_name.startswith("mcp__") and not tool_name.startswith(("mcp__sandbox__", "mcp__sandbox_"))
 
 
-def _tool_governance(policy: Any, tool_name: str, tool_input: dict) -> tuple[list[dict], dict | None]:
+def _tool_governance(
+    policy: Any, tool_name: str, tool_input: dict, extra_tags: Any = (),
+) -> tuple[list[dict], dict | None]:
     """Governance clauses violated by a non-shell call: (evidence, deny-clause-or-None).
 
     Only clauses with requires_tool_actions matching what the call does are
@@ -359,7 +370,8 @@ def _tool_governance(policy: Any, tool_name: str, tool_input: dict) -> tuple[lis
         from sandbox.semantic.client import SemanticClient
 
         gov = _gov_load(sem.governance_policy)
-        violations = _gov_eval(gov, "", SemanticClient.from_policy(sem), tool_call=(tool_name, tool_input))
+        violations = _gov_eval(gov, "", SemanticClient.from_policy(sem), tool_call=(tool_name, tool_input),
+                               extra_tags=extra_tags)
         evidence = [v.evidence() for v in violations]
         deny = next((v.evidence() | {"description": v.description} for v in violations if v.action == "deny"), None)
         return evidence, deny
@@ -426,7 +438,8 @@ def _govern_tool_call(
             "tool_name": tool_name,
             "command": rendered,
             "fingerprint": fp,
-            "actual_actions": [{"tag": t, "label": lbl} for t, lbl in describe_call(tool_name, tool_input)],
+            "actual_actions": [{"tag": t, "label": lbl} for t, lbl in describe_call(tool_name, tool_input)]
+            + list(result.metadata.get("data_actions", [])),
             "governance": violations,
             "reason": why,
             "identity": ident_dict,
@@ -600,6 +613,11 @@ def _recommended_action(reason_code: str) -> str:
 
 
 def _format_escalate_redirect(result: Any) -> str:
+    if result.reason_code == "DATA_CLASS":
+        return (
+            f"SANDBOX [data classification]: {result.reason}. A human must approve this: use "
+            "the sandbox MCP tool request_path_access (or fetch_url for a URL)."
+        )
     if result.trigger == "network":
         return (
             f"SANDBOX [network]: direct network access is gated. "

@@ -16,7 +16,9 @@ fired, the score decides the *tier* of response:
     50 – 79      → escalate   (one human approver)
     >= 80        → critical   (dual control: two distinct approvers, connector/approval.py)
 
-Bands are policy-tunable; the defaults live here.
+Bands are policy-tunable; the defaults live here. In ``prod`` the critical
+band starts lower (``PROD_CRITICAL_AT``), so more escalations need two
+approvers; the lowering is itemized as a 0-point ``environment-band`` factor.
 """
 from __future__ import annotations
 
@@ -58,6 +60,24 @@ _ENV_DELTA = {
     "production": +20,
 }
 
+# Canonical environment names (policy.environment / SANDBOX_ENV aliases).
+_ENV_CANONICAL = {
+    "dev": "dev", "development": "dev",
+    "staging": "staging", "stage": "staging",
+    "prod": "prod", "production": "prod",
+}
+
+# In prod the critical (dual-control) band starts here instead of BAND_CRITICAL.
+# A default prod shell escalation scores 45 + 10 + 20 = 75, so it needs two
+# approvers; a high-trust identity (-10) brings it to 65, one approver.
+PROD_CRITICAL_AT = 70
+
+
+def canonical_environment(environment: str | None = None) -> str | None:
+    """dev | staging | prod for *environment* (else ``SANDBOX_ENV``); None if unset/unknown."""
+    env = (environment or os.environ.get("SANDBOX_ENV") or "").strip().lower()
+    return _ENV_CANONICAL.get(env)
+
 
 @dataclass
 class RiskFactor:
@@ -77,10 +97,12 @@ class RiskAssessment:
 
     score: int
     factors: list[RiskFactor] = field(default_factory=list)
+    # Lower bound of the critical band; only ever lowered (see lower_critical_band).
+    critical_at: int = BAND_CRITICAL
 
     @property
     def band(self) -> str:
-        if self.score >= BAND_CRITICAL:
+        if self.score >= self.critical_at:
             return "critical"
         if self.score >= BAND_ESCALATE:
             return "escalate"
@@ -89,11 +111,20 @@ class RiskAssessment:
         return "allow"
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "score": self.score,
             "band": self.band,
             "factors": [f.to_dict() for f in self.factors],
         }
+        if self.critical_at != BAND_CRITICAL:
+            out["critical_at"] = self.critical_at
+        return out
+
+    def lower_critical_band(self, critical_at: int, detail: str) -> None:
+        """Make the critical band start lower (stricter); never raises it."""
+        if critical_at < self.critical_at:
+            self.critical_at = critical_at
+            self.factors.append(RiskFactor("environment-band", 0, detail))
 
     def raise_by(self, factor: RiskFactor) -> None:
         """Add a factor that can only raise the score (the semantic ratchet).
@@ -177,4 +208,10 @@ def assess(
 
     score = sum(f.points for f in factors)
     score = max(0, min(100, score))
-    return RiskAssessment(score=score, factors=factors)
+    result = RiskAssessment(score=score, factors=factors)
+    if canonical_environment(environment) == "prod":
+        result.lower_critical_band(
+            PROD_CRITICAL_AT,
+            f"prod: dual control from {PROD_CRITICAL_AT} (default {BAND_CRITICAL})",
+        )
+    return result

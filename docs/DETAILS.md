@@ -149,6 +149,16 @@ Settings live under `oversight` in `.sandbox/policy.json`:
 
 These defaults are starting points chosen by judgement. They have not been checked against real reviewer data, and the numbers are indicators, not proof that oversight was or was not effective. Other limits: timestamps in done-records are not covered by the record signature (only each dual-control approval's `approved_at` is), so the metrics rely on `.sandbox/` being protected from the agent; reviewer ids are not bound to people (see dual control); a dual-control request denied after its first approval loses that first approval from the record; and records written before this feature have no `created_at`, so their latency is unknown.
 
+## Environment and data classification (optional)
+
+Two policy fields, both off by default. `environment` (`dev` / `staging` / `prod`) makes the
+same call stricter in prod: allowlisted shell and network calls are audited, and escalations
+need two approvers from risk 70 instead of 80. `classification` tags paths by glob as
+PUBLIC / INTERNAL / CONFIDENTIAL / RESTRICTED; the level adds an itemized risk factor, sets a
+minimum verdict (writing RESTRICTED escalates), and a command or tool call that sends a
+CONFIDENTIAL or RESTRICTED file out needs dual control. It tags paths, not content, so it is
+only as good as the patterns. Details and limits: [DATA_AND_ENVIRONMENT.md](DATA_AND_ENVIRONMENT.md).
+
 ## Key Design Decisions
 
 - **The folder is the bus**: Atomic file operations on NTFS coordinate four independent processes (no in-memory state, no open ports, survives restarts)

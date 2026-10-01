@@ -15,6 +15,8 @@ evidence lives.
 | Tamper-evident hash-chain audit | ✓ recordkeeping | ✓ documentation | ✓ §500.6 audit trail | ✓ logging | ✓ logging/traceability |
 | Ed25519-signed approvals (non-repudiation) | ✓ | | ✓ §500.6 | ✓ | ✓ |
 | Segregation of duties / dual control (critical): two distinct signed approvals *(distinct reviewer ids and keys; not proof of two humans)* | ✓ | ✓ independence | ✓ | ✓ | ✓ |
+| Environment-aware verdicts (prod: dual control from a lower risk score, allowlisted calls audited) *(the environment is what policy.json says; not verified)* | ✓ | ✓ independence | ✓ §500.7 | ✓ ICT risk mgmt | ✓ |
+| Path-based data classification feeding risk and verdicts (classified file sent out → dual control) *(glob patterns, no content inspection)* | ✓ APPI safety management | | ✓ §500.13 asset classification | ✓ Art. 8 information asset classification | ✓ data for AI systems |
 | Prompt-injection / exfiltration containment | | | ✓ §500.2 cybersecurity | ✓ threat mgmt | ✓ security controls |
 | Restorable file originals + change timeline | ✓ recordkeeping | ✓ | | ✓ | ✓ |
 | Examiner evidence export: `sandbox export-evidence` / `verify-evidence`, a signed pack of decisions, approvals, audit chains and policy files *(integrity relative to control-plane keys; see [EVIDENCE.md](EVIDENCE.md))* | ✓ | ✓ | ✓ | ✓ | ✓ |

@@ -66,3 +66,18 @@ def detect(command: str) -> ExfilFinding | None:
             return ExfilFinding(sensitive=token, egress=name,
                                 detail=f"sensitive source ({token}) + egress ({name})")
     return None
+
+
+def egress_technique(command: str) -> str | None:
+    """Name of the first network-egress shape in *command* (no source check).
+
+    Used with data classification: a command that names a CONFIDENTIAL or
+    RESTRICTED file and has an egress shape is treated as exfiltration even
+    when the file name is not on the built-in sensitive list above.
+    """
+    if not command:
+        return None
+    for name, pattern in _EGRESS:
+        if pattern.search(command):
+            return name
+    return None
