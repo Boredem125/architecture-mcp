@@ -118,9 +118,15 @@ def build(purpose: str) -> None:
     if purpose == "dev" and DEV_FILE.exists():
         raise SystemExit(f"{DEV_FILE} exists and is frozen; delete it deliberately to regenerate")
 
+    # Generated texts are saved before labelling, so a labelling failure (rate
+    # limits) never loses them; a re-run resumes from this file.
+    raw_file = bench.CACHE / f"distill-generated-{purpose}-raw.jsonl"
     items: list[dict] = []
+    if raw_file.exists():
+        items = [json.loads(line) for line in raw_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+        print(f"  resuming with {len(items)} generated texts from {raw_file.name}")
     seed = 0
-    for kind, per_setting in rounds.items():
+    for kind, per_setting in ([] if items else rounds.items()):
         settings = BENIGN_SETTINGS_DEV if (purpose == "dev" and kind == "benign") else list(SETTINGS)
         for setting in settings:
             for _ in range(per_setting):
@@ -129,12 +135,15 @@ def build(purpose: str) -> None:
                     items.append({"text": redact(text), "kind": kind, "setting": setting,
                                   "label": KINDS[kind][1], "author": gen_model})
                 print(f"  generated {len(items)} ({kind}/{setting})", flush=True)
+    raw_file.write_text("".join(json.dumps(i) + "\n" for i in items), encoding="utf-8")
 
     # Independent check: the labeller must agree with the intended label.
     labels = []
-    for start in range(0, len(items), label.BATCH):
-        chunk = items[start:start + label.BATCH]
+    batch = label.BATCH if lab_model.startswith("openai/") else 10  # smaller: output-token cap
+    for start in range(0, len(items), batch):
+        chunk = items[start:start + batch]
         labels += label.ask(key, [i["text"] for i in chunk], lab_model)
+        print(f"  labelled {start + len(chunk)}/{len(items)}", flush=True)
     kept, dropped = [], {"injection": 0, "lookalike": 0, "benign": 0}
     for item, lab in zip(items, labels):
         if int(lab["injection"]) == item["label"]:

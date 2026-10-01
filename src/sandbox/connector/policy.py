@@ -127,8 +127,9 @@ class SemanticPolicy(BaseModel):
     # The phase-2 distilled student (sandbox/semantic/student.py): runs in the
     # hook itself, in about a millisecond per sentence, alongside the service.
     # A sentence is flagged if the service OR the student flags it, so it only
-    # adds scrutiny, and it still scans when the service is down.
-    student: bool = False
+    # adds scrutiny, and it still scans when the service is down. On by default
+    # since it passed the round-2 rule (benchmarks/distill/README.md).
+    student: bool = True
 
 
 class TriggerPolicy(BaseModel):

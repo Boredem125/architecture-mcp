@@ -100,10 +100,17 @@ def schema(n: int) -> dict:
 
 def ask(key: str, items: list[str], model: str = MODEL) -> list[dict]:
     listing = "\n\n".join(f"<item i={i}>\n{t[:1500]}\n</item>" for i, t in enumerate(items))
-    body = {"model": model, "temperature": 0, "reasoning_effort": "low",
+    body = {"model": model, "temperature": 0,
             "messages": [{"role": "system", "content": SYSTEM},
                          {"role": "user", "content": f"Label all {len(items)} items.\n\n{listing}"}],
             "response_format": {"type": "json_schema", "json_schema": schema(len(items))}}
+    if model.startswith("openai/"):
+        body["reasoning_effort"] = "low"
+    else:
+        # Groq caps output tokens per minute for some models (qwen: 1,000) and
+        # refuses a request whose *possible* output exceeds the cap.
+        body["reasoning_effort"] = "none"
+        body["max_completion_tokens"] = 40 + 35 * len(items)
     req = urllib.request.Request(URL, data=json.dumps(body).encode(), headers={
         "Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "agg-labeller"})
     for attempt in range(8):

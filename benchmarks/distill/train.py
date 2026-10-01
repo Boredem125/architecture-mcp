@@ -40,15 +40,17 @@ from sandbox.semantic.redact import redact  # noqa: E402
 POOL = bench.CACHE / "distill-pool.jsonl"
 LABELS = bench.CACHE / "distill-groq-labels.jsonl"
 QUEUE = bench.CACHE / "distill-label-queue.jsonl"
+GENERATED = bench.CACHE / "distill-generated-train.jsonl"  # generate.py train (round 2)
 
 
-def load_pool(labels: str) -> list[dict]:
+def load_pool(labels: str, generated: bool = False) -> list[dict]:
     """The training pool.
 
     dataset  the datasets' own labels
     groq     disputed rows take the labeller's answer
     agree    disputed rows where the labeller and the dataset disagree are dropped
-    Both labeller modes also add the labelled documentation lines.
+    Both labeller modes also add the labelled documentation lines, and with
+    generated=True the round-2 generated texts (generate.py train).
     """
     rows = [json.loads(line) for line in POOL.read_text(encoding="utf-8").splitlines() if line.strip()]
     if labels in ("groq", "agree"):
@@ -65,6 +67,9 @@ def load_pool(labels: str) -> list[dict]:
         queue = [json.loads(line) for line in QUEUE.read_text(encoding="utf-8").splitlines() if line.strip()]
         rows += [{"id": q["id"], "source": "docs", "text": q["text"], "label": groq[q["id"]]}
                  for q in queue if q["kind"] == "docs" and q["id"] in groq]
+        if generated and GENERATED.exists():
+            rows += [{"id": f"gen:{g['id']}", "source": "generated", "text": g["text"], "label": g["label"]}
+                     for g in map(json.loads, GENERATED.read_text(encoding="utf-8").splitlines()) if g]
     return rows
 
 
@@ -138,6 +143,7 @@ def main() -> None:
     ap.add_argument("--labels", choices=["dataset", "groq", "agree"], default="dataset")
     ap.add_argument("--exclude-source", default="",
                     help="train without this pool source (repo, neuralchemy, deepset) to measure transfer")
+    ap.add_argument("--generated", action="store_true", help="add the round-2 generated training texts")
     ap.add_argument("--fpr", type=float, default=0.01,
                     help="share of held-back benign documentation sentences allowed to flag")
     ap.add_argument("--export", default="", help="also write the gateway model file here")
@@ -148,13 +154,15 @@ def main() -> None:
     ap.add_argument("--out", default=str(HERE / "results.json"))
     args = ap.parse_args()
 
-    pool = load_pool(args.labels)
+    pool = load_pool(args.labels, args.generated)
     rows = [r for r in pool if r["source"] != args.exclude_source]
     unseen = [r for r in pool if args.exclude_source and r["source"] == args.exclude_source]
     rng = np.random.default_rng(20261001)
     held = rng.random(len(rows))
-    is_calib = [r["source"] == "docs" and h < 0.3 for r, h in zip(rows, held)]
-    is_val = [r["source"] != "docs" and h < 0.15 for r, h in zip(rows, held)]
+    # Calibration: held-back docs lines and generated texts (whose benign half
+    # are injection lookalikes), so the threshold accounts for both.
+    is_calib = [r["source"] in ("docs", "generated") and h < 0.3 for r, h in zip(rows, held)]
+    is_val = [r["source"] not in ("docs", "generated") and h < 0.15 for r, h in zip(rows, held)]
     train = [r for r, c, v in zip(rows, is_calib, is_val) if not c and not v]
     calib = [r for r, c in zip(rows, is_calib) if c and r["label"] == 0]
     val = [r for r, v in zip(rows, is_val) if v]
@@ -180,7 +188,7 @@ def main() -> None:
         runtime = Student.load(args.export)
         model = _RuntimeAdapter(runtime)
 
-    report = {"labels": args.labels, "fpr_target": args.fpr, "excluded_source": args.exclude_source or None, "threshold": threshold, "results": {}}
+    report = {"labels": args.labels, "generated": args.generated, "fpr_target": args.fpr, "excluded_source": args.exclude_source or None, "threshold": threshold, "results": {}}
     sets = held_out()
     if args.eval == "dev":
         sets = {k: v for k, v in sets.items() if "(dev" in k}

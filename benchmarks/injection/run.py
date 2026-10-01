@@ -63,6 +63,12 @@ def load_embedded() -> list[dict]:
     return [{**r, "text": README_BEFORE + r["text"] + README_AFTER} for r in load_agent_set()]
 
 
+def load_fresh_dev() -> list[dict]:
+    """The round-2 gate set, frozen before retraining (see benchmarks/distill/README.md)."""
+    rows = [json.loads(line) for line in (HERE / "fresh_dev.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [{"id": r["id"], "text": r["text"], "label": r["label"], "category": r["kind"]} for r in rows]
+
+
 def _fetch_hf(dataset: str, config: str, split: str, cache_name: str) -> list[dict]:
     """All rows of a public HF dataset split, via the datasets-server API, cached."""
     CACHE.mkdir(parents=True, exist_ok=True)
@@ -232,7 +238,8 @@ def main() -> None:
     sources = {"agent_set (dev, hand-written)": load_agent_set(),
                "embedded in a README (dev)": load_embedded(),
                "deepset test (held out)": deepset,
-               "neuralchemy test (held out)": neural}
+               "neuralchemy test (held out)": neural,
+               "fresh dev (round-2 gate)": load_fresh_dev()}
     repo = load_repo_files()
     if repo is None:
         print(f"note: {REPO_FILES} skipped (gated; set HF_TOKEN after accepting its terms)")

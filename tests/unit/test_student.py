@@ -92,11 +92,22 @@ def test_probability_and_threshold():
 
 # --- PostToolUse: add-only ----------------------------------------------------
 
-def test_student_off_by_default(layout, monkeypatch):
-    assert load_policy(layout.policy_file).semantic.student is False
+def test_student_on_by_default_but_only_inside_the_semantic_layer(tmp_path, monkeypatch):
+    init(tmp_path, claude=False, mcp=False)
+    plain = FolderLayout(tmp_path)
+    assert load_policy(plain.policy_file).semantic.student is True
     monkeypatch.setattr(student, "default", tiny_student)
     service(monkeypatch)
-    assert asyncio.run(post_tool_use(fetched(POISON), layout)) == {}
+    # semantic.enabled is still off by default, and then nothing scans.
+    assert asyncio.run(post_tool_use(fetched(POISON), plain)) == {}
+
+
+def test_student_can_be_turned_off(with_student, monkeypatch):
+    policy = load_policy(with_student.policy_file)
+    policy.semantic.student = False
+    save_policy(policy, with_student.policy_file)
+    service(monkeypatch)
+    assert asyncio.run(post_tool_use(fetched(POISON), with_student)) == {}
 
 
 def test_student_adds_a_finding_the_service_missed(with_student, monkeypatch):

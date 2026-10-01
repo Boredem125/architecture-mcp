@@ -1,87 +1,88 @@
 {
   "labels": "groq",
+  "generated": true,
   "fpr_target": 0.01,
   "excluded_source": null,
-  "threshold": 0.6085,
+  "threshold": 0.6989,
   "results": {
     "repo files, 600-row sample (held out)": {
       "whole text": {
-        "caught": "261/309",
+        "caught": "250/309",
         "false_alarms": "6/291",
-        "recall": 0.845,
-        "precision": 0.978,
-        "f1": 0.906
+        "recall": 0.809,
+        "precision": 0.977,
+        "f1": 0.885
       },
       "per segment": {
-        "caught": "263/309",
-        "false_alarms": "8/291",
-        "recall": 0.851,
-        "precision": 0.97,
-        "f1": 0.907
+        "caught": "252/309",
+        "false_alarms": "6/291",
+        "recall": 0.816,
+        "precision": 0.977,
+        "f1": 0.889
       }
     },
     "deepset test (held out)": {
       "whole text": {
-        "caught": "39/60",
+        "caught": "30/60",
         "false_alarms": "0/56",
-        "recall": 0.65,
+        "recall": 0.5,
         "precision": 1.0,
-        "f1": 0.788
+        "f1": 0.667
       },
       "per segment": {
-        "caught": "43/60",
+        "caught": "36/60",
         "false_alarms": "0/56",
-        "recall": 0.717,
+        "recall": 0.6,
         "precision": 1.0,
-        "f1": 0.835
+        "f1": 0.75
       }
     },
     "deepset test, genuine attacks only": {
       "whole text": {
-        "caught": "29/39",
+        "caught": "24/39",
         "false_alarms": "0/56",
-        "recall": 0.744,
+        "recall": 0.615,
         "precision": 1.0,
-        "f1": 0.853
+        "f1": 0.762
       },
       "per segment": {
-        "caught": "30/39",
+        "caught": "27/39",
         "false_alarms": "0/56",
-        "recall": 0.769,
+        "recall": 0.692,
         "precision": 1.0,
-        "f1": 0.87
+        "f1": 0.818
       }
     },
     "neuralchemy test (held out)": {
       "whole text": {
-        "caught": "519/552",
-        "false_alarms": "24/390",
-        "recall": 0.94,
-        "precision": 0.956,
-        "f1": 0.948
+        "caught": "509/552",
+        "false_alarms": "17/390",
+        "recall": 0.922,
+        "precision": 0.968,
+        "f1": 0.944
       },
       "per segment": {
-        "caught": "524/552",
-        "false_alarms": "24/390",
-        "recall": 0.949,
-        "precision": 0.956,
-        "f1": 0.953
+        "caught": "514/552",
+        "false_alarms": "17/390",
+        "recall": 0.931,
+        "precision": 0.968,
+        "f1": 0.949
       }
     },
     "agent_set (dev, hand-written)": {
       "whole text": {
-        "caught": "16/24",
-        "false_alarms": "5/24",
-        "recall": 0.667,
-        "precision": 0.762,
-        "f1": 0.711
+        "caught": "14/24",
+        "false_alarms": "4/24",
+        "recall": 0.583,
+        "precision": 0.778,
+        "f1": 0.667
       },
       "per segment": {
-        "caught": "17/24",
-        "false_alarms": "5/24",
-        "recall": 0.708,
-        "precision": 0.773,
-        "f1": 0.739
+        "caught": "14/24",
+        "false_alarms": "4/24",
+        "recall": 0.583,
+        "precision": 0.778,
+        "f1": 0.667
       }
     },
     "embedded in a README (dev)": {
@@ -94,10 +95,10 @@
       },
       "per segment": {
         "caught": "9/24",
-        "false_alarms": "2/24",
+        "false_alarms": "0/24",
         "recall": 0.375,
-        "precision": 0.818,
-        "f1": 0.514
+        "precision": 1.0,
+        "f1": 0.545
       }
     }
   }

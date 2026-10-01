@@ -124,13 +124,13 @@ The idea was to add only the regex's "precise" rules to the semantic layer. Per 
 
 **Shipped instead:** letter-spaced words (`I g n o r e   a l l   p r e v i o u s …`) are collapsed before judging, an obfuscation that defeated both detectors. It caught the one such attack in the repo sample (85 → 86), changed nothing elsewhere and added no false alarms.
 
-## Phase 2 student (opt-in)
+## Phase 2 student (on by default since round 2)
 
 `run.py` also scores the distilled student (`src/sandbox/semantic/student.py`)
-per segment, alone and as `semantic OR student`; `run.py --reuse` re-scores
-it against the cached jev-os predictions without loading a model. Results
-and the adoption decision (not on by default: +4 dev false alarms, limit 3)
-are in [../distill/README.md](../distill/README.md).
+per segment, alone and as `semantic OR student`, and the round-2 gate set
+`fresh_dev.jsonl`; `run.py --reuse` re-scores the student against the cached
+jev-os predictions without loading a model. Results and both adoption
+decisions are in [../distill/README.md](../distill/README.md).
 
 ## Two-stage screen (xsmall → base): measured, not recommended
 

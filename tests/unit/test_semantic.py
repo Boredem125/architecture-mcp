@@ -129,7 +129,11 @@ def test_service_outage_is_not_cached(enabled, monkeypatch):
     assert out != {} and up.calls > 0
 
 
-def test_service_down_is_a_no_op(enabled, monkeypatch):
+def test_service_down_is_a_no_op_without_the_student(enabled, monkeypatch):
+    # With the student on (the default) it would still scan; see test_student.py.
+    policy = load_policy(enabled.policy_file)
+    policy.semantic.student = False
+    save_policy(policy, enabled.policy_file)
     down = FakeClient(down=True)
     monkeypatch.setattr(SemanticClient, "from_policy", classmethod(lambda cls, p: down))
     assert asyncio.run(post_tool_use(web_fetch_result(POISON), enabled)) == {}
