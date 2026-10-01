@@ -192,7 +192,7 @@ def test_source_chain_edited_before_export_is_reported(folder, tmp_path):
     rec["state"] = "denied"  # links intact, content changed
     lines[1] = json.dumps(rec)
     f.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    assert FolderAudit(folder.audit_dir, "s1").verify_chain()[0]  # the link-only check misses it
+    assert not FolderAudit(folder.audit_dir, "s1").verify_chain()[0]  # sandbox verify now catches it too
 
     out, s = _export(folder, tmp_path)
     assert not s["audit"]["all_chains_valid"]

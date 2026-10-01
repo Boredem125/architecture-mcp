@@ -745,9 +745,15 @@ def restore_cmd(rel_path: str, path: str, sha: str, dry_run: bool) -> None:
 
 @click.command("verify")
 @click.argument("path", default=".")
-def verify_cmd(path: str) -> None:
-    """Verify the integrity of the audit chain."""
-    from sandbox.connector.audit import FolderAudit
+@click.option("--session", "only", default="", help="Verify only this session's chain.")
+@click.option("--expect-head", "expect", multiple=True, metavar="SESSION=HASH",
+              help="Head hash recorded earlier (repeatable); catches records deleted from the end.")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
+def verify_cmd(path: str, only: str, expect: tuple[str, ...], as_json: bool) -> None:
+    """Verify every session's audit chain: links and each record's content."""
+    import json
+
+    from sandbox.connector.audit import session_ids, verify_records_bytes
     from sandbox.connector.layout import FolderLayout
 
     layout = FolderLayout.discover(path)
@@ -755,12 +761,43 @@ def verify_cmd(path: str) -> None:
         click.echo("No .sandbox/ found.")
         raise SystemExit(1)
 
-    audit = FolderAudit(layout.audit_dir)
-    valid, msg = audit.verify_chain()
-    if valid:
-        click.echo(f"✓ Audit chain valid: {msg}")
+    expected = {}
+    for item in expect:
+        sid, sep, head = item.partition("=")
+        if not sep or not head:
+            click.echo(f"--expect-head takes SESSION=HASH, got {item!r}")
+            raise SystemExit(2)
+        expected[sid] = head
+    sessions = [only] if only else session_ids(layout.audit_dir)
+    results = {}
+    for sid in sessions:
+        path_ = layout.audit_dir / sid / "records.jsonl"
+        if not path_.is_file():
+            results[sid] = {"ok": False, "message": "no audit chain for this session", "records": 0, "head_hash": ""}
+            continue
+        r = verify_records_bytes(path_.read_bytes())
+        if r["ok"] and sid in expected and not r["head_hash"].startswith(expected[sid]):
+            r = {**r, "ok": False, "message": f"head hash {r['head_hash'][:16]} is not the expected "
+                                                f"{expected[sid][:16]} (records removed or rewritten at the end)"}
+        results[sid] = r
+    for sid in expected:
+        if sid not in results:
+            results[sid] = {"ok": False, "message": "expected head given, but no chain found", "records": 0,
+                            "head_hash": ""}
+
+    failed = [sid for sid, r in results.items() if not r["ok"]]
+    if as_json:
+        click.echo(json.dumps({"ok": not failed and bool(results), "sessions": results}, indent=2))
     else:
-        click.echo(f"✗ Audit chain broken: {msg}")
+        if not results:
+            click.echo("No audit chains found.")
+        for sid, r in sorted(results.items()):
+            mark = "✓" if r["ok"] else "✗"
+            click.echo(f"{mark} {sid}: {r['message']}" + (f"  head {r['head_hash'][:16]}" if r["head_hash"] else ""))
+        if results:
+            click.echo(f"{len(results) - len(failed)}/{len(results)} chains valid. Links and record contents "
+                       "checked; record the head hashes elsewhere to detect records removed from the end.")
+    if failed:
         raise SystemExit(1)
 
 

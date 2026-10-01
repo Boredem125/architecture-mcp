@@ -26,7 +26,8 @@ evidence lives.
 
 - **Decisions & approvals:** `.sandbox/escalations/done/<id>.json` (signed) — read with
   `sandbox explain <id>`.
-- **Audit chain:** `.sandbox/audit/<session>/records.jsonl` — verify with `sandbox verify`.
+- **Audit chain:** `.sandbox/audit/<session>/records.jsonl` — verify with `sandbox verify` (every session; links and each record's
+  content; `--expect-head` with a head hash recorded elsewhere catches records removed from the end).
 - **File changes / originals:** `.sandbox/originals/` — list with `sandbox changes`, revert
   with `sandbox restore`.
 - **Evidence pack:** `sandbox export-evidence --out pack.zip` collects all of the above with

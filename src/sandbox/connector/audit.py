@@ -131,40 +131,17 @@ class FolderAudit:
             return HashChain(previous_hash="", chain_length=0)
 
     def verify_chain(self) -> tuple[bool, str]:
-        """Verify the integrity of the audit chain.
+        """Verify this session's chain: links AND each record's own hash.
 
-        Returns (is_valid, message).
+        Returns (is_valid, message). See verify_records_bytes.
         """
         if not self.records_file.exists():
             return True, "No records"
-
         try:
-            chain = HashChain(previous_hash="", chain_length=0)
-            with open(self.records_file, encoding="utf-8") as f:
-                for i, line in enumerate(f):
-                    if not line.strip():
-                        continue
-                    try:
-                        record = json.loads(line)
-                    except json.JSONDecodeError:
-                        return False, f"Line {i}: invalid JSON"
-
-                    # Check chain integrity
-                    if record.get("previous_hash") != chain.current_hash:
-                        return False, f"Line {i}: chain broken (prev mismatch)"
-
-                    if record.get("chain_length") != chain.chain_length + 1:
-                        return False, f"Line {i}: chain length mismatch"
-
-                    # Update running chain state
-                    chain = HashChain(
-                        previous_hash=record.get("record_hash", ""),
-                        chain_length=record.get("chain_length", 0),
-                    )
-
-            return True, f"Chain valid ({chain.chain_length} records)"
-        except Exception as e:
+            result = verify_records_bytes(self.records_file.read_bytes())
+        except OSError as e:
             return False, f"Verification failed: {e}"
+        return result["ok"], result["message"]
 
     def list_records(self, limit: int = 50) -> list[dict[str, Any]]:
         """Return the last N records from the audit log."""
@@ -184,3 +161,50 @@ class FolderAudit:
             pass
 
         return records[-limit:]
+
+
+# Fields FolderAudit.append adds; record_hash covers everything else.
+CHAIN_FIELDS = ("previous_hash", "chain_length", "record_hash")
+
+
+def verify_records_bytes(data: bytes) -> dict[str, Any]:
+    """Re-verify one ``records.jsonl``: the links between records and each
+    record's own hash, so editing a record's content is caught even when the
+    links are left intact.
+
+    Returns {"ok", "message", "records", "head_hash"}. Deleting the *last*
+    records (or rewriting the last one with its hash) is not detectable from
+    the file alone: compare ``head_hash`` with one recorded elsewhere (e.g.
+    ``sandbox verify --expect-head``, or an evidence pack's manifest).
+    """
+    prev, length = "", 0
+    for i, raw in enumerate(data.split(b"\n"), start=1):
+        if not raw.strip():
+            continue
+        try:
+            rec = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return {"ok": False, "message": f"line {i}: not valid JSON", "records": length, "head_hash": prev}
+        if not isinstance(rec, dict):
+            return {"ok": False, "message": f"line {i}: not a JSON object", "records": length, "head_hash": prev}
+        if rec.get("previous_hash") != prev:
+            return {"ok": False, "message": f"line {i}: chain broken (previous_hash does not match line before)",
+                    "records": length, "head_hash": prev}
+        if rec.get("chain_length") != length + 1:
+            return {"ok": False, "records": length, "head_hash": prev,
+                    "message": f"line {i}: chain_length is {rec.get('chain_length')}, expected {length + 1}"}
+        body = {k: v for k, v in rec.items() if k not in CHAIN_FIELDS}
+        computed = hashlib.sha256(json.dumps(body, separators=(",", ":"), sort_keys=True).encode("utf-8")).hexdigest()
+        if rec.get("record_hash") != computed:
+            return {"ok": False, "message": f"line {i}: record content does not match its record_hash",
+                    "records": length, "head_hash": prev}
+        prev, length = computed, length + 1
+    return {"ok": True, "message": f"chain valid ({length} records)", "records": length, "head_hash": prev}
+
+
+def session_ids(audit_dir: Path) -> list[str]:
+    """Every session that has an audit chain under ``audit_dir``."""
+    audit_dir = Path(audit_dir)
+    if not audit_dir.is_dir():
+        return []
+    return sorted(p.name for p in audit_dir.iterdir() if (p / "records.jsonl").is_file())

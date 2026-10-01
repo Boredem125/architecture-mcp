@@ -56,8 +56,8 @@ Per decision record, at export and again at verify:
 - `request_id_matches_file`: the record was not copied or renamed.
 
 Per audit chain: each record links to the one before (`previous_hash`, `chain_length`) and
-its content still matches its `record_hash`. This is stricter than `sandbox verify`, which
-checks the links only.
+its content still matches its `record_hash`. `sandbox verify` runs the same check on every
+session in the folder (it used to check only the "default" session, and only the links).
 
 Per pack (verify only): the manifest signature, every file's sha256, no listed file missing,
 no unlisted file added, and optionally that the exporter key is the one you expected.

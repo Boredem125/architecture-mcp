@@ -105,37 +105,11 @@ def parse_time(value: str | None) -> float | None:
 # --- audit chain ---------------------------------------------------------
 
 def verify_chain_bytes(data: bytes) -> dict[str, Any]:
-    """Re-verify one ``records.jsonl``.
+    """Re-verify one ``records.jsonl`` (links and each record's hash); the same
+    check ``sandbox verify`` runs (connector/audit.py verify_records_bytes)."""
+    from sandbox.connector.audit import verify_records_bytes
 
-    Stricter than FolderAudit.verify_chain: besides the links, it recomputes
-    each record's own hash, so editing a record's content is caught even when
-    the links are left intact. Rewriting the *last* record together with its
-    hash is not detectable from the file alone; the pack's manifest pins the
-    head hash at export time.
-    """
-    prev, length = "", 0
-    for i, raw in enumerate(data.split(b"\n"), start=1):
-        if not raw.strip():
-            continue
-        try:
-            rec = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return {"ok": False, "message": f"line {i}: not valid JSON", "records": length, "head_hash": prev}
-        if not isinstance(rec, dict):
-            return {"ok": False, "message": f"line {i}: not a JSON object", "records": length, "head_hash": prev}
-        if rec.get("previous_hash") != prev:
-            return {"ok": False, "message": f"line {i}: chain broken (previous_hash does not match line before)",
-                    "records": length, "head_hash": prev}
-        if rec.get("chain_length") != length + 1:
-            return {"ok": False, "records": length, "head_hash": prev,
-                    "message": f"line {i}: chain_length is {rec.get('chain_length')}, expected {length + 1}"}
-        body = {k: v for k, v in rec.items() if k not in _CHAIN_FIELDS}
-        computed = _sha256(json.dumps(body, separators=(",", ":"), sort_keys=True).encode("utf-8"))
-        if rec.get("record_hash") != computed:
-            return {"ok": False, "message": f"line {i}: record content does not match its record_hash",
-                    "records": length, "head_hash": prev}
-        prev, length = computed, length + 1
-    return {"ok": True, "message": f"chain valid ({length} records)", "records": length, "head_hash": prev}
+    return verify_records_bytes(data)
 
 
 # --- per-record checks ---------------------------------------------------

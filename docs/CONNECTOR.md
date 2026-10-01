@@ -213,7 +213,7 @@ sandbox approve <ID> [PATH] [--reason TEXT] [--remember once|command|prefix|host
 sandbox deny <ID> [PATH] [--reason TEXT]
 sandbox changes [PATH] [--json]
 sandbox restore <REL_PATH> [PATH] [--sha SHA] [--dry-run]
-sandbox verify [PATH]
+sandbox verify [PATH] [--session ID] [--expect-head SESSION=HASH] [--json]
 sandbox seal [PATH]
 sandbox policy show|allow-shell PATTERN|allow-host HOST|set-trigger T V|forget [PATH]
 sandbox uninstall [PATH] [--keep-data] [--yes]
