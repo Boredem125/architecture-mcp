@@ -37,7 +37,8 @@ This is a local proof-of-work. In a bank, the trust boundary tightens:
 - **Signing keys → HSM / smartcard.** Today the approver's Ed25519 seed sits at
   `.sandbox/state/keys/<reviewer>.seed`. In production the approver's key is a per-human
   credential in an HSM or smartcard; the *signing interface* here is what transfers, not the
-  on-disk custody.
+  on-disk custody. The evidence exporter's key (`evidence-exporter.seed`, which signs
+  `sandbox export-evidence` manifests) sits in the same place and has the same limit.
 - **Control plane → out of the workspace.** Move `.sandbox/` state (queue, audit, keys) to a
   service or a directory the developer's own account cannot write, so component 7 no longer
   depends on workspace filesystem permissions.

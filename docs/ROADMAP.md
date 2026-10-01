@@ -34,15 +34,18 @@ difficulty; each is intentionally *not* built yet so the core stays tight and de
 ## Stage 2 — bank-resonant, moderate cost
 
 - **Environment dimension** (dev / staging / prod → different verdicts) = segregation of duties.
-- **Policy-as-code + versioning** (`policy/v1.json … current.json`; `policy_version` already
-  bound into signed records — this makes it first-class and diffable).
+- **Policy-as-code + versioning** (`policy/v1.json … current.json`; `policy_version` is
+  already a signed field in done-records but nothing sets it yet — this makes it first-class
+  and diffable).
 - **Dual control: per-human authentication.** Two approvals by distinct reviewer ids with
   distinct keys are enforced (`connector/approval.py`); binding each id to a real person (SSO,
   smartcard/HSM keys) is what remains.
 - **Lightweight data classification** (tag globs PUBLIC / INTERNAL / CONFIDENTIAL / RESTRICTED;
   feed the risk score and drive outbound redaction).
-- **`sandbox export-evidence`** — one signed examiner pack (decisions, approvers, policy at
-  time-of-action, chain-verify result): "evidence in hours, not weeks."
+- **`sandbox export-evidence`**: built. A signed pack of decisions, approvers, dual-control
+  approvals, audit chains with their verify results, governance clause hits and the current
+  policy files, re-checked offline by `sandbox verify-evidence` ([EVIDENCE.md](EVIDENCE.md)).
+  Remaining: the policy at time-of-action, which needs the versioning item above.
 
 ## Stage 3 — frontier, higher cost
 

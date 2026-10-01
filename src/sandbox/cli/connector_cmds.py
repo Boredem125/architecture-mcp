@@ -24,6 +24,9 @@ def register(cli: click.Group) -> None:
     cli.add_command(logs_cmd)
     cli.add_command(semantic_group)
     cli.add_command(governance_group)
+    from sandbox.cli.evidence_cmds import export_evidence_cmd, verify_evidence_cmd
+    cli.add_command(export_evidence_cmd)
+    cli.add_command(verify_evidence_cmd)
 
 
 @click.group("governance")
