@@ -140,6 +140,10 @@ The classifier returns one of four states — not a boolean:
 | `network` | `escalate` | WebFetch / WebSearch to non-allowlisted hosts |
 | `read_outside` | `observe` | Reads outside the folder (audited, not blocked) |
 
+Optional `environment` (`dev` / `staging` / `prod`) and `classification` (glob → level rules)
+fields make verdicts stricter by environment and by the data a call touches; both are unset by
+default. See [DATA_AND_ENVIRONMENT.md](DATA_AND_ENVIRONMENT.md).
+
 Tune any of them:
 
 ```bash

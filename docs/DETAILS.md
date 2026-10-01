@@ -130,6 +130,16 @@ sandbox governance test          # measures each clause's reliability against it
 
 The reliability of a zero-shot clause varies, so the tool measures it: on the example policy two clauses score 6/6 and the payments clause 3/6 (flagged "needs calibration"). See [docs/GOVERNANCE.md](GOVERNANCE.md).
 
+## Environment and data classification (optional)
+
+Two policy fields, both off by default. `environment` (`dev` / `staging` / `prod`) makes the
+same call stricter in prod: allowlisted shell and network calls are audited, and escalations
+need two approvers from risk 70 instead of 80. `classification` tags paths by glob as
+PUBLIC / INTERNAL / CONFIDENTIAL / RESTRICTED; the level adds an itemized risk factor, sets a
+minimum verdict (writing RESTRICTED escalates), and a command or tool call that sends a
+CONFIDENTIAL or RESTRICTED file out needs dual control. It tags paths, not content, so it is
+only as good as the patterns. Details and limits: [DATA_AND_ENVIRONMENT.md](DATA_AND_ENVIRONMENT.md).
+
 ## Key Design Decisions
 
 - **The folder is the bus**: Atomic file operations on NTFS coordinate four independent processes (no in-memory state, no open ports, survives restarts)

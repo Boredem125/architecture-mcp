@@ -34,6 +34,9 @@ difficulty; each is intentionally *not* built yet so the core stays tight and de
 ## Stage 2 — bank-resonant, moderate cost
 
 - **Environment dimension** (dev / staging / prod → different verdicts) = segregation of duties.
+  *Shipped (first cut):* `environment` in `policy.json`; staging audits allowlisted network
+  calls, prod audits allowlisted shell and network calls and starts dual control at risk 70
+  instead of 80. See [DATA_AND_ENVIRONMENT.md](DATA_AND_ENVIRONMENT.md).
 - **Policy-as-code + versioning** (`policy/v1.json … current.json`; `policy_version` already
   bound into signed records — this makes it first-class and diffable).
 - **Dual control: per-human authentication.** Two approvals by distinct reviewer ids with
@@ -41,6 +44,10 @@ difficulty; each is intentionally *not* built yet so the core stays tight and de
   smartcard/HSM keys) is what remains.
 - **Lightweight data classification** (tag globs PUBLIC / INTERNAL / CONFIDENTIAL / RESTRICTED;
   feed the risk score and drive outbound redaction).
+  *Shipped (first cut):* ordered glob rules feed an itemized risk factor and verdict floors;
+  sending a CONFIDENTIAL/RESTRICTED file out is dual control; tool-call governance clauses can
+  gate on `data_<level>` tags. Path-based only, no content inspection. **Not yet:** outbound
+  redaction, and the tags on shell-command clauses.
 - **`sandbox export-evidence`** — one signed examiner pack (decisions, approvers, policy at
   time-of-action, chain-verify result): "evidence in hours, not weeks."
 

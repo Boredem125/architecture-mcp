@@ -6,6 +6,7 @@ noisy zero-shot check from firing on unrelated text.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,6 +50,7 @@ def evaluate(
     *,
     command: str = "",
     tool_call: tuple[str, dict[str, Any]] | None = None,
+    extra_tags: Iterable[str] = (),
 ) -> list[Violation]:
     """Clauses violated by this action, worst `action` first. Empty on any
     service failure (no extra scrutiny, never less).
@@ -56,9 +58,11 @@ def evaluate(
     With ``tool_call=(tool_name, tool_input)`` the action is a non-shell call:
     only clauses whose ``requires_tool_actions`` match what the call does are
     checked, against the call rendered as text (``text`` is ignored).
+    ``extra_tags`` adds tags the caller derived, e.g. ``data_restricted`` from
+    the data classification of a file path in the call's arguments.
     """
     if tool_call is not None:
-        tags = {t for t, _ in _describe_call(*tool_call)}
+        tags = {t for t, _ in _describe_call(*tool_call)} | set(extra_tags or ())
         gated = [c for c in policy.clauses if set(c.requires_tool_actions) & tags]
         text = _render_call(*tool_call)
     else:

@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Verdicts a trigger can carry — a four-state enum, not a boolean. `observe`
 # (audit-but-allow) is what makes the noisy triggers shippable.
@@ -139,6 +139,28 @@ class TriggerPolicy(BaseModel):
     read_outside: str = "observe"
 
 
+ENVIRONMENTS = ("dev", "staging", "prod")
+_ENV_ALIASES = {"development": "dev", "stage": "staging", "production": "prod"}
+DATA_LEVELS = ("public", "internal", "confidential", "restricted")
+
+
+class ClassificationRule(BaseModel):
+    """One data-classification rule (see sandbox/safety/classification.py).
+
+    Rules are ordered and the first match wins. An unrecognised level is read
+    as ``restricted`` (the strictest) rather than discarding the policy.
+    """
+
+    pattern: str
+    level: str
+
+    @field_validator("level", mode="before")
+    @classmethod
+    def _level(cls, v: object) -> str:
+        level = str(v or "").strip().lower()
+        return level if level in DATA_LEVELS else "restricted"
+
+
 class FolderPolicy(BaseModel):
     version: int = 1
     mode: str = "enforce"
@@ -156,6 +178,21 @@ class FolderPolicy(BaseModel):
     scan: ScanPolicy = Field(default_factory=ScanPolicy)
     output: OutputPolicy = Field(default_factory=OutputPolicy)
     semantic: SemanticPolicy = Field(default_factory=SemanticPolicy)
+    # dev | staging | prod, or None (unset: today's behaviour, SANDBOX_ENV still
+    # read by the risk score). See docs/DATA_AND_ENVIRONMENT.md.
+    environment: str | None = None
+    # Ordered glob -> level rules; empty = no classification (today's behaviour).
+    classification: list[ClassificationRule] = Field(default_factory=list)
+
+    @field_validator("environment", mode="before")
+    @classmethod
+    def _environment(cls, v: object) -> str | None:
+        if v is None or not str(v).strip():
+            return None
+        env = str(v).strip().lower()
+        env = _ENV_ALIASES.get(env, env)
+        # A typo must not silently relax the policy: unknown names read as prod.
+        return env if env in ENVIRONMENTS else "prod"
 
     def _inject_protections(self) -> None:
         """Ensure the self-protection rules are present (non-removable)."""
