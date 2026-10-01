@@ -17,7 +17,9 @@ from typing import Any
 
 import structlog
 from fastapi import APIRouter, Header, HTTPException
-from pydantic import BaseModel
+import os
+
+from pydantic import BaseModel, Field, field_validator
 
 from sandbox.config import ContainmentSettings, ExecutorSettings
 from sandbox.containment.docker_sandbox import DockerSandbox, _check_docker_available
@@ -60,15 +62,33 @@ def _parse_tenant(api_key: str | None) -> str:
 # Models
 # ------------------------------------------------------------------
 
+def allowed_templates() -> set[str]:
+    """Container images a sandbox may start from (E2B_TEMPLATES, comma-separated).
+
+    Without a list, any caller holding the agent token could make the host
+    pull and run an arbitrary image; under the ZAP scan an unknown image also
+    crashed the route (HTTP 500).
+    """
+    raw = os.environ.get("E2B_TEMPLATES", "python:3.12-slim")
+    return {t.strip() for t in raw.split(",") if t.strip()}
+
+
 class CreateSandboxRequest(BaseModel):
     template: str = "python:3.12-slim"
-    timeout: int = 1800
+    timeout: int = Field(1800, ge=1, le=24 * 3600)
     metadata: dict[str, str] = {}
+
+    @field_validator("template")
+    @classmethod
+    def _known_template(cls, v: str) -> str:
+        if v not in allowed_templates():
+            raise ValueError(f"template must be one of {sorted(allowed_templates())} (set E2B_TEMPLATES)")
+        return v
 
 
 class ExecCommandRequest(BaseModel):
     cmd: str
-    timeout: int = 120
+    timeout: int = Field(120, ge=1, le=3600)
     workdir: str | None = None
 
 

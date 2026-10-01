@@ -4,7 +4,9 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from sandbox.models.enums import ActionType
 
 router = APIRouter(prefix="/api/v1/runtime", tags=["agent-runtime"])
 
@@ -12,10 +14,11 @@ router = APIRouter(prefix="/api/v1/runtime", tags=["agent-runtime"])
 class SpawnAgentRequest(BaseModel):
     agent_type: str  # claude-code, codex, hermes, antigravity, custom
     task: str
-    capabilities: list[str] = ["READ"]
+    # Typed and bounded: an unknown capability used to crash the route (HTTP 500).
+    capabilities: list[ActionType] = [ActionType.READ]
     workspace_root: str = "/tmp/workspace"
-    max_writes: int = 50
-    ttl_seconds: int = 1800
+    max_writes: int = Field(50, ge=0, le=100_000)
+    ttl_seconds: int = Field(1800, ge=1, le=7 * 24 * 3600)
     api_key: str | None = None
     model: str | None = None
     metadata: dict[str, Any] | None = None

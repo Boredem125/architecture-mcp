@@ -34,18 +34,36 @@ Regression tests: `tests/security/test_api_auth.py`. The folder connector
 
 ## Fixed: ZAP API-scan findings (1 Oct 2026)
 
-The CI ZAP scan of the API reported 288 low/informational alerts: 255 server
-errors, 16 error-disclosure alerts, 10 missing-header alerts and 7
-informational ones. Reproduced locally with a fuzzer that walks every
-OpenAPI route with malformed path, query and body values: the only crash
-site was the Redis-backed review API (`/api/v1/hitl`), mounted but never
-configured, so every request to it raised. It is now mounted only with
-`HITL_REDIS_API=true` (it needs Redis, and its reviewer authentication is
-still a placeholder). Unexpected errors return a fixed body with an error id
-and log the traceback server-side ([api/hardening.py](src/sandbox/api/hardening.py)).
-Every response, 401/403 included, carries `X-Content-Type-Options`,
+The CI ZAP scan of the API first reported 288 low/informational alerts,
+255 of them as "A Server Error response code was returned". That count was
+wrong: ZAP's response-code rule raises both client-error (4xx) and
+server-error (5xx) alerts under one plugin id, and the SARIF converter
+labelled them all with the first name it saw. With the converter fixed, the
+scan showed 215 client errors (expected 4xx, e.g. 404 for made-up ids), **3
+real server errors** and 2 error-disclosure alerts on the same routes.
+
+What crashed, and the fix:
+
+- `/api/v1/hitl/*` (found by a local fuzzer): the Redis-backed review API was
+  mounted but never configured, so every request raised. Now mounted only
+  with `HITL_REDIS_API=true`.
+- `POST /api/v1/hook/connect`, `POST /api/v1/runtime/spawn`: capability names
+  were plain strings converted inside the route; an unknown one raised.
+  Now typed (`list[ActionType]`) with bounded numbers: a 422, not a 500.
+- `POST /e2b/v1/sandboxes`: on a host with Docker, the caller-chosen
+  `template` was pulled and run, so an unknown image crashed the route and
+  any agent-token holder could make the host run an arbitrary image. Now
+  restricted to an allowlist (`E2B_TEMPLATES`, default `python:3.12-slim`).
+- `POST /api/v1/security/jit/grant`: an enormous `duration_minutes`
+  overflowed the expiry date. Now bounded (max 24 h).
+
+Also: unexpected errors return a fixed body with an error id and log the
+traceback server-side ([api/hardening.py](src/sandbox/api/hardening.py)); every
+response, 401/403 included, carries `X-Content-Type-Options`,
 `Cross-Origin-Resource-Policy`, `X-Frame-Options`, `Referrer-Policy` and
-`Cache-Control: no-store`. Regression test: `tests/security/test_api_robustness.py`.
+`Cache-Control: no-store`. Regression tests in
+`tests/security/test_api_robustness.py` walk every route with malformed
+values and with schema-shaped bodies holding junk values (what ZAP sends).
 Unix timestamps in responses are intended data and stay.
 
 ## Known trust assumptions

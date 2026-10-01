@@ -94,7 +94,9 @@ class JITAccessRequest(BaseModel):
     agent_id: str
     elevated_actions: list[str]
     reason: str
-    duration_minutes: int = 30
+    # Just-in-time access is short by definition; an unbounded value also
+    # overflowed the expiry calculation (HTTP 500).
+    duration_minutes: int = Field(30, ge=1, le=24 * 60)
 
 
 class RBACRole(BaseModel):

@@ -87,7 +87,7 @@ Writing this up also surfaced a documentation error: the README said critical ac
 - **Labels come from LLMs** and were not human-reviewed, apart from the deepset review.
 - **Benchmarks are small.** The tool-call test half has 41 calls, with only 2 payment violations.
 - **Dual control enforces two distinct reviewer ids and keys, not two distinct humans.** Keys live in the control plane; binding them to people needs SSO or hardware keys.
-- **ZAP's API scan found 288 low or informational alerts.** 255 were server errors from one route group that was mounted but never configured; that, the error-detail disclosures and the missing headers were fixed afterwards, with a fuzzing regression test. Unix timestamps in responses remain, as intended data.
+- **ZAP's API scan reported 288 low or informational alerts.** My SARIF converter labelled every 4xx as a server error; corrected, there were 3 real server errors (plus a crashing route group a local fuzzer found), 2 error disclosures and 10 missing headers. All fixed, with regression tests that send what ZAP sends. The remaining alerts are expected 4xx responses and intended timestamps.
 - **English only**, and the false-alarm rate on look-alike benign text is still about 20% for the combined scan on the fresh dev set (30 of 149).
 
 ## What's next

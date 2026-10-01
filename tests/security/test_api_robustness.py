@@ -55,6 +55,47 @@ def test_no_route_crashes_on_malformed_input(client):
     assert not crashes, crashes[:10]
 
 
+def _schema_valid_bodies(spec, op):
+    """Bodies that match the request schema's shape with junk values: what ZAP
+    sends, and what got past FastAPI's own validation into the route code
+    (hook/connect, runtime/spawn and e2b sandboxes crashed on them)."""
+    content = (op.get("requestBody") or {}).get("content", {}).get("application/json", {})
+    schema = content.get("schema", {})
+    if "$ref" in schema:
+        schema = spec["components"]["schemas"][schema["$ref"].split("/")[-1]]
+    props = schema.get("properties", {})
+    for text, number in (("zap", 10**12), ("-1", -1)):
+        body = {}
+        for name, prop in props.items():
+            kind = prop.get("type") or next((a.get("type") for a in prop.get("anyOf", []) if a.get("type")), "string")
+            body[name] = {"string": text, "integer": number, "number": float(number), "boolean": True,
+                          "array": [text], "object": {"k": text}}.get(kind, text)
+        yield body
+
+
+def test_schema_valid_bodies_with_junk_values_do_not_crash(client):
+    spec = client.app.openapi()
+    crashes = []
+    for path, ops in spec["paths"].items():
+        if "{" in path:
+            continue
+        for method, op in ops.items():
+            for body in _schema_valid_bodies(spec, op) if "requestBody" in op else []:
+                r = client.request(method.upper(), path, json=body)
+                if r.status_code >= 500:
+                    crashes.append(f"{method.upper()} {path} {body} -> {r.status_code}")
+    assert not crashes, crashes[:10]
+
+
+def test_e2b_template_must_be_allowlisted(client, monkeypatch):
+    r = client.post("/e2b/v1/sandboxes", json={"template": "attacker/miner:latest"})
+    assert r.status_code == 422
+    monkeypatch.setenv("E2B_TEMPLATES", "python:3.12-slim,node:22-slim")
+    from sandbox.api.routes.e2b import CreateSandboxRequest
+
+    assert CreateSandboxRequest(template="node:22-slim").template == "node:22-slim"
+
+
 def test_unconfigured_redis_review_api_is_not_mounted(client):
     assert client.get("/api/v1/hitl/pending").status_code == 404
     assert not any(p.startswith("/api/v1/hitl/") for p in client.app.openapi()["paths"])

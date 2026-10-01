@@ -19,7 +19,7 @@ from typing import Any
 
 from sandbox.api.auth import ensure_tokens
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from sandbox.models.enums import ActionType
 from sandbox.models.messages import ActionRequest
@@ -59,9 +59,11 @@ class HookEvaluateRequest(BaseModel):
 class HookConnectRequest(BaseModel):
     agent_name: str = "claude-code"
     workspace_root: str = ""
-    capabilities: list[str] = ["READ", "WRITE", "EXECUTE"]
-    max_writes: int = 100
-    ttl_seconds: int = 3600
+    # Typed and bounded, so bad input is a 422 rather than a crash in the route
+    # (an unknown capability raised ValueError -> HTTP 500 under the ZAP scan).
+    capabilities: list[ActionType] = [ActionType.READ, ActionType.WRITE, ActionType.EXECUTE]
+    max_writes: int = Field(100, ge=0, le=100_000)
+    ttl_seconds: int = Field(3600, ge=1, le=7 * 24 * 3600)
 
 
 def _get_session_manager():
