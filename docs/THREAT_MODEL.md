@@ -62,8 +62,13 @@ actions require **two** approvals (dual control, [connector/approval.py](../src/
 the first runs nothing; the second must come from a different reviewer id with a different
 key; both signed approvals are kept, and one that no longer matches the request (altered, or
 the command changed after it was given) doesn't count. *Limit:* two distinct ids and keys are
-enforced, not two distinct humans; keys live in the control plane (see [TCB.md](TCB.md)). *Roadmap:* approval-fatigue detection
-raises scrutiny when approval rate spikes (see [ROADMAP.md](ROADMAP.md)).
+enforced, not two distinct humans; keys live in the control plane (see [TCB.md](TCB.md)). *Approval fatigue:* a reviewer
+with a burst of approvals, or mostly very fast ones, in the last few minutes must give a written
+reason and needs a second reviewer until the flag clears; each case is audited, and `sandbox
+oversight` reports the indicators ([connector/oversight.py](../src/sandbox/connector/oversight.py)).
+*Limit:* the thresholds are uncalibrated defaults, and timing is a weak signal: it flags a careful
+fast reviewer and misses a slow one who does not read
+([DETAILS.md](DETAILS.md#oversight-indicators-and-approval-fatigue)).
 
 ## Goal 7 — Steer the agent through content it reads (indirect prompt injection)
 

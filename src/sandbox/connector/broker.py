@@ -16,6 +16,7 @@ from sandbox.broker.privilege_broker import BrokerRequestState, PrivilegeBroker
 _PROVENANCE_FIELDS = (
     "identity", "trigger", "reason_code", "risk", "requires_dual",
     "policy_version", "session_id", "tool_name",
+    "created_at",  # oversight metrics: time from request to decision
 )
 
 

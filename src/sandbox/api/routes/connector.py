@@ -174,6 +174,10 @@ async def connector_approve(
     if status == "same_reviewer":
         raise HTTPException(status_code=409,
                             detail=f"{request_id} needs dual control; the API already gave the first approval.")
+    if status == "reason_required":  # approval fatigue (connector/oversight.py)
+        raise HTTPException(status_code=422, detail=(
+            f"Approval fatigue flagged for reviewer 'api': a reason of at least "
+            f"{outcome['oversight']['min_reason_chars']} characters is required."))
     if status == "awaiting_second":
         return {"request_id": request_id, "state": "awaiting_second_approval", "approvals": outcome["approvals"]}
     result = outcome["result"]

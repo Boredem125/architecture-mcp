@@ -24,6 +24,9 @@ def register(cli: click.Group) -> None:
     cli.add_command(logs_cmd)
     cli.add_command(semantic_group)
     cli.add_command(governance_group)
+    from sandbox.cli.oversight_cmd import oversight_cmd
+
+    cli.add_command(oversight_cmd)
 
 
 @click.group("governance")
@@ -373,11 +376,19 @@ def approve_cmd(request_id: str, path: str, reason: str, remember: str, reviewer
         click.echo(f"Refused: {request_id} needs dual control and {reviewer} already approved it. "
                    "A different reviewer must give the second approval.")
         raise SystemExit(1)
+    oversight = outcome.get("oversight")
+    if oversight:
+        click.echo(f"Approval fatigue flagged for {reviewer}: " + "; ".join(oversight["fatigue"]["reasons"]))
+    if status == "reason_required":
+        click.echo(f"Refused: while flagged, approvals need --reason with at least "
+                   f"{oversight['min_reason_chars']} characters saying why {request_id} is safe.")
+        raise SystemExit(1)
     if status == "awaiting_second":
-        click.echo(f"Approval 1 of 2 recorded for {request_id} by {reviewer} (dual control). "
+        why = ", required because of approval fatigue" if oversight and oversight["second_reviewer"] else ""
+        click.echo(f"Approval 1 of 2 recorded for {request_id} by {reviewer} (dual control{why}). "
                    "Nothing has run; a different reviewer must approve it too.")
         return
-    if not rec.get("requires_dual"):
+    if not rec.get("requires_dual") and not oversight:
         _remember_decision(layout, rec, remember)
     result = outcome["result"]
     if rec.get("kind") == "tool_call":
@@ -471,6 +482,8 @@ def watch_cmd(path: str, reviewer: str | None, once: bool) -> None:
         raise SystemExit(1)
 
     from sandbox.connector.approval import approve, default_reviewer
+    from sandbox.connector.oversight import assess_fatigue, response_text
+    from sandbox.connector.policy import load_policy
 
     reviewer = reviewer or default_reviewer()
     queue = EscalationQueue(layout)
@@ -503,11 +516,22 @@ def watch_cmd(path: str, reviewer: str | None, once: bool) -> None:
         if actions:
             click.echo("Actually: " + "; ".join(a["label"] for a in actions))
         click.echo(f"          (use `sandbox explain {rid}` for the full breakdown)")
+        fatigue = assess_fatigue(layout, reviewer)
+        if fatigue.fatigued:
+            cfg = load_policy(layout.policy_file).oversight
+            click.echo(f"WARNING : approval fatigue: {'; '.join(fatigue.reasons)}. "
+                       f"Your approvals now need {response_text(cfg)}.")
         choice = click.prompt("[a]pprove / [d]eny / [s]kip", default="s").strip().lower()
         if choice == "a":
             outcome = asyncio.run(approve(layout, rid, reviewer))
+            if outcome["status"] == "reason_required":
+                note = click.prompt(f"  reason (at least {outcome['oversight']['min_reason_chars']} characters)",
+                                    default="", show_default=False)
+                outcome = asyncio.run(approve(layout, rid, reviewer, note))
             status = outcome["status"]
-            if status == "not_pending":
+            if status == "reason_required":
+                click.echo("  refused: reason too short; left pending")
+            elif status == "not_pending":
                 click.echo("  (already taken)")
             elif status == "same_reviewer":
                 click.echo("  refused: you gave the first approval; a different reviewer must give the second")
