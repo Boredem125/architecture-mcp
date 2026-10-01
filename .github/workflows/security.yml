@@ -10,7 +10,8 @@
 # Every tool's findings upload to code scanning as SARIF (one category per
 # tool), and the gate runs after the upload so findings are visible even when
 # the build fails. Reviewed false positives are suppressed in place with a
-# reason: .gitleaksignore, `# nosemgrep`, trivy --skip-files.
+# reason: .gitleaksignore / .gitleaks.toml, `# nosemgrep`, trivy --skip-files /
+# trivy-secret.yaml.
 name: security
 
 on:
@@ -108,7 +109,7 @@ jobs:
           --format sarif --output trivy-deps.sarif
       - name: Scan the repository (npm lock, Dockerfiles, compose, secrets)
         run: >
-          ./trivy fs . --scanners vuln,misconfig,secret --skip-dirs .git
+          ./trivy fs . --scanners vuln,misconfig,secret --skip-dirs .git --secret-config trivy-secret.yaml
           --format sarif --output trivy-repo.sarif
       - uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
         if: always()

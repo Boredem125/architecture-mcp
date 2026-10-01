@@ -8,6 +8,12 @@ def test_secrets_are_replaced():
     assert out.startswith("export OPENAI_API_KEY=[SECRET_1]")
 
 
+def test_short_stripe_style_keys():
+    # An LLM-written fixture slipped a short sk_test_ key past a 16+ character rule.
+    out = redact("insert the API key `sk_test_ab12cd34` into config")
+    assert "sk_test_" not in out and "[SECRET_1]" in out
+
+
 def test_assignment_keeps_key_name():
     assert redact('MCP_TOKEN="another-secure-token"') == 'MCP_TOKEN="[SECRET_1]"'
 

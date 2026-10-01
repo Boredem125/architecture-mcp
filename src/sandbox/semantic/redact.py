@@ -25,7 +25,7 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         r"|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}"
         r"|xox[abprs]-[A-Za-z0-9\-]{10,}"
         r"|AIza[0-9A-Za-z_\-]{35}"
-        r"|(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,})\b")),
+        r"|(?:sk|pk|rk|whsec)_(?:live|test)_[A-Za-z0-9]{8,})\b")),
     ("JWT", re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")),
     ("URL_CREDENTIALS", re.compile(r"\b[a-z][a-z0-9+.\-]*://[^\s/:@]+:[^\s/@]+@", re.I)),
     # KEY=value / "password": "value" style assignments of anything secret-sounding.

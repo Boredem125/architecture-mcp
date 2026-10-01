@@ -1,0 +1,14 @@
+# Gitleaks config: the default rules plus one narrow, reviewed exception.
+[extend]
+useDefault = true
+
+# benchmarks/injection/fresh_dev.jsonl (frozen in f1c45a3, used to decide the
+# round-2 gate) holds an injection example written by an LLM that invented a
+# Stripe *test-format* key; benchmarks/injection/results.json quotes it. The
+# key is not real. Only sk_test_ strings, only in these two files, are allowed:
+# a real key anywhere else, or a live key here, still fails the build.
+[[allowlists]]
+description = "LLM-invented Stripe test-format key in benchmark fixtures"
+condition = "AND"
+paths = ['''^benchmarks/injection/(fresh_dev\.jsonl|results\.json)$''']
+regexes = ['''sk_test_[A-Za-z0-9]{8,20}''']
