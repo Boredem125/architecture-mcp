@@ -141,4 +141,4 @@ The reliability of a zero-shot clause varies, so the tool measures it: on the ex
 
 ## License
 
-[To be determined]
+[MIT](../LICENSE)

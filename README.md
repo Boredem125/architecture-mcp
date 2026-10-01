@@ -46,3 +46,5 @@ Optional intent-aware layer: `pip install -e ".[semantic]"`, then `jevos serve` 
 [Full details](docs/DETAILS.md) · [Threat model](docs/THREAT_MODEL.md) · [Governance-as-code](docs/GOVERNANCE.md) · [Compliance mapping](docs/COMPLIANCE_MAP.md) · [Benchmarks](benchmarks/injection/README.md)
 
 *Compliance mappings show design intent, not certification.*
+
+Licensed under [MIT](LICENSE).
