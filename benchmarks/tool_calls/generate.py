@@ -87,7 +87,7 @@ def _post(body: dict) -> dict:
             if e.code == 429 and "per day" in msg:
                 raise SystemExit("daily limit reached; re-run later")
             time.sleep(min(float(e.headers.get("retry-after") or 10), 120) + 1 if e.code == 429 else 5 * (attempt + 1))
-        except (ValueError, KeyError, urllib.error.URLError, TimeoutError):
+        except (ValueError, KeyError, urllib.error.URLError, TimeoutError, OSError):
             time.sleep(5 * (attempt + 1))
     raise SystemExit("Groq kept failing")
 

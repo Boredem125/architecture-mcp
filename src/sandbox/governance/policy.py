@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 class Clause(BaseModel):
@@ -28,6 +28,10 @@ class Clause(BaseModel):
     # Optional distilled classifier for this clause (governance/student.py),
     # relative to the policy file. Fires alongside the check, behind the gate.
     student_model: str = ""
+    # "either": the clause fires if its check OR its student does (adds
+    # catches); "replace": the student decides instead of the check (used to
+    # cut a noisy check's false alarms). Both stay behind requires_actions.
+    student_mode: str = "either"
     action: str = "escalate"  # escalate | deny (never "allow": clauses only raise scrutiny)
     framework_refs: list[str] = Field(default_factory=list)  # e.g. "EU AI Act Art. 14"
     # Labelled examples for `sandbox governance test`: does the clause fire?
@@ -41,6 +45,7 @@ class Clause(BaseModel):
 class GovernancePolicy(BaseModel):
     name: str = "governance policy"
     clauses: list[Clause] = Field(default_factory=list)
+    _source: str = PrivateAttr(default="")  # file it was loaded from (resolves student_model paths)
 
     def questions(self) -> dict[str, dict[str, str]]:
         return {c.id: c.question() for c in self.clauses}
@@ -48,7 +53,9 @@ class GovernancePolicy(BaseModel):
 
 def load(path: str | Path) -> GovernancePolicy:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    return GovernancePolicy.model_validate(data)
+    policy = GovernancePolicy.model_validate(data)
+    policy._source = str(path)
+    return policy
 
 
 def example_policy_path() -> Path:

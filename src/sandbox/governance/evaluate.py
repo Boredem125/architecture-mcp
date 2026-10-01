@@ -57,21 +57,34 @@ def evaluate(
     only clauses whose ``requires_tool_actions`` match what the call does are
     checked, against the call rendered as text (``text`` is ignored).
     """
+    students = {}
     if tool_call is not None:
         tags = {t for t, _ in _describe_call(*tool_call)}
         gated = [c for c in policy.clauses if set(c.requires_tool_actions) & tags]
         text = _render_call(*tool_call)
     else:
         gated = [c for c in policy.clauses if _gate_ok(c, command or text)]
+        # Distilled clause students (governance/student.py) are trained on
+        # shell commands, so they apply to this path only.
+        from sandbox.governance.student import load_students
+
+        students = load_students(policy, policy._source or None)
     if not gated:
         return []
     result = client.ask(text, {c.id: c.question() for c in gated})
-    if result is None:
+    if result is None and not any(c.id in students for c in gated):
         return []
     violations = []
     for c in gated:
-        score = result.scores.get(c.id, 0.0)
-        if score >= c.threshold:
+        score = result.scores.get(c.id, 0.0) if result is not None else 0.0
+        fires = result is not None and score >= c.threshold
+        student = students.get(c.id)
+        if student is not None:
+            p = student.probability(text)
+            hit = p >= student.threshold
+            fires = hit if c.student_mode == "replace" else (fires or hit)
+            score = max(score, p) if hit else score
+        if fires:
             violations.append(Violation(c.id, c.title, c.description, c.action, score, c.framework_refs))
     violations.sort(key=lambda v: 0 if v.action == "deny" else 1)
     return violations

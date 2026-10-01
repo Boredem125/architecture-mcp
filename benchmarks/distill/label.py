@@ -132,7 +132,7 @@ def ask(key: str, items: list[str], model: str = MODEL) -> list[dict]:
                 time.sleep(5 * (attempt + 1))
                 continue
             raise
-        except (ValueError, KeyError, urllib.error.URLError, TimeoutError):
+        except (ValueError, KeyError, urllib.error.URLError, TimeoutError, OSError):
             time.sleep(5 * (attempt + 1))
     raise SystemExit("labeller kept failing; stopping (progress is saved)")
 
