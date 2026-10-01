@@ -8,9 +8,9 @@
 
 - **Intercepts every tool call** via Claude Code hooks and an MCP server, and returns **allow / observe / escalate / deny**, with an itemized, explainable risk score.
 - **Keeps the agent unprivileged:** approved commands run in a broker outside the agent, and only the output goes back to it.
-- **Produces examiner-grade evidence:** Ed25519-signed approvals and a SHA-256 hash-chained audit log. Critical actions are flagged for dual control; enforcing a second, distinct approver is not built yet ([roadmap](docs/ROADMAP.md)).
+- **Produces examiner-grade evidence:** Ed25519-signed approvals and a SHA-256 hash-chained audit log. Critical actions need **dual control**: two approvals by different reviewers with different keys, each signed, before anything runs.
 - **Detects intent, not just keywords** (optional, fully local): [jev-os](https://github.com/Boredem125/jev-os), my open-source CPU-only zero-shot model engine, scans what the agent *reads* (READMEs, web pages, tool output) sentence by sentence for prompt injection. On a hit, the folder is tainted and even allowlisted shell and network actions need a human.
-- **Catches data exfiltration** in commands (a sensitive source plus a network egress) and escalates it, flagged for dual control, with the reason shown.
+- **Catches data exfiltration** in commands (a sensitive source plus a network egress) and requires two approvers, with the reason shown.
 - **Governance-as-code:** plain-language policy clauses ("no customer data to external services"), each mapped to EU AI Act / GDPR / SR 11-7 references, with a `test` command that **measures each clause's reliability** before you trust it.
 
 **Design rule:** models may only *raise* scrutiny. Deterministic rules stay in charge, so a fooled model means an extra approval, never an open door.

@@ -42,6 +42,7 @@ _SIGNED_FIELDS = (
     "reviewer_id",
     "exit_code",
     "fingerprint",  # tool-call grants: binds the approval to one exact call
+    "approvals",    # dual control: each approver's own signed approval
 )
 
 
@@ -98,6 +99,40 @@ def verify_record(record: dict[str, Any]) -> bool:
     # before a field was added still verify.
     fields = record.get("signed_fields") or _SIGNED_FIELDS
     return verify_signature(_canonical(record, fields), sig, vk)
+
+
+_APPROVAL_FIELDS = ("request_id", "command", "fingerprint", "reviewer_id", "decision", "approved_at")
+
+
+def sign_approval(layout, reviewer_id: str, record: dict[str, Any], approved_at: float) -> dict[str, Any]:
+    """One approver's signed approval of a pending request (dual control).
+
+    Signed with that reviewer's own key, over what they approved (request,
+    command, fingerprint) and when, so each of the two approvals is separately
+    verifiable later.
+    """
+    key = _load_or_create_key(layout, reviewer_id)
+    approval = {"request_id": record.get("request_id"), "command": record.get("command"),
+                "fingerprint": record.get("fingerprint"), "reviewer_id": reviewer_id,
+                "decision": "approve", "approved_at": approved_at}
+    approval["signer_public_key"] = bytes(key.verify_key).hex()
+    approval["signature"] = sign_message(_canonical(approval, _APPROVAL_FIELDS), key)
+    return approval
+
+
+def verify_approval(approval: dict[str, Any]) -> bool:
+    try:
+        vk = VerifyKey(bytes.fromhex(approval.get("signer_public_key", "")))
+    except (ValueError, TypeError):
+        return False
+    return verify_signature(_canonical(approval, _APPROVAL_FIELDS), approval.get("signature", ""), vk)
+
+
+def distinct_approvals(approvals: list[dict[str, Any]], needed: int = 2) -> bool:
+    """At least `needed` valid approvals by distinct reviewers with distinct keys."""
+    valid = [a for a in approvals or [] if verify_approval(a)]
+    return (len({a["reviewer_id"] for a in valid}) >= needed
+            and len({a["signer_public_key"] for a in valid}) >= needed)
 
 
 def reviewer_public_key(layout, reviewer_id: str = "cli") -> str | None:

@@ -39,7 +39,7 @@ def _consumed_dir(layout: FolderLayout):
 
 def find_grant(layout: FolderLayout, fp: str, now: float | None = None) -> dict[str, Any] | None:
     """The valid, unused approval for this exact call, or None."""
-    from sandbox.connector.signing import reviewer_public_key, verify_record
+    from sandbox.connector.signing import distinct_approvals, reviewer_public_key, verify_record
 
     now = time.time() if now is None else now
     used = _consumed_dir(layout)
@@ -55,6 +55,8 @@ def find_grant(layout: FolderLayout, fp: str, now: float | None = None) -> dict[
         if (used / f"{rec.get('request_id')}.used").exists():
             continue
         if not verify_record(rec) or rec.get("signer_public_key") != reviewer_public_key(layout, rec.get("reviewer_id", "cli")):
+            continue
+        if rec.get("requires_dual") and not distinct_approvals(rec.get("approvals") or []):
             continue
         return rec
     return None

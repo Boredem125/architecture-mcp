@@ -155,17 +155,22 @@ async def connector_approve(
     from sandbox.connector.broker import FolderBroker
     from sandbox.connector.queue import EscalationQueue
 
+    from sandbox.connector.approval import approve
+
     layout = _layout(root)
-    queue = EscalationQueue(layout)
-    rec = queue.claim(request_id, "api")
-    if rec is None:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Could not claim {request_id} (already taken or not pending).",
-        )
-    reason = body.reason if body else ""
-    result = await FolderBroker().execute(rec, "api", reason)
-    queue.finish(request_id, result)
+    # The API acts as one reviewer, "api": a dual-control request approved
+    # here still needs a second, different reviewer (e.g. the CLI).
+    outcome = await approve(layout, request_id, "api", body.reason if body else "")
+    status = outcome["status"]
+    if status == "not_pending":
+        raise HTTPException(status_code=409,
+                            detail=f"Could not claim {request_id} (already taken or not pending).")
+    if status == "same_reviewer":
+        raise HTTPException(status_code=409,
+                            detail=f"{request_id} needs dual control; the API already gave the first approval.")
+    if status == "awaiting_second":
+        return {"request_id": request_id, "state": "awaiting_second_approval", "approvals": outcome["approvals"]}
+    result = outcome["result"]
     return {
         "request_id": request_id,
         "state": result.get("state"),

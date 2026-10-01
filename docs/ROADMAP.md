@@ -36,8 +36,9 @@ difficulty; each is intentionally *not* built yet so the core stays tight and de
 - **Environment dimension** (dev / staging / prod → different verdicts) = segregation of duties.
 - **Policy-as-code + versioning** (`policy/v1.json … current.json`; `policy_version` already
   bound into signed records — this makes it first-class and diffable).
-- **Dual control enforced end-to-end** for `critical` risk (two distinct authenticated approvers;
-  the risk engine already flags `requires_dual`).
+- **Dual control: per-human authentication.** Two approvals by distinct reviewer ids with
+  distinct keys are enforced (`connector/approval.py`); binding each id to a real person (SSO,
+  smartcard/HSM keys) is what remains.
 - **Lightweight data classification** (tag globs PUBLIC / INTERNAL / CONFIDENTIAL / RESTRICTED;
   feed the risk score and drive outbound redaction).
 - **`sandbox export-evidence`** — one signed examiner pack (decisions, approvers, policy at

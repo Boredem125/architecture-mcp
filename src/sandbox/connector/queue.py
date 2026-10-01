@@ -111,6 +111,13 @@ class EscalationQueue:
         self._atomic_write(dst, rec)
         return rec
 
+    def release(self, request_id: str, record: dict[str, Any]) -> None:
+        """Put a claimed request back in pending/ (dual control: after the first
+        of two approvals), with its updated record."""
+        record = {k: v for k, v in record.items() if k not in ("reviewer_id", "claimed_at")}
+        self._atomic_write(self._layout.claimed_dir / f"{request_id}.json", record)
+        os.replace(self._layout.claimed_dir / f"{request_id}.json", self._layout.pending_dir / f"{request_id}.json")
+
     def finish(self, request_id: str, result: dict[str, Any]) -> None:
         """Write the terminal done-record (+ human-readable out/ text).
 

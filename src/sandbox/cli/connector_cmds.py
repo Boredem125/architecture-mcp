@@ -332,7 +332,8 @@ def status_cmd(path: str, as_json: bool) -> None:
     click.echo(f"Triggers: {policy.triggers.model_dump()}")
     click.echo(f"Pending:  {len(pending)}")
     for rec in pending:
-        click.echo(f"  [{rec['request_id']}] {rec.get('command', '')}")
+        dual = f"  [dual control {len(rec.get('approvals') or [])}/2]" if rec.get("requires_dual") else ""
+        click.echo(f"  [{rec['request_id']}] {rec.get('command', '')}{dual}")
 
 
 @click.command("approve")
@@ -345,11 +346,14 @@ def status_cmd(path: str, as_json: bool) -> None:
     default="once",
     help="Remember this decision for the rest of the session.",
 )
-def approve_cmd(request_id: str, path: str, reason: str, remember: str) -> None:
-    """Approve a pending escalation and run it."""
+@click.option("--reviewer", default=None,
+              help="Reviewer id (default: $SANDBOX_REVIEWER or your OS user). Dual-control "
+                   "requests need two different reviewers.")
+def approve_cmd(request_id: str, path: str, reason: str, remember: str, reviewer: str | None) -> None:
+    """Approve a pending escalation and run it (dual control: the second approval runs it)."""
     import asyncio
 
-    from sandbox.connector.broker import FolderBroker
+    from sandbox.connector.approval import approve, default_reviewer
     from sandbox.connector.layout import FolderLayout
     from sandbox.connector.queue import EscalationQueue
 
@@ -358,17 +362,24 @@ def approve_cmd(request_id: str, path: str, reason: str, remember: str) -> None:
         click.echo("No .sandbox/ found.")
         raise SystemExit(1)
 
-    queue = EscalationQueue(layout)
-    rec = queue.claim(request_id, "cli")
-    if rec is None:
+    reviewer = reviewer or default_reviewer()
+    rec = EscalationQueue(layout).get(request_id) or {}
+    outcome = asyncio.run(approve(layout, request_id, reviewer, reason))
+    status = outcome["status"]
+    if status == "not_pending":
         click.echo(f"Could not claim {request_id} (already taken or not pending).")
         raise SystemExit(1)
-
-    _remember_decision(layout, rec, remember)
-
-    broker = FolderBroker()
-    result = asyncio.run(broker.execute(rec, "cli", reason))
-    queue.finish(request_id, result)
+    if status == "same_reviewer":
+        click.echo(f"Refused: {request_id} needs dual control and {reviewer} already approved it. "
+                   "A different reviewer must give the second approval.")
+        raise SystemExit(1)
+    if status == "awaiting_second":
+        click.echo(f"Approval 1 of 2 recorded for {request_id} by {reviewer} (dual control). "
+                   "Nothing has run; a different reviewer must approve it too.")
+        return
+    if not rec.get("requires_dual"):
+        _remember_decision(layout, rec, remember)
+    result = outcome["result"]
     if rec.get("kind") == "tool_call":
         click.echo(f"Approved {request_id}: the agent may retry this exact call once.")
     else:
@@ -442,9 +453,10 @@ def deny_cmd(request_id: str, path: str, reason: str) -> None:
 
 @click.command("watch")
 @click.argument("path", default=".")
-@click.option("--reviewer", default="cli", help="Reviewer id recorded on decisions.")
+@click.option("--reviewer", default=None,
+              help="Reviewer id recorded on decisions (default: $SANDBOX_REVIEWER or your OS user).")
 @click.option("--once", is_flag=True, help="Drain the current queue and exit.")
-def watch_cmd(path: str, reviewer: str, once: bool) -> None:
+def watch_cmd(path: str, reviewer: str | None, once: bool) -> None:
     """Interactively approve/deny escalations as they arrive."""
     import asyncio
     import time
@@ -458,9 +470,13 @@ def watch_cmd(path: str, reviewer: str, once: bool) -> None:
         click.echo("No .sandbox/ found. Run `sandbox init` first.")
         raise SystemExit(1)
 
+    from sandbox.connector.approval import approve, default_reviewer
+
+    reviewer = reviewer or default_reviewer()
     queue = EscalationQueue(layout)
     broker = FolderBroker()
-    click.echo(f"Watching {layout.root} for escalations (Ctrl-C to stop)...")
+    seen_awaiting: set[str] = set()
+    click.echo(f"Watching {layout.root} for escalations as {reviewer} (Ctrl-C to stop)...")
 
     def handle(rec: dict) -> None:
         rid = rec["request_id"]
@@ -476,7 +492,10 @@ def watch_cmd(path: str, reviewer: str, once: bool) -> None:
                    f"  [{rec.get('reason_code','')}]")
         if risk:
             band = risk.get("band", "?").upper()
-            dual = "  *** DUAL CONTROL ***" if rec.get("requires_dual") else ""
+            approvals = rec.get("approvals") or []
+            dual = (f"  *** DUAL CONTROL: {len(approvals)}/2 approvals"
+                    + (f" (by {', '.join(a['reviewer_id'] for a in approvals)})" if approvals else "")
+                    + " ***") if rec.get("requires_dual") else ""
             click.echo(f"Risk    : {risk.get('score','?')}/100 -> {band}{dual}")
         click.echo(f"Command : {rec.get('command', '')}")
         click.echo(f"Agent says: {rec.get('described_as') or '(no description)'}")
@@ -486,13 +505,18 @@ def watch_cmd(path: str, reviewer: str, once: bool) -> None:
         click.echo(f"          (use `sandbox explain {rid}` for the full breakdown)")
         choice = click.prompt("[a]pprove / [d]eny / [s]kip", default="s").strip().lower()
         if choice == "a":
-            claimed = queue.claim(rid, reviewer)
-            if claimed is None:
+            outcome = asyncio.run(approve(layout, rid, reviewer))
+            status = outcome["status"]
+            if status == "not_pending":
                 click.echo("  (already taken)")
-                return
-            result = asyncio.run(broker.execute(claimed, reviewer))
-            queue.finish(rid, result)
-            click.echo(f"  approved — exit {result.get('exit_code')}")
+            elif status == "same_reviewer":
+                click.echo("  refused: you gave the first approval; a different reviewer must give the second")
+                seen_awaiting.add(rid)
+            elif status == "awaiting_second":
+                click.echo("  approval 1 of 2 recorded (dual control); waiting for a different reviewer")
+                seen_awaiting.add(rid)
+            else:
+                click.echo(f"  approved — exit {outcome['result'].get('exit_code')}")
         elif choice == "d":
             note = click.prompt("  reason", default="denied by reviewer")
             claimed = queue.claim(rid, reviewer)
@@ -507,6 +531,9 @@ def watch_cmd(path: str, reviewer: str, once: bool) -> None:
     try:
         while True:
             for rec in queue.list_pending():
+                # Don't re-prompt this reviewer for a request only someone else can finish.
+                if rec["request_id"] in seen_awaiting:
+                    continue
                 handle(rec)
             if once:
                 break
