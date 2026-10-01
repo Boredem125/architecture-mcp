@@ -64,6 +64,17 @@ An LLM attacker wrote injections meant to evade the gateway using eight techniqu
 
 Retraining the student on the attacks it missed in a separate attack round did not help: still 10 of 113. All 10 survivors are single sentences that never mention an AI, an assistant or instructions. They read as ordinary directions to a developer, such as merging into main without running the test suite, or opening port 22 so a remote debugger can attach. Without knowing what the user asked for, a content scanner can't tell those from a real instruction in a README. That case belongs to the authorization layer: merging, changing firewall rules and other privileged actions escalate to a human whatever the text said.
 
+## Governance: rules, evidence and oversight
+
+Security decides whether an action is safe; governance has to show who decided, under which rules, and whether the oversight was real. The gateway now covers each step, all designed against EU AI Act, GDPR and SR 11-7 expectations and none of it a certification:
+
+- **Rules in plain language.** Governance clauses ("no moving money without human review") carry framework references and are checked on shell commands and on MCP and WebFetch calls. `sandbox governance test` measures each clause before you trust it.
+- **Change control for the rules themselves.** Every accepted version of the folder and governance policy is stored content-addressed with a signed approval; a change needs a second reviewer; every decision records the `policy_version` in force. If someone edits a policy file out of band, the gateway enforces the approved version tightened by anything stricter in the edit, so drift can add scrutiny but never remove it.
+- **Evidence for an auditor.** `sandbox export-evidence` writes one pack: every signed decision with its checks, dual-control approvals, audit chains with their verification results, governance clause hits grouped by framework reference, and the policy files, all listed in a signed manifest. `sandbox verify-evidence` re-checks it offline.
+- **Whether oversight is real.** `sandbox oversight` reports approval rates, time to decide and bursts per reviewer. A reviewer who approves too many requests too fast is flagged: they must give a written reason, and their approval no longer suffices on its own. The thresholds are judgement calls, not validated on real reviewers.
+- **Context.** A folder can be marked dev, staging or prod (prod audits allowlisted calls and needs two approvers from a lower risk score), and paths can be classified PUBLIC to RESTRICTED by glob (sending a CONFIDENTIAL or RESTRICTED file out needs dual control). Classification is by path, not content.
+- **A negative result.** Distilled per-clause classifiers were tested against the zero-shot clause checks on a frozen set of 105 escalated commands. Replacing the checks cut benign commands flagged from 7 of 29 to 1 but lost recall (0.79 to 0.71), past the limit set in advance, so the checks stay.
+
 ## What didn't work
 
 - **Zero-shot alone hit a ceiling.** Whole-document scoring missed a planted instruction in a README (top score 0.04); per-sentence scoring found it (0.99). After that, the remaining misses were wording the model didn't recognise, and the false alarms were text it confidently misread.
