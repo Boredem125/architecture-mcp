@@ -20,6 +20,7 @@ evidence lives.
 | Prompt-injection / exfiltration containment | | | ✓ §500.2 cybersecurity | ✓ threat mgmt | ✓ security controls |
 | Restorable file originals + change timeline | ✓ recordkeeping | ✓ | | ✓ | ✓ |
 | Examiner evidence export: `sandbox export-evidence` / `verify-evidence`, a signed pack of decisions, approvals, audit chains and policy files *(integrity relative to control-plane keys; see [EVIDENCE.md](EVIDENCE.md))* | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Policy change control: versioned policy, changes approved by a second signed reviewer, drift cannot loosen *(distinct reviewer ids and keys; not proof of two humans)* | ✓ | ✓ change control | ✓ | ✓ ICT change mgmt | ✓ |
 
 ## Where the evidence lives
 
@@ -31,9 +32,10 @@ evidence lives.
 - **Evidence pack:** `sandbox export-evidence --out pack.zip` collects all of the above with
   per-record checks and a signed manifest; `sandbox verify-evidence pack.zip` re-checks it
   offline. Contents and limits: [EVIDENCE.md](EVIDENCE.md).
-- **Policy at time-of-action:** not yet recorded. `policy_version` is a signed field but
-  nothing sets it; the evidence pack copies the policy files as they are at export
-  *(versioning is Stage 2 — see [ROADMAP.md](ROADMAP.md))*.
+- **Policy at time-of-action:** `policy_version` (folder + governance version ids) is on each
+  audit record and bound into each signed done-record; the versions themselves, who approved
+  them and the signed approvals are in `.sandbox/policy_history/` — read with
+  `sandbox policy history` / `sandbox policy diff`.
 
 ---
 

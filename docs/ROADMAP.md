@@ -37,9 +37,13 @@ difficulty; each is intentionally *not* built yet so the core stays tight and de
   *Shipped (first cut):* `environment` in `policy.json`; staging audits allowlisted network
   calls, prod audits allowlisted shell and network calls and starts dual control at risk 70
   instead of 80. See [DATA_AND_ENVIRONMENT.md](DATA_AND_ENVIRONMENT.md).
-- **Policy-as-code + versioning** (`policy/v1.json … current.json`; `policy_version` is
-  already a signed field in done-records but nothing sets it yet — this makes it first-class
-  and diffable).
+- **Policy-as-code + versioning** — *done (first cut)*: content-addressed history under
+  `.sandbox/policy_history/`, `policy_version` on every audit and escalation record (signed in
+  done-records), propose / approve-change by a second reviewer, `history` and `diff`, and drift
+  handling that enforces the stricter of approved and on-disk. See
+  [DETAILS.md](DETAILS.md#policy-versions-and-change-control). Remaining: reviewer keys bound to
+  people (same gap as dual control), and history that sits outside the workspace so a local
+  admin cannot rewrite it.
 - **Dual control: per-human authentication.** Two approvals by distinct reviewer ids with
   distinct keys are enforced (`connector/approval.py`); binding each id to a real person (SSO,
   smartcard/HSM keys) is what remains.
@@ -52,7 +56,9 @@ difficulty; each is intentionally *not* built yet so the core stays tight and de
 - **`sandbox export-evidence`**: built. A signed pack of decisions, approvers, dual-control
   approvals, audit chains with their verify results, governance clause hits and the current
   policy files, re-checked offline by `sandbox verify-evidence` ([EVIDENCE.md](EVIDENCE.md)).
-  Remaining: the policy at time-of-action, which needs the versioning item above.
+  Remaining: the pack copies the policy files as they are at export; decisions now carry
+  `policy_version`, so the next step is to include the matching versions from
+  `.sandbox/policy_history/` in the pack.
 
 ## Stage 3 — frontier, higher cost
 

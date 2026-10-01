@@ -37,6 +37,13 @@ class EscalationQueue:
         request_id = record.get("request_id") or uuid.uuid4().hex[:16]
         record["request_id"] = request_id
         record.setdefault("created_at", time.time())
+        # Which policy version escalated it; copied into the signed done-record.
+        try:
+            from sandbox.connector.policy_versions import current_version
+
+            record["policy_version"] = current_version(self._layout)
+        except Exception:  # noqa: BLE001 — bookkeeping must never block an escalation
+            pass
         self._atomic_write(self._layout.pending_dir / f"{request_id}.json", record)
         ident = record.get("identity", {}) or {}
         who = ident.get("agent_type", record.get("origin", "agent"))

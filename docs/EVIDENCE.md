@@ -72,15 +72,15 @@ no unlisted file added, and optionally that the exporter key is the one you expe
   and the public key is inside the pack. Anyone who can rewrite the whole pack can re-sign
   it with a new key. Record the exporter key printed at export somewhere the pack's holder
   cannot change, and pass it to `--exporter-key`.
-- **Policy now, not policy then.** Policy files are copied as they are at export. Done-records
-  have a signed `policy_version` field, but nothing sets it yet, so the pack cannot show which
-  policy was in force at each decision. Policy versioning is on the [roadmap](ROADMAP.md).
+- **Policy now, not policy then.** Policy files are copied as they are at export. Since policy
+  versioning, each decision carries a signed `policy_version` (folder and governance version
+  ids), so a reader can see which version was in force; the pack doesn't yet include those
+  versions from `.sandbox/policy_history/` itself.
 - **No key history.** Reviewer keys are the folder's current keys. If a reviewer's seed was
   replaced after a decision, that decision fails `signer_is_folder_key`.
-- **Governance hits on shell escalations.** Clause hits on a tool call are kept in its
-  done-record and in the audit chain. Hits on an escalated shell command are shown to the
-  approver but are not carried into the done-record or the audit chain today, so the pack
-  does not count them. Governance denials are in the audit chain and are counted.
+- **Governance hits on shell escalations** are carried into the done-record since
+  `3441551` and counted; records decided before that don't have them. Governance denials are
+  in the audit chain and are counted.
 - **Chain tail.** A chain on disk cannot show that its last records were removed or rewritten
   together with their hashes. The pack fixes each chain's head hash and length at export, so
   later changes are visible against the pack, not before it.
