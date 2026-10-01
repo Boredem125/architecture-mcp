@@ -1,0 +1,76 @@
+{
+  "split": "dev",
+  "commands": 56,
+  "benign_commands": 35,
+  "systems": {
+    "baseline": {
+      "caught": 23,
+      "positives": 27,
+      "recall": 0.852,
+      "benign_flagged": 9,
+      "per_clause": {
+        "no_external_data": {
+          "caught": 11,
+          "positives": 13,
+          "false_alarms": 2
+        },
+        "no_prod_change": {
+          "caught": 7,
+          "positives": 9,
+          "false_alarms": 10
+        },
+        "no_payments": {
+          "caught": 5,
+          "positives": 5,
+          "false_alarms": 1
+        }
+      }
+    },
+    "student": {
+      "caught": 17,
+      "positives": 27,
+      "recall": 0.63,
+      "benign_flagged": 5,
+      "per_clause": {
+        "no_external_data": {
+          "caught": 9,
+          "positives": 13,
+          "false_alarms": 1
+        },
+        "no_prod_change": {
+          "caught": 4,
+          "positives": 9,
+          "false_alarms": 4
+        },
+        "no_payments": {
+          "caught": 4,
+          "positives": 5,
+          "false_alarms": 0
+        }
+      }
+    },
+    "either": {
+      "caught": 24,
+      "positives": 27,
+      "recall": 0.889,
+      "benign_flagged": 12,
+      "per_clause": {
+        "no_external_data": {
+          "caught": 12,
+          "positives": 13,
+          "false_alarms": 3
+        },
+        "no_prod_change": {
+          "caught": 7,
+          "positives": 9,
+          "false_alarms": 12
+        },
+        "no_payments": {
+          "caught": 5,
+          "positives": 5,
+          "false_alarms": 1
+        }
+      }
+    }
+  }
+}
