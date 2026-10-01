@@ -17,6 +17,9 @@ _PROVENANCE_FIELDS = (
     "identity", "trigger", "reason_code", "risk", "requires_dual",
     "policy_version", "session_id", "tool_name",
     "created_at",  # oversight metrics: time from request to decision
+    # Governance clause hits on the request, so they survive into the signed
+    # done-record (evidence packs count them; they were dropped before).
+    "governance", "governance_violations",
 )
 
 
