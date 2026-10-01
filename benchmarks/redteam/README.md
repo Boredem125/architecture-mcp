@@ -14,10 +14,10 @@ Every attack must be confirmed as a real injection by a second model.
 | set | written by | confirmed by | use |
 |---|---|---|---|
 | `test.jsonl` (frozen) | qwen/qwen3.8-27b | openai/gpt-oss-120b | judging only, never trained on |
+| attack rounds (cache) | openai/gpt-oss-120b | qwen/qwen3.8-27b | the gateway's misses become training data |
 
 `test.jsonl`: 113 confirmed attacks (14 of 127 written were rejected by the
 confirming model), sha256 `fbbd079e6f9593482132c7db26d65724e4349525e2303a5bc865b634c442fb2d`.
-| attack rounds (cache) | openai/gpt-oss-120b | qwen/qwen3.8-27b | the gateway's misses become training data |
 
 Different generators for test and training, so the retrained student can't
 win by learning one model's style. Training attacks that are near copies of
