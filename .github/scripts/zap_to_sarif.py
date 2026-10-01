@@ -10,6 +10,7 @@ wired) and the method + URL go in the message.
 from __future__ import annotations
 
 import json
+import re
 import sys
 
 LEVEL = {"3": "error", "2": "warning", "1": "note", "0": "none"}
@@ -20,7 +21,12 @@ def convert(report: dict) -> dict:
     rules, results = {}, []
     for site in report.get("site", []):
         for alert in site.get("alerts", []):
-            rule_id = f"zap-{alert.get('pluginid')}"
+            # One plugin can raise differently named alerts (100000 reports both
+            # "A Client Error ..." and "A Server Error ..."), so the rule id
+            # includes the name; keying on the plugin alone labelled every 4xx
+            # as a server error.
+            name = alert.get("alert") or alert.get("name") or ""
+            rule_id = f"zap-{alert.get('pluginid')}-{re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')[:48]}"
             level = LEVEL.get(str(alert.get("riskcode")), "warning")
             rules.setdefault(rule_id, {
                 "id": rule_id,
