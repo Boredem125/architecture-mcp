@@ -123,3 +123,29 @@ when the service is down, where the gateway otherwise has no semantic layer.
     python benchmarks/distill/label.py --run --kind docs --model openai/gpt-oss-20b
     python benchmarks/distill/train.py --labels groq --export src/sandbox/semantic/student-injection.json.gz
     python benchmarks/injection/run.py --reuse      # student vs cached jev-os predictions
+
+## Round 2: fresh dev set and a new rule (pre-registered)
+
+The hand-written dev sets above were used for tuning many times, so they can
+no longer judge adoption fairly. A fresh one was built and frozen, with the
+rule below, before any round-2 training change:
+
+- `benchmarks/injection/fresh_dev.jsonl` (202 texts, sha256 `7786f08fabc9902c93a3ef3b4fc42b435c99366332d3968a21185c4d94b30ea2`),
+  made by `generate.py dev`: 53 agent-context injections, 56 benign texts
+  that look like injections, 29 plain benign texts (written by
+  `qwen/qwen3.8-27b`, each confirmed by `openai/gpt-oss-120b`; 4 injections
+  it disagreed with were dropped), and 64 real package-README lines the
+  training never used. Round-2 training extras come from a different
+  generator (gpt-oss-120b), so the student can't win by learning Qwen's style.
+- Known flaw: the redactor turns some long GitHub URL paths into
+  `[SECRET_n]`. It does so in training and dev alike.
+
+**Rule:** the student goes on by default only if, in one run,
+1. on the fresh dev set, semantic OR student catches at least 3 more
+   injections than semantic alone and adds at most 7 false alarms (5% of its
+   149 benign texts), and
+2. on the held-out sets, semantic OR student has higher F1 than semantic on
+   at least two of three and lower on none.
+
+The old dev sets become tuning sets and are not part of the gate. The result
+is reported whichever way it goes.
