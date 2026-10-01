@@ -17,6 +17,7 @@ evidence lives.
 | Segregation of duties / dual control (critical): two distinct signed approvals *(distinct reviewer ids and keys; not proof of two humans)* | ✓ | ✓ independence | ✓ | ✓ | ✓ |
 | Prompt-injection / exfiltration containment | | | ✓ §500.2 cybersecurity | ✓ threat mgmt | ✓ security controls |
 | Restorable file originals + change timeline | ✓ recordkeeping | ✓ | | ✓ | ✓ |
+| Policy change control: versioned policy, changes approved by a second signed reviewer, drift cannot loosen *(distinct reviewer ids and keys; not proof of two humans)* | ✓ | ✓ change control | ✓ | ✓ ICT change mgmt | ✓ |
 | Examiner evidence export *(roadmap)* | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 ## Where the evidence lives
@@ -26,8 +27,10 @@ evidence lives.
 - **Audit chain:** `.sandbox/audit/<session>/records.jsonl` — verify with `sandbox verify`.
 - **File changes / originals:** `.sandbox/originals/` — list with `sandbox changes`, revert
   with `sandbox restore`.
-- **Policy at time-of-action:** `policy_version` is bound into each signed record *(versioning
-  is Stage 2 — see [ROADMAP.md](ROADMAP.md))*.
+- **Policy at time-of-action:** `policy_version` (folder + governance version ids) is on each
+  audit record and bound into each signed done-record; the versions themselves, who approved
+  them and the signed approvals are in `.sandbox/policy_history/` — read with
+  `sandbox policy history` / `sandbox policy diff`.
 
 ---
 

@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any
 
 from sandbox.connector.layout import FolderLayout
-from sandbox.connector.policy import load_policy
 from sandbox.connector.queue import EscalationQueue
 
 _SERVER_BLOCK_SECONDS = 55  # degrade to `pending` past this, never hang forever
@@ -98,7 +97,7 @@ def build_server(root: Path | None = None) -> Any:
         return EscalationQueue(layout)
 
     async def _submit_and_wait(record: dict[str, Any]) -> dict[str, Any]:
-        policy = load_policy(layout.policy_file)
+        policy = _enforced(layout)
         queue = _queue()
         request_id = queue.submit(record)
         block = min(policy.escalation_timeout_seconds, _SERVER_BLOCK_SECONDS)
@@ -187,7 +186,7 @@ def build_server(root: Path | None = None) -> Any:
         Use this after run_privileged returns 'pending', or to pick up a
         request the Claude Code hook raised.
         """
-        policy = load_policy(layout.policy_file)
+        policy = _enforced(layout)
         queue = _queue()
         rec = queue.get(request_id)
         if rec is None:
@@ -205,13 +204,14 @@ def build_server(root: Path | None = None) -> Any:
     @mcp.tool()
     async def sandbox_status() -> dict[str, Any]:
         """Show the sandbox root, triggers, and any pending escalations."""
-        policy = load_policy(layout.policy_file)
+        policy = _enforced(layout)
         queue = _queue()
         pending = queue.list_pending()
         return {
             "root": str(layout.root),
             "policy_mode": policy.mode,
             "triggers": policy.triggers.model_dump(),
+            "policy_version": _version(layout),
             "pending": [
                 {"request_id": r["request_id"], "command": r.get("command", "")}
                 for r in pending
@@ -219,6 +219,19 @@ def build_server(root: Path | None = None) -> Any:
         }
 
     return mcp
+
+
+def _enforced(layout: FolderLayout):
+    """The approved policy version (stricter of approved and on-disk if drifted)."""
+    from sandbox.connector.policy_versions import enforced_policy
+
+    return enforced_policy(layout)[0]
+
+
+def _version(layout: FolderLayout) -> dict[str, Any]:
+    from sandbox.connector.policy_versions import current_version
+
+    return current_version(layout)
 
 
 def main() -> int:

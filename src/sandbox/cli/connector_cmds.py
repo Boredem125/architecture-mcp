@@ -36,14 +36,15 @@ def governance_group() -> None:
 @click.option("--path", "folder", default=".")
 def governance_use_cmd(policy_file: str, folder: str) -> None:
     """Point this folder at a governance policy JSON (evaluated on escalated commands)."""
-    from sandbox.connector.policy import load_policy, save_policy
+    from sandbox.connector.policy import load_policy
     from sandbox.governance.policy import load as gov_load
 
     layout = _semantic_layout(folder)
     gov = gov_load(policy_file)  # validate before saving the path
     policy = load_policy(layout.policy_file)
     policy.semantic.governance_policy = str(policy_file)
-    save_policy(policy, layout.policy_file)
+    if not _save_edit(layout, policy, f"governance use {policy_file}"):
+        return
     click.echo(f"Using governance policy '{gov.name}' with {len(gov.clauses)} clauses.")
     if not policy.semantic.enabled:
         click.echo("Note: run `sandbox semantic enable` and `jevos serve` for it to take effect.")
@@ -172,14 +173,15 @@ def semantic_status_cmd(path: str) -> None:
 @click.option("--url", default=None, help="jev-os service URL (default http://127.0.0.1:8321).")
 def semantic_enable_cmd(path: str, url: str | None) -> None:
     """Turn the semantic layer on for this folder."""
-    from sandbox.connector.policy import load_policy, save_policy
+    from sandbox.connector.policy import load_policy
 
     layout = _semantic_layout(path)
     policy = load_policy(layout.policy_file)
     policy.semantic.enabled = True
     if url:
         policy.semantic.url = url
-    save_policy(policy, layout.policy_file)
+    if not _save_edit(layout, policy, "semantic enable" + (f" --url {url}" if url else "")):
+        return
     click.echo(f"Semantic layer enabled ({policy.semantic.url}). Start the service with `jevos serve`.")
 
 
@@ -187,13 +189,13 @@ def semantic_enable_cmd(path: str, url: str | None) -> None:
 @click.argument("path", default=".")
 def semantic_disable_cmd(path: str) -> None:
     """Turn the semantic layer off (rules keep working as before)."""
-    from sandbox.connector.policy import load_policy, save_policy
+    from sandbox.connector.policy import load_policy
 
     layout = _semantic_layout(path)
     policy = load_policy(layout.policy_file)
     policy.semantic.enabled = False
-    save_policy(policy, layout.policy_file)
-    click.echo("Semantic layer disabled.")
+    if _save_edit(layout, policy, "semantic disable"):
+        click.echo("Semantic layer disabled.")
 
 
 def _audit_folder(layout, record: dict) -> None:
@@ -208,6 +210,30 @@ def _audit_folder(layout, record: dict) -> None:
     FolderAudit(layout.audit_dir, session_id).append(record)
 
 
+def _save_edit(layout, policy, what: str, actor: str | None = None) -> bool:
+    """Save a direct policy edit under change control. True if it took effect.
+
+    Unversioned folder: written as before. Versioned folder: an edit that only
+    tightens the approved version is applied and logged; anything else becomes
+    a change request a different reviewer must approve (`sandbox policy
+    approve-change`), and the file is left as it was.
+    """
+    from sandbox.connector.approval import default_reviewer
+    from sandbox.connector.policy_versions import apply_edit
+
+    actor = actor or default_reviewer()
+    out = apply_edit(layout, policy, actor, what)
+    if out["status"] == "applied":
+        click.echo(f"  (only tightens the policy: applied and recorded as version {out['version']} by {actor})")
+    if out["status"] != "proposed":
+        return True
+    loosens = ", ".join(out.get("loosens") or []) or "settings with no stricter direction"
+    click.echo(f"Not applied: this edit loosens or changes the approved policy ({loosens}).")
+    click.echo(f"Proposed as change {out['change_id']} by {actor}. A different reviewer must run:")
+    click.echo(f"  sandbox policy approve-change {out['change_id']} {layout.root} --reviewer <name>")
+    return False
+
+
 @semantic_group.command("trust")
 @click.argument("file")
 @click.option("--path", "folder", default=".", help="Sandboxed folder (default: here).")
@@ -215,7 +241,7 @@ def _audit_folder(layout, record: dict) -> None:
 @click.option("--reason", required=True, help="Why its instructions are legitimate.")
 def semantic_trust_cmd(file: str, folder: str, reviewer: str, reason: str) -> None:
     """Skip the injection scan for FILE while its content is unchanged (audited)."""
-    from sandbox.connector.policy import load_policy, save_policy
+    from sandbox.connector.policy import load_policy
     from sandbox.semantic.trust import trust
 
     layout = _semantic_layout(folder)
@@ -224,7 +250,8 @@ def semantic_trust_cmd(file: str, folder: str, reviewer: str, reason: str) -> No
         entry = trust(layout.root, policy, file, reviewer, reason)
     except ValueError as e:
         raise click.ClickException(str(e)) from e
-    save_policy(policy, layout.policy_file)
+    if not _save_edit(layout, policy, f"semantic trust {entry.path} (reviewed by {reviewer}: {reason})", reviewer):
+        return
     _audit_folder(layout, {"event": "semantic_trust_added", **entry.model_dump()})
     click.echo(f"Trusted {entry.path} at sha256 {entry.sha256[:12]}… — any edit makes it scanned again.")
 
@@ -234,13 +261,14 @@ def semantic_trust_cmd(file: str, folder: str, reviewer: str, reason: str) -> No
 @click.option("--path", "folder", default=".", help="Sandboxed folder (default: here).")
 def semantic_untrust_cmd(file: str, folder: str) -> None:
     """Scan FILE again like any other content."""
-    from sandbox.connector.policy import load_policy, save_policy
+    from sandbox.connector.policy import load_policy
     from sandbox.semantic.trust import untrust
 
     layout = _semantic_layout(folder)
     policy = load_policy(layout.policy_file)
     if untrust(layout.root, policy, file):
-        save_policy(policy, layout.policy_file)
+        if not _save_edit(layout, policy, f"semantic untrust {file}"):
+            return
         _audit_folder(layout, {"event": "semantic_trust_removed", "path": file})
         click.echo(f"{file} is scanned again.")
     else:
@@ -281,7 +309,9 @@ def semantic_clear_taint_cmd(path: str, reviewer: str, reason: str) -> None:
 @click.option("--mcp/--no-mcp", default=True, help="Write .mcp.json for the MCP channel.")
 @click.option("--codex", is_flag=True, help="Print a Codex ~/.codex/config.toml snippet.")
 @click.option("--auto-allow", is_flag=True, help="Let the connector emit allow decisions (bypasses Claude Code's own prompt).")
-def init_cmd(path: str, claude: bool, mcp: bool, codex: bool, auto_allow: bool) -> None:
+@click.option("--versioning/--no-versioning", default=True,
+              help="Record the policy as the first approved version (change control and drift detection).")
+def init_cmd(path: str, claude: bool, mcp: bool, codex: bool, auto_allow: bool, versioning: bool) -> None:
     """Initialize the sandbox connector in a folder."""
     from sandbox.connector.install import init
 
@@ -289,6 +319,16 @@ def init_cmd(path: str, claude: bool, mcp: bool, codex: bool, auto_allow: bool) 
     click.echo(f"Sandbox connector initialized in {result['root']}")
     click.echo(f"  session:  {result['session_id']}")
     click.echo(f"  policy:   {result['policy']}")
+    if versioning:
+        from sandbox.connector import policy_versions as pv
+        from sandbox.connector.approval import default_reviewer
+        from sandbox.connector.layout import FolderLayout
+
+        layout = FolderLayout(result["root"])
+        if not pv.is_versioned(layout):
+            who = default_reviewer()
+            entry = pv.baseline(layout, who, "initial policy written by sandbox init")[0]
+            click.echo(f"  version:  {entry['version']} (baseline, recorded by {who})")
     click.echo(f"  hook:     {result['stub']}")
     if result["settings"]:
         click.echo(f"  settings: {result['settings']}")
@@ -320,15 +360,20 @@ def status_cmd(path: str, as_json: bool) -> None:
     queue = EscalationQueue(layout)
     pending = queue.list_pending()
 
+    from sandbox.connector.policy_versions import version_info
+
+    version = version_info(layout)
     if as_json:
         click.echo(_json.dumps({
             "root": str(layout.root),
             "triggers": policy.triggers.model_dump(),
+            "policy_version": version,
             "pending": pending,
         }, indent=2))
         return
 
     click.echo(f"Root:     {layout.root}")
+    click.echo(f"Policy:   {_describe_version(version)}")
     click.echo(f"Triggers: {policy.triggers.model_dump()}")
     click.echo(f"Pending:  {len(pending)}")
     for rec in pending:
@@ -846,7 +891,7 @@ def uninstall_cmd(path: str, keep_data: bool, yes: bool) -> None:
 
 @click.group("policy")
 def policy_group() -> None:
-    """View and tune the folder policy."""
+    """View and tune the folder policy (versioned; loosening edits need a second reviewer)."""
 
 
 def _load_layout_policy(path: str):
@@ -875,13 +920,11 @@ def policy_show(path: str) -> None:
 @click.argument("path", default=".")
 def policy_allow_shell(pattern: str, path: str) -> None:
     """Add a shell allow-pattern (regex) so matching commands run silently."""
-    from sandbox.connector.policy import save_policy
-
     layout, policy = _load_layout_policy(path)
     if pattern not in policy.shell.allow_patterns:
         policy.shell.allow_patterns.append(pattern)
-        save_policy(policy, layout.policy_file)
-        click.echo(f"Added shell allow-pattern: {pattern}")
+        if _save_edit(layout, policy, f"policy allow-shell {pattern}"):
+            click.echo(f"Added shell allow-pattern: {pattern}")
     else:
         click.echo("Pattern already present.")
 
@@ -891,13 +934,11 @@ def policy_allow_shell(pattern: str, path: str) -> None:
 @click.argument("path", default=".")
 def policy_allow_host(host: str, path: str) -> None:
     """Add a network host to the allowlist (WebFetch to it runs silently)."""
-    from sandbox.connector.policy import save_policy
-
     layout, policy = _load_layout_policy(path)
     if host not in policy.network.allow_hosts:
         policy.network.allow_hosts.append(host)
-        save_policy(policy, layout.policy_file)
-        click.echo(f"Added allowed host: {host}")
+        if _save_edit(layout, policy, f"policy allow-host {host}"):
+            click.echo(f"Added allowed host: {host}")
     else:
         click.echo("Host already allowed.")
 
@@ -908,12 +949,10 @@ def policy_allow_host(host: str, path: str) -> None:
 @click.argument("path", default=".")
 def policy_set_trigger(trigger: str, verdict: str, path: str) -> None:
     """Set a trigger's verdict (e.g. `policy set-trigger read_outside escalate`)."""
-    from sandbox.connector.policy import save_policy
-
     layout, policy = _load_layout_policy(path)
     setattr(policy.triggers, trigger, verdict)
-    save_policy(policy, layout.policy_file)
-    click.echo(f"Set trigger {trigger} = {verdict}")
+    if _save_edit(layout, policy, f"policy set-trigger {trigger} {verdict}"):
+        click.echo(f"Set trigger {trigger} = {verdict}")
 
 
 @policy_group.command("forget")
@@ -939,3 +978,240 @@ def policy_forget(path: str) -> None:
     memory = DecisionMemory(layout.remembered, session.get("session_id", ""))
     memory.forget_all()
     click.echo("Cleared remembered decisions.")
+
+
+# ---------------------------------------------------------------------------
+# sandbox policy * — versions and change control (connector/policy_versions.py)
+# ---------------------------------------------------------------------------
+
+def _describe_version(v: dict) -> str:
+    state = v.get("state")
+    gov = f", governance {v['governance']}" if v.get("governance") else ""
+    if state == "approved":
+        return f"version {v.get('folder')}{gov} (approved)"
+    if state == "unversioned":
+        return (f"{v.get('folder')}{gov} (unversioned: no approved version yet; "
+                "run `sandbox policy baseline` to start change control)")
+    if state == "drift":
+        return (f"DRIFT in {', '.join(v.get('drift') or [])}: on disk {v.get('on_disk')} is not the approved "
+                f"{v.get('approved')}. Enforcing {v.get('folder')}: the approved version, tightened by any "
+                "stricter on-disk settings. See `sandbox policy diff approved current`.")
+    return str(v)
+
+
+def _pv_ref(layout, ref: str, governance: bool):
+    """(label, content) for a version id/prefix, `approved`, `current`, or a JSON file."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    from sandbox.connector import policy_versions as pv
+
+    kind = pv.GOVERNANCE if governance else pv.FOLDER
+    if ref == "approved":
+        sha = pv.read_head(layout).get(kind)
+        if not sha:
+            raise click.ClickException(f"no approved {kind} version yet")
+        return f"approved ({pv.short(sha)})", pv.load_object(layout, sha)
+    if ref == "current":
+        disk = pv.folder_content(layout)
+        if kind == pv.FOLDER:
+            return f"current ({pv.short(pv.sha256_of(disk))})", disk
+        gov = pv.read_governance(layout, disk.get("semantic", {}).get("governance_policy", ""))
+        return f"current ({pv.short(pv.sha256_of(gov))})", gov
+    sha = pv.resolve(layout, ref)
+    if sha:
+        return pv.short(sha), pv.load_object(layout, sha)
+    path = _Path(ref)
+    if path.is_file():
+        try:
+            data = _json.loads(path.read_text(encoding="utf-8"))
+            content = pv.normalize_governance(data) if governance else pv.normalize_folder(data)
+        except (OSError, ValueError) as e:
+            raise click.ClickException(f"cannot read {ref}: {e}") from e
+        return ref, content
+    raise click.ClickException(f"unknown version {ref!r} (use a version id, `approved`, `current`, or a file)")
+
+
+@policy_group.command("propose")
+@click.argument("file")
+@click.argument("path", default=".")
+@click.option("--reason", required=True, help="Why the policy should change (recorded and signed).")
+@click.option("--proposer", default=None, help="Who proposes it (default: $SANDBOX_REVIEWER or your OS user).")
+@click.option("--governance", "is_gov", is_flag=True, help="FILE is a governance policy (clauses), not a folder policy.")
+def policy_propose(file: str, path: str, reason: str, proposer: str | None, is_gov: bool) -> None:
+    """Propose FILE as the next policy version. A different reviewer must approve it."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    from sandbox.connector import policy_versions as pv
+    from sandbox.connector.approval import default_reviewer
+
+    layout = _semantic_layout(path)
+    proposer = proposer or default_reviewer()
+    kind = pv.GOVERNANCE if is_gov else pv.FOLDER
+    try:
+        data = _json.loads(_Path(file).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise click.ClickException(f"cannot read {file}: {e}") from e
+    try:
+        change = pv.propose(layout, kind, data, proposer, reason)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    old = pv.load_object(layout, change["base"]) if change.get("base") else None
+    new = pv.load_object(layout, change["new_sha256"])
+    click.echo(f"Proposed change {change['change_id']}: {kind} "
+               f"{pv.short(change.get('base')) or 'none'} -> {pv.short(change['new_sha256'])} by {proposer}")
+    for line in pv.summarize(old, new) if old is not None else []:
+        click.echo(f"  {line}")
+    if change.get("governance_sha256"):
+        click.echo(f"  binds governance content {pv.short(change['governance_sha256'])} (the file it points at now)")
+    click.echo(change["diff"] or "(no textual diff)")
+    click.echo(f"A reviewer other than {proposer} must run: "
+               f"sandbox policy approve-change {change['change_id']} {layout.root} --reviewer <name>")
+
+
+@policy_group.command("approve-change")
+@click.argument("change_id")
+@click.argument("path", default=".")
+@click.option("--reviewer", default=None, help="Approver id (default: $SANDBOX_REVIEWER or your OS user). "
+                                               "Must differ from the proposer.")
+@click.option("--reason", default="", help="Note recorded with the approval.")
+def policy_approve_change(change_id: str, path: str, reviewer: str | None, reason: str) -> None:
+    """Apply a proposed change with your signed approval (not the proposer's)."""
+    from sandbox.connector import policy_versions as pv
+    from sandbox.connector.approval import default_reviewer
+
+    layout = _semantic_layout(path)
+    reviewer = reviewer or default_reviewer()
+    out = pv.approve_change(layout, change_id, reviewer, reason)
+    status = out["status"]
+    if status == "applied":
+        ch = out["change"]
+        click.echo(f"Approved {change_id} by {reviewer} (proposed by {ch['proposer']}): "
+                   f"{ch['kind']} policy is now version {out['version']}. Signed approval recorded.")
+        return
+    messages = {
+        "same_reviewer": f"Refused: {reviewer} proposed {change_id} (or holds the proposer's key). "
+                         "A different reviewer must approve it.",
+        "stale": f"Refused: the approved policy changed since {change_id} was proposed. Propose it again.",
+        "changed": f"Refused: the content no longer matches what was proposed in {change_id}.",
+        "not_open": f"No open change {change_id} (unknown, already decided, or its signature does not verify).",
+    }
+    click.echo(messages.get(status, status))
+    raise SystemExit(1)
+
+
+@policy_group.command("reject-change")
+@click.argument("change_id")
+@click.argument("path", default=".")
+@click.option("--reviewer", default=None, help="Who rejects it (default: $SANDBOX_REVIEWER or your OS user).")
+@click.option("--reason", required=True, help="Why (recorded in the audit chain).")
+def policy_reject_change(change_id: str, path: str, reviewer: str | None, reason: str) -> None:
+    """Close a proposed change without applying it."""
+    from sandbox.connector import policy_versions as pv
+    from sandbox.connector.approval import default_reviewer
+
+    layout = _semantic_layout(path)
+    if not pv.reject_change(layout, change_id, reviewer or default_reviewer(), reason):
+        click.echo(f"No open change {change_id}.")
+        raise SystemExit(1)
+    click.echo(f"Rejected {change_id}.")
+
+
+@policy_group.command("changes")
+@click.argument("path", default=".")
+@click.option("--all", "show_all", is_flag=True, help="Include approved and rejected changes.")
+def policy_changes(path: str, show_all: bool) -> None:
+    """List proposed policy changes (open ones by default)."""
+    import datetime as _dt
+
+    from sandbox.connector import policy_versions as pv
+
+    layout = _semantic_layout(path)
+    changes = pv.list_changes(layout, None if show_all else "open")
+    if not changes:
+        click.echo("No open policy changes." if not show_all else "No policy changes.")
+        return
+    for c in changes:
+        when = _dt.datetime.fromtimestamp(c.get("proposed_at", 0)).strftime("%Y-%m-%d %H:%M")
+        loosens = f"  loosens: {', '.join(c['loosens'])}" if c.get("loosens") else ""
+        click.echo(f"[{c['change_id']}] {c.get('status'):<8} {when}  {c['kind']} "
+                   f"{pv.short(c.get('base')) or 'none'} -> {pv.short(c['new_sha256'])}  by {c['proposer']}: "
+                   f"{c.get('reason', '')}{loosens}")
+
+
+@policy_group.command("history")
+@click.argument("path", default=".")
+@click.option("--json", "as_json", is_flag=True, help="Emit the raw log as JSON.")
+def policy_history(path: str, as_json: bool) -> None:
+    """Every approved version, who approved it and why, with signature checks."""
+    import datetime as _dt
+    import json as _json
+
+    from sandbox.connector import policy_versions as pv
+
+    layout = _semantic_layout(path)
+    log = pv.read_log(layout)
+    if as_json:
+        click.echo(_json.dumps(log, indent=2))
+        return
+    if not log:
+        click.echo("No policy history (unversioned). Run `sandbox policy baseline` to start it.")
+    for kind in pv.KINDS:
+        entries = [e for e in log if e.get("kind") == kind]
+        if not entries:
+            continue
+        click.echo(f"{kind} policy:")
+        for e in entries:
+            when = _dt.datetime.fromtimestamp(e.get("at", 0)).strftime("%Y-%m-%d %H:%M:%S")
+            sig = "signature ok" if pv.verify_entry(e) else "SIGNATURE INVALID"
+            who = f"by {e.get('by')}"
+            if e.get("how") == "change":
+                ch = pv.load_change(layout, e.get("change_id", ""))
+                if ch is not None:
+                    two = "two reviewers verified" if pv.verify_change(ch) else "CHANGE RECORD DOES NOT VERIFY"
+                    who = f"proposed by {ch.get('proposer')}, approved by {e.get('by')} ({two})"
+            click.echo(f"  {when}  {e.get('version')}  <- {pv.short(e.get('previous')) or 'none':<12}  "
+                       f"{e.get('how'):<10} {who}  [{sig}]  {e.get('reason', '')}")
+    click.echo(f"Now: {_describe_version(pv.version_info(layout))}")
+
+
+@policy_group.command("diff")
+@click.argument("a")
+@click.argument("b")
+@click.argument("path", default=".")
+@click.option("--governance", "is_gov", is_flag=True, help="Compare governance policies.")
+def policy_diff(a: str, b: str, path: str, is_gov: bool) -> None:
+    """Show what changes from version A to version B.
+
+    A and B: a version id (or a 4+ character prefix), `approved`, `current`
+    (the file on disk), or a path to a policy JSON file.
+    """
+    from sandbox.connector import policy_versions as pv
+
+    layout = _semantic_layout(path)
+    a_name, a_content = _pv_ref(layout, a, is_gov)
+    b_name, b_content = _pv_ref(layout, b, is_gov)
+    text = pv.render_diff(a_content, b_content, a_name, b_name)
+    click.echo(text or "No differences.")
+    for line in pv.summarize(a_content, b_content) if text else []:
+        click.echo(f"# {line}")
+
+
+@policy_group.command("baseline")
+@click.argument("path", default=".")
+@click.option("--reviewer", default=None, help="Who adopts it (default: $SANDBOX_REVIEWER or your OS user).")
+@click.option("--reason", default="adopted the existing policy as the first approved version")
+def policy_baseline(path: str, reviewer: str | None, reason: str) -> None:
+    """Start change control in a folder that has no policy history yet."""
+    from sandbox.connector import policy_versions as pv
+    from sandbox.connector.approval import default_reviewer
+
+    layout = _semantic_layout(path)
+    who = reviewer or default_reviewer()
+    try:
+        entries = pv.baseline(layout, who, reason)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    for e in entries:
+        click.echo(f"Recorded {e['kind']} policy version {e['version']} as approved (by {who}).")

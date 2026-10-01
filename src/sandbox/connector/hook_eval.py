@@ -183,9 +183,12 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
     from sandbox.connector.classify import classify
     from sandbox.connector.identity import from_payload
     from sandbox.connector.memory import DecisionMemory
+    from sandbox.connector.policy_versions import enforced_policy
     from sandbox.connector.risk import assess
 
-    policy = load_policy(layout.policy_file)
+    # The approved policy version (or, if the file drifted, the stricter of the
+    # approved and on-disk versions). _audit stamps policy_version on records.
+    policy, _ = enforced_policy(layout)
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {}) or {}
     cwd = payload.get("cwd") or str(layout.root)
@@ -490,7 +493,9 @@ def _audit(layout: FolderLayout, session_id: str, record: dict[str, Any]) -> Non
     """Best-effort audit append; never blocks the hook decision."""
     try:
         from sandbox.connector.audit import FolderAudit
+        from sandbox.connector.policy_versions import current_version
 
+        record.setdefault("policy_version", current_version(layout))
         FolderAudit(layout.audit_dir, session_id).append(record)
     except Exception:  # noqa: BLE001
         pass
@@ -727,7 +732,9 @@ def _scan_untrusted_output(payload: dict[str, Any], layout: FolderLayout) -> dic
     is exactly the behavior without the semantic layer.
     """
     try:
-        policy = load_policy(layout.policy_file)
+        from sandbox.connector.policy_versions import enforced_policy
+
+        policy, _ = enforced_policy(layout)
         sem = policy.semantic
         tool_name = payload.get("tool_name", "")
         # The sandbox's own tools are trusted plumbing, except fetch_url, which

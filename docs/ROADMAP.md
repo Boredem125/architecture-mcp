@@ -34,8 +34,13 @@ difficulty; each is intentionally *not* built yet so the core stays tight and de
 ## Stage 2 — bank-resonant, moderate cost
 
 - **Environment dimension** (dev / staging / prod → different verdicts) = segregation of duties.
-- **Policy-as-code + versioning** (`policy/v1.json … current.json`; `policy_version` already
-  bound into signed records — this makes it first-class and diffable).
+- **Policy-as-code + versioning** — *done (first cut)*: content-addressed history under
+  `.sandbox/policy_history/`, `policy_version` on every audit and escalation record (signed in
+  done-records), propose / approve-change by a second reviewer, `history` and `diff`, and drift
+  handling that enforces the stricter of approved and on-disk. See
+  [DETAILS.md](DETAILS.md#policy-versions-and-change-control). Remaining: reviewer keys bound to
+  people (same gap as dual control), and history that sits outside the workspace so a local
+  admin cannot rewrite it.
 - **Dual control: per-human authentication.** Two approvals by distinct reviewer ids with
   distinct keys are enforced (`connector/approval.py`); binding each id to a real person (SSO,
   smartcard/HSM keys) is what remains.
