@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from sandbox.api.auth import TokenAuthMiddleware, ensure_tokens
+from sandbox.api.hardening import SecurityHeadersMiddleware, install_error_handlers
 from sandbox.api.routes import agent_runtime, agents, audit, connector, dashboard, e2b, health, hitl, hook, launcher, policies, requests, security, sessions
 from sandbox.api.websocket import broadcaster, router as ws_router
 from sandbox.agents.runtime import AgentRuntime
@@ -132,7 +133,11 @@ def create_app(config: SandboxConfig | None = None) -> FastAPI:
     )
 
     ensure_tokens()
+    # Starlette runs the last-added middleware outermost: auth inside the
+    # security headers, so 401/403 replies carry the headers too.
     app.add_middleware(TokenAuthMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
+    install_error_handlers(app)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://localhost:3000"],
@@ -144,7 +149,13 @@ def create_app(config: SandboxConfig | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(sessions.router)
     app.include_router(requests.router)
-    app.include_router(hitl.router)
+    if get_config().hitl.redis_api:
+        from sandbox.hitl.api import configure as _configure_hitl
+        from sandbox.hitl.queue import HITLQueue
+        from sandbox.hitl.reviewer import ReviewerRegistry
+
+        _configure_hitl(HITLQueue(get_config().redis.url), ReviewerRegistry())
+        app.include_router(hitl.router)
     app.include_router(audit.router)
     app.include_router(agents.router)
     app.include_router(policies.router)

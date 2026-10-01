@@ -49,6 +49,10 @@ class HITLSettings(BaseSettings):
     critical_timeout_seconds: int = 300
     critical_irreversible_timeout_seconds: int = 180
     timeout_alert_threshold_pct: float = 5.0
+    # Mount the Redis-backed review API (/api/v1/hitl). Off by default: it needs
+    # a Redis server and its reviewer authentication is still a placeholder.
+    # Unconfigured, every request to it crashed (HTTP 500).
+    redis_api: bool = False
 
 
 class ExecutorSettings(BaseSettings):

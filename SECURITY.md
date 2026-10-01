@@ -32,6 +32,22 @@ reach submit/evaluate routes (see [docs/CONNECTOR.md](docs/CONNECTOR.md)).
 Regression tests: `tests/security/test_api_auth.py`. The folder connector
 (hooks + MCP over stdio) opens no port and was not affected.
 
+## Fixed: ZAP API-scan findings (1 Oct 2026)
+
+The CI ZAP scan of the API reported 288 low/informational alerts: 255 server
+errors, 16 error-disclosure alerts, 10 missing-header alerts and 7
+informational ones. Reproduced locally with a fuzzer that walks every
+OpenAPI route with malformed path, query and body values: the only crash
+site was the Redis-backed review API (`/api/v1/hitl`), mounted but never
+configured, so every request to it raised. It is now mounted only with
+`HITL_REDIS_API=true` (it needs Redis, and its reviewer authentication is
+still a placeholder). Unexpected errors return a fixed body with an error id
+and log the traceback server-side ([api/hardening.py](src/sandbox/api/hardening.py)).
+Every response, 401/403 included, carries `X-Content-Type-Options`,
+`Cross-Origin-Resource-Policy`, `X-Frame-Options`, `Referrer-Policy` and
+`Cache-Control: no-store`. Regression test: `tests/security/test_api_robustness.py`.
+Unix timestamps in responses are intended data and stay.
+
 ## Known trust assumptions
 
 See [docs/TCB.md](docs/TCB.md). In brief: the `.sandbox/` folder is trusted infrastructure,

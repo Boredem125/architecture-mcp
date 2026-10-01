@@ -87,13 +87,12 @@ Writing this up also surfaced a documentation error: the README said critical ac
 - **Labels come from LLMs** and were not human-reviewed, apart from the deepset review.
 - **Benchmarks are small.** The tool-call test half has 41 calls, with only 2 payment violations.
 - **Dual control enforces two distinct reviewer ids and keys, not two distinct humans.** Keys live in the control plane; binding them to people needs SSO or hardware keys.
-- **ZAP's 288 open alerts are all low or informational**, but 255 are HTTP 500s from malformed inputs and 16 are error-detail disclosures. These are not fixed yet.
+- **ZAP's API scan found 288 low or informational alerts.** 255 were server errors from one route group that was mounted but never configured; that, the error-detail disclosures and the missing headers were fixed afterwards, with a fuzzing regression test. Unix timestamps in responses remain, as intended data.
 - **English only**, and the false-alarm rate on look-alike benign text is still about 20% for the combined scan on the fresh dev set (30 of 149).
 
 ## What's next
 
 - Give the injection check the user's actual request, so "do X" can be compared with what was asked. This is the only route I see for the paraphrased attacks that got through.
-- Fix the ZAP findings (input validation for the 500s, generic error bodies, security headers).
 - Per-person approver authentication for dual control.
 
 The code, benchmarks, frozen test sets and every decision rule are in the repository, with commit hashes for each freeze. The [benchmark READMEs](../benchmarks/) have the full tables.
