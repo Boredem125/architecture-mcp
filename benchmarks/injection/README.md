@@ -131,3 +131,26 @@ per segment, alone and as `semantic OR student`; `run.py --reuse` re-scores
 it against the cached jev-os predictions without loading a model. Results
 and the adoption decision (not on by default: +4 dev false alarms, limit 3)
 are in [../distill/README.md](../distill/README.md).
+
+## Two-stage screen (xsmall → base): measured, not recommended
+
+`screen.py` scores every sentence with both models once (cached in
+`benchmarks/.cache/segscores-*.json`) and replays the gateway's `screened()`
+logic at several thresholds. Caught / false alarms, and the share of
+sentences sent on to base:
+
+| set | base only | screen 0.05 | screen 0.2 (default) |
+|---|---|---|---|
+| agent_set (dev) | 19/24, 5/24 | 18/24, 5/24 (70%) | 16/24, 4/24 (55%) |
+| embedded in a README (dev) | 16/24, 5/24 | 16/24, 5/24 (30%) | 14/24, 3/24 (10%) |
+| deepset, genuine attacks | 26/39, 1/56 | 25/39, 1/56 (63%) | 14/39, 1/56 (22%) |
+| neuralchemy test | 324/552, 86/390 | 280/552, 36/390 (54%) | 193/552, 25/390 (25%) |
+| repo files, 600 sample | 86/309, 8/291 | 68/309, 7/291 (45%) | 49/309, 1/291 (12%) |
+
+Per-sentence time on a quiet i7-1360P: xsmall ~85 ms, base ~204 ms
+(median of 200 sentences). Two-stage cost per sentence ≈ 85 + 204 × share:
+at 0.2 about 110–200 ms against 204, at 0.05 about 150–230 ms, which on the
+dev sets is no faster than base alone. xsmall's scores don't rank sentences
+well enough for base to skip them safely. (The per-text times in
+`screen_results.json` were measured while other jobs ran and overstate base;
+use the quiet medians above.)
