@@ -17,7 +17,7 @@ evidence lives.
 | Segregation of duties / dual control (critical): two distinct signed approvals *(distinct reviewer ids and keys; not proof of two humans)* | ✓ | ✓ independence | ✓ | ✓ | ✓ |
 | Prompt-injection / exfiltration containment | | | ✓ §500.2 cybersecurity | ✓ threat mgmt | ✓ security controls |
 | Restorable file originals + change timeline | ✓ recordkeeping | ✓ | | ✓ | ✓ |
-| Examiner evidence export *(roadmap)* | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Examiner evidence export: `sandbox export-evidence` / `verify-evidence`, a signed pack of decisions, approvals, audit chains and policy files *(integrity relative to control-plane keys; see [EVIDENCE.md](EVIDENCE.md))* | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 ## Where the evidence lives
 
@@ -26,8 +26,12 @@ evidence lives.
 - **Audit chain:** `.sandbox/audit/<session>/records.jsonl` — verify with `sandbox verify`.
 - **File changes / originals:** `.sandbox/originals/` — list with `sandbox changes`, revert
   with `sandbox restore`.
-- **Policy at time-of-action:** `policy_version` is bound into each signed record *(versioning
-  is Stage 2 — see [ROADMAP.md](ROADMAP.md))*.
+- **Evidence pack:** `sandbox export-evidence --out pack.zip` collects all of the above with
+  per-record checks and a signed manifest; `sandbox verify-evidence pack.zip` re-checks it
+  offline. Contents and limits: [EVIDENCE.md](EVIDENCE.md).
+- **Policy at time-of-action:** not yet recorded. `policy_version` is a signed field but
+  nothing sets it; the evidence pack copies the policy files as they are at export
+  *(versioning is Stage 2 — see [ROADMAP.md](ROADMAP.md))*.
 
 ---
 
