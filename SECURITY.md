@@ -80,6 +80,13 @@ response, 401/403 included, carries `X-Content-Type-Options`,
 values and with schema-shaped bodies holding junk values (what ZAP sends).
 Unix timestamps in responses are intended data and stay.
 
+**Result (scan of `16ccac1`):** 0 server errors, 0 error or source
+disclosures. Open: 255 client-error alerts (expected 4xx, e.g. 404 for
+made-up ids), 5 "non-storable content" (intended: `no-store`) and 4 Unix
+timestamps (intended data). Each fix round let the scanner reach further
+(1 → 8 server errors after `runtime/spawn` started working) before it
+reached zero.
+
 ## Known trust assumptions
 
 See [docs/TCB.md](docs/TCB.md). In brief: the `.sandbox/` folder is trusted infrastructure,
