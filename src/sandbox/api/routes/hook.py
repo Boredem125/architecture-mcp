@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from sandbox.api.auth import ensure_tokens
+import structlog
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -30,6 +31,8 @@ _SETTINGS_CANDIDATES = [
     ".claude/settings.local.json",
     ".claude/settings.json",
 ]
+
+logger = structlog.get_logger()
 
 router = APIRouter(prefix="/api/v1/hook", tags=["hook-integration"])
 
@@ -86,6 +89,10 @@ async def hook_connect(req: HookConnectRequest) -> dict:
     broadcaster = _get_broadcaster()
 
     workspace = req.workspace_root or os.getcwd()
+    # Checked before a session is created: a bad path used to leave a dangling
+    # session and echo the OS error (with server paths) back to the caller.
+    if not Path(workspace).is_dir():
+        raise HTTPException(status_code=400, detail="workspace_root must be an existing directory")
     allowed_actions = [ActionType(c) for c in req.capabilities]
 
     session = sm.create_session(
@@ -248,7 +255,9 @@ def _auto_install(workspace: str, session_id: str, hook_script: str, hooks_confi
         results["script_path"] = str(script_path)
         results["instructions"].append(f"Hook script at {script_path}")
     except Exception as e:
-        results["instructions"].append(f"Could not write hook script: {e}")
+        # The reason goes to the server log, not to the caller (error disclosure).
+        logger.warning("hook_install_failed", step="write hook script", error=str(e))
+        results["instructions"].append("Could not write hook script in the workspace (see server log).")
         return results
 
     # 2. Write sandbox_session.json — updated on every "Activate Sandbox"
@@ -260,7 +269,9 @@ def _auto_install(workspace: str, session_id: str, hook_script: str, hooks_confi
             encoding="utf-8",
         )
     except Exception as e:
-        results["instructions"].append(f"Could not write session config: {e}")
+        # The reason goes to the server log, not to the caller (error disclosure).
+        logger.warning("hook_install_failed", step="write session config", error=str(e))
+        results["instructions"].append("Could not write session config in the workspace (see server log).")
         return results
 
     # 2. Find or create the Claude Code settings file
@@ -315,7 +326,9 @@ def _auto_install(workspace: str, session_id: str, hook_script: str, hooks_confi
         results["instructions"].append("Every tool call now routes through the sandbox pipeline.")
         results["instructions"].append("Watch real-time activity on the Dashboard.")
     except Exception as e:
-        results["instructions"].append(f"Could not patch settings: {e}")
+        # The reason goes to the server log, not to the caller (error disclosure).
+        logger.warning("hook_install_failed", step="patch settings", error=str(e))
+        results["instructions"].append("Could not patch settings in the workspace (see server log).")
 
     return results
 

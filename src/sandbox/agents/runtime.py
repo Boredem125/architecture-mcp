@@ -239,7 +239,7 @@ class AgentRuntime:
             orchestrator=orchestrator,
             workspace_root=workspace_root,
             event_broadcaster=self._broadcaster,
-            sandbox=docker_sandbox,
+            sandbox=sandbox,
         )
 
         if agent_type == "claude-code":

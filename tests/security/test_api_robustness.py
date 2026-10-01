@@ -64,9 +64,27 @@ def _schema_valid_bodies(spec, op):
     if "$ref" in schema:
         schema = spec["components"]["schemas"][schema["$ref"].split("/")[-1]]
     props = schema.get("properties", {})
+
+    def resolve(node):
+        return spec["components"]["schemas"][node["$ref"].split("/")[-1]] if "$ref" in node else node
+
+    def enum_value(node):
+        node = resolve(node)
+        return node["enum"][0] if node.get("enum") else None
+
     for text, number in (("zap", 10**12), ("-1", -1)):
         body = {}
         for name, prop in props.items():
+            prop = resolve(prop)
+            # A valid enum value where the schema has one, as ZAP does: junk
+            # there is rejected by validation and never reaches the route code
+            # (which is how runtime/spawn's NameError hid from this test).
+            if enum_value(prop) is not None:
+                body[name] = enum_value(prop)
+                continue
+            if prop.get("type") == "array" and enum_value(prop.get("items", {})) is not None:
+                body[name] = [enum_value(prop["items"])]
+                continue
             kind = prop.get("type") or next((a.get("type") for a in prop.get("anyOf", []) if a.get("type")), "string")
             body[name] = {"string": text, "integer": number, "number": float(number), "boolean": True,
                           "array": [text], "object": {"k": text}}.get(kind, text)
@@ -85,6 +103,32 @@ def test_schema_valid_bodies_with_junk_values_do_not_crash(client):
                 if r.status_code >= 500:
                     crashes.append(f"{method.upper()} {path} {body} -> {r.status_code}")
     assert not crashes, crashes[:10]
+
+
+def test_spawn_reaches_the_toolkit(client, monkeypatch):
+    # runtime/spawn raised NameError ('docker_sandbox') on every call. The
+    # agent's own run is replaced by a no-op so nothing real starts.
+    from sandbox.agents.runtime import AgentRuntime
+
+    async def no_run(self, run, toolkit, *args, **kwargs):
+        return None
+
+    monkeypatch.setattr(AgentRuntime, "_run_generic_agent", no_run)
+    r = client.post("/api/v1/runtime/spawn", json={"agent_type": "custom", "task": "t", "workspace_root": "ws"})
+    assert r.status_code == 200, r.text
+    assert client.post("/api/v1/runtime/spawn", json={"agent_type": "zap", "task": "t"}).status_code == 422
+
+
+def test_hook_connect_rejects_a_bad_workspace_without_leaking_paths(client, tmp_path):
+    from sandbox.api.app import get_session_manager
+
+    before = len(get_session_manager()._sessions) if hasattr(get_session_manager(), "_sessions") else None
+    bad = tmp_path / "not-a-dir.txt"
+    bad.write_text("x")
+    r = client.post("/api/v1/hook/connect", json={"workspace_root": str(bad)})
+    assert r.status_code == 400 and str(tmp_path) not in r.text
+    if before is not None:
+        assert len(get_session_manager()._sessions) == before
 
 
 def test_e2b_template_must_be_allowlisted(client, monkeypatch):

@@ -56,6 +56,15 @@ What crashed, and the fix:
   restricted to an allowlist (`E2B_TEMPLATES`, default `python:3.12-slim`).
 - `POST /api/v1/security/jit/grant`: an enormous `duration_minutes`
   overflowed the expiry date. Now bounded (max 24 h).
+- `POST /api/v1/runtime/spawn` raised `NameError` on **every** call (a
+  variable named `docker_sandbox` that didn't exist), so the endpoint had
+  never worked. Fixed; `agent_type` is validated before anything is created.
+- `POST /api/v1/hook/connect` with an unusable `workspace_root` created a
+  session anyway and echoed the OS error, with server paths, to the caller.
+  Now a 400 before any session exists; install errors go to the server log.
+
+Accepted, by design: `hook/connect` returns the generated hook script (Python
+source) so it can be installed; ZAP reports that as source code disclosure.
 
 Also: unexpected errors return a fixed body with an error id and log the
 traceback server-side ([api/hardening.py](src/sandbox/api/hardening.py)); every
