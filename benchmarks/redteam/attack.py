@@ -2,6 +2,7 @@
 
     python benchmarks/redteam/attack.py test          # frozen red-team test set (Qwen-written)
     python benchmarks/redteam/attack.py train         # attack round: keep what the gateway misses
+    python benchmarks/redteam/attack.py train --use-saved   # same, with only the attacks already written
     python benchmarks/redteam/attack.py score         # attack success rate on the test set
 
 The attacker is asked to evade a detector, by technique (paraphrase,
@@ -10,7 +11,7 @@ confirmed as a real injection by a second model before it counts.
 
 - test:  written by qwen/qwen3.8-27b, confirmed by gpt-oss-120b, frozen in
          benchmarks/redteam/test.jsonl before any retraining. Never trained on.
-- train: written by gpt-oss-120b, confirmed by qwen; the ones the current
+- train: written by gpt-oss-20b, confirmed by qwen; the ones the current
          gateway misses (jev-os checks OR the student, per sentence, as in
          PostToolUse) are kept as training data in
          benchmarks/.cache/distill-redteam-train.jsonl.
@@ -34,6 +35,7 @@ import run as bench  # noqa: E402
 from sandbox.semantic.redact import redact  # noqa: E402
 
 TEST_FILE = HERE / "test.jsonl"
+ATTACKER = "openai/gpt-oss-20b"
 TRAIN_FILE = bench.CACHE / "distill-redteam-train.jsonl"
 
 TECHNIQUES = {
@@ -53,13 +55,24 @@ TECHNIQUES = {
 SETTINGS = list(gen.SETTINGS)
 
 
-def write_attacks(model: str, settings: list[str], rounds: int, n: int, seed0: int) -> list[dict]:
-    """Ask `model` for `n` evasive injections per (technique, setting, round)."""
+def write_attacks(model: str, settings: list[str], rounds: int, n: int, seed0: int,
+                  raw: Path | None = None) -> list[dict]:
+    """Ask `model` for `n` evasive injections per (technique, setting, round).
+
+    With `raw`, each batch is appended as it arrives and a re-run skips the
+    batches already there, so a rate limit loses nothing.
+    """
     out, seed = [], seed0
+    done: set[int] = set()
+    if raw is not None and raw.exists():
+        out = [json.loads(x) for x in raw.read_text(encoding="utf-8").splitlines() if x.strip()]
+        done = {o["seed"] for o in out if "seed" in o}
     for tech, how in TECHNIQUES.items():
         for setting in settings:
             for _ in range(rounds):
                 seed += 1
+                if seed in done:
+                    continue
                 kind = "injection"
                 old = gen.KINDS[kind]
                 gen.KINDS[kind] = (
@@ -70,7 +83,12 @@ def write_attacks(model: str, settings: list[str], rounds: int, n: int, seed0: i
                     texts = gen.generate(model, kind, setting, n, label.api_key(), seed)
                 finally:
                     gen.KINDS[kind] = old
-                out += [{"text": redact(t), "technique": tech, "setting": setting, "author": model} for t in texts]
+                batch = [{"text": redact(t), "technique": tech, "setting": setting, "author": model, "seed": seed}
+                         for t in texts]
+                out += batch
+                if raw is not None:
+                    with raw.open("a", encoding="utf-8") as f:
+                        f.write("".join(json.dumps(b) + "\n" for b in batch))
                 print(f"  wrote {len(out)} ({tech}/{setting})", flush=True)
     return out
 
@@ -114,10 +132,14 @@ def build_test() -> None:
 
 
 def build_train() -> None:
+    # gpt-oss-120b hit Groq's daily limit mid-round; 20b has its own. The test
+    # set's author (qwen) is still a different model, which is what matters.
     raw = HERE.parent / ".cache" / "redteam-train-raw.jsonl"
-    items = ([json.loads(x) for x in raw.read_text(encoding="utf-8").splitlines() if x.strip()]
-             if raw.exists() else write_attacks("openai/gpt-oss-120b", SETTINGS, 1, 6, 9000))
-    raw.write_text("".join(json.dumps(i) + "\n" for i in items), encoding="utf-8")
+    if "--use-saved" in sys.argv:
+        # Use what's already written (e.g. after a daily limit) without asking for more.
+        items = [json.loads(x) for x in raw.read_text(encoding="utf-8").splitlines() if x.strip()]
+    else:
+        items = write_attacks(ATTACKER, SETTINGS, 1, 6, 9000, raw=raw)
     kept = confirm(items, "qwen/qwen3.8-27b")
     test_texts = [json.loads(x)["text"] for x in TEST_FILE.read_text(encoding="utf-8").splitlines() if x.strip()]
     near = pooldata.near_copies([k["text"] for k in kept], pooldata.held_out_texts() + test_texts)

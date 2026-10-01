@@ -41,9 +41,10 @@ POOL = bench.CACHE / "distill-pool.jsonl"
 LABELS = bench.CACHE / "distill-groq-labels.jsonl"
 QUEUE = bench.CACHE / "distill-label-queue.jsonl"
 GENERATED = bench.CACHE / "distill-generated-train.jsonl"  # generate.py train (round 2)
+REDTEAM = bench.CACHE / "distill-redteam-train.jsonl"  # benchmarks/redteam/attack.py train (phase 3)
 
 
-def load_pool(labels: str, generated: bool = False) -> list[dict]:
+def load_pool(labels: str, generated: bool = False, redteam: bool = False) -> list[dict]:
     """The training pool.
 
     dataset  the datasets' own labels
@@ -70,6 +71,10 @@ def load_pool(labels: str, generated: bool = False) -> list[dict]:
         if generated and GENERATED.exists():
             rows += [{"id": f"gen:{g['id']}", "source": "generated", "text": g["text"], "label": g["label"]}
                      for g in map(json.loads, GENERATED.read_text(encoding="utf-8").splitlines()) if g]
+        if redteam and REDTEAM.exists():
+            # Attacks the gateway missed in the phase-3 attack round.
+            rows += [{"id": f"rt:{a['id']}", "source": "redteam", "text": a["text"], "label": 1}
+                     for a in map(json.loads, REDTEAM.read_text(encoding="utf-8").splitlines()) if a]
     return rows
 
 
@@ -144,6 +149,7 @@ def main() -> None:
     ap.add_argument("--exclude-source", default="",
                     help="train without this pool source (repo, neuralchemy, deepset) to measure transfer")
     ap.add_argument("--generated", action="store_true", help="add the round-2 generated training texts")
+    ap.add_argument("--redteam", action="store_true", help="add the phase-3 red-team misses")
     ap.add_argument("--fpr", type=float, default=0.01,
                     help="share of held-back benign documentation sentences allowed to flag")
     ap.add_argument("--export", default="", help="also write the gateway model file here")
@@ -154,7 +160,7 @@ def main() -> None:
     ap.add_argument("--out", default=str(HERE / "results.json"))
     args = ap.parse_args()
 
-    pool = load_pool(args.labels, args.generated)
+    pool = load_pool(args.labels, args.generated, args.redteam)
     rows = [r for r in pool if r["source"] != args.exclude_source]
     unseen = [r for r in pool if args.exclude_source and r["source"] == args.exclude_source]
     rng = np.random.default_rng(20261001)
@@ -188,7 +194,7 @@ def main() -> None:
         runtime = Student.load(args.export)
         model = _RuntimeAdapter(runtime)
 
-    report = {"labels": args.labels, "generated": args.generated, "fpr_target": args.fpr, "excluded_source": args.exclude_source or None, "threshold": threshold, "results": {}}
+    report = {"labels": args.labels, "generated": args.generated, "redteam": args.redteam, "fpr_target": args.fpr, "excluded_source": args.exclude_source or None, "threshold": threshold, "results": {}}
     sets = held_out()
     if args.eval == "dev":
         sets = {k: v for k, v in sets.items() if "(dev" in k}
