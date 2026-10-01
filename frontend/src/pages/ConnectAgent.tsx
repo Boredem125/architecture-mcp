@@ -202,6 +202,9 @@ export default function ConnectAgent() {
         hook_script: string;
         hooks_config: object;
         install_instructions: string[];
+        auto_installed: boolean;
+        hook_script_path?: string;
+        settings_path?: string;
       }>('/hook/connect', {
         method: 'POST',
         body: JSON.stringify({
