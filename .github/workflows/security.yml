@@ -126,6 +126,8 @@ jobs:
 
   zap-api:
     runs-on: ubuntu-latest
+    # Normally 1-2 minutes; one run sat in the scan for over 20. Cap it.
+    timeout-minutes: 30
     permissions:
       contents: read
       security-events: write
@@ -163,7 +165,8 @@ jobs:
             -e ZAP_AUTH_HEADER_SITE=127.0.0.1 \
             zaproxy/zap-stable:2.17.0 \
             zap-api-scan.py -t http://127.0.0.1:8000/openapi.json -f openapi \
-              -J zap.json -r zap.html -I || true
+              -J zap.json -r zap.html -I \
+              -z "-config scanner.maxScanDurationInMins=15 -config scanner.maxRuleDurationInMins=3" || true
           test -s zap/zap.json
           python .github/scripts/zap_to_sarif.py zap/zap.json zap.sarif
       - uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
