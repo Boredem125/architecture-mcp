@@ -14,7 +14,7 @@ evidence lives.
 | Transparent, itemized risk scoring | | ✓ model risk rating | | ✓ | ✓ risk assessment |
 | Tamper-evident hash-chain audit | ✓ recordkeeping | ✓ documentation | ✓ §500.6 audit trail | ✓ logging | ✓ logging/traceability |
 | Ed25519-signed approvals (non-repudiation) | ✓ | | ✓ §500.6 | ✓ | ✓ |
-| Segregation of duties / dual control (critical) | ✓ | ✓ independence | ✓ | ✓ | ✓ |
+| Segregation of duties / dual control (critical) *(flagged; second approver not yet enforced)* | ✓ | ✓ independence | ✓ | ✓ | ✓ |
 | Prompt-injection / exfiltration containment | | | ✓ §500.2 cybersecurity | ✓ threat mgmt | ✓ security controls |
 | Restorable file originals + change timeline | ✓ recordkeeping | ✓ | | ✓ | ✓ |
 | Examiner evidence export *(roadmap)* | ✓ | ✓ | ✓ | ✓ | ✓ |

@@ -209,3 +209,18 @@ def test_records_signed_before_fingerprint_was_added_still_verify(tmp_path):
     rec["signed_fields"] = old_fields
     rec["signature"] = signing.sign_message(signing._canonical(rec, old_fields), key)
     assert verify_record(rec)
+
+
+def test_non_allowlisted_mcp_call_is_approvable_not_a_dead_end(tmp_path):
+    # No governance policy at all: the classifier escalates an MCP server that
+    # isn't allowlisted. Before, the agent was told to use a sandbox tool that
+    # doesn't exist; now it gets a request it can retry once approved.
+    init(tmp_path, claude=False, mcp=False)
+    layout = FolderLayout(tmp_path)
+    args = {"channel": "#general", "text": "build passed"}
+    d, why = decision(call(layout, "mcp__slack__post_message", args))
+    assert d == "deny" and "retry exactly the same call" in why
+    (rec,) = EscalationQueue(layout).list_pending()
+    assert rec["kind"] == "tool_call" and rec["reason_code"] == "NETWORK" and rec["governance"] == []
+    approve(layout, rec["request_id"])
+    assert decision(call(layout, "mcp__slack__post_message", args))[0] == "allow"

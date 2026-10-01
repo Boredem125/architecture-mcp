@@ -14,7 +14,7 @@ fired, the score decides the *tier* of response:
     score  < 25  → allow      (auto)
     25 – 49      → observe    (audit, allow)
     50 – 79      → escalate   (one human approver)
-    >= 80        → critical   (dual control — two approvers)
+    >= 80        → critical   (flagged for dual control; second approver not yet enforced)
 
 Bands are policy-tunable; the defaults live here.
 """

