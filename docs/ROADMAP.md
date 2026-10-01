@@ -52,8 +52,12 @@ difficulty; each is intentionally *not* built yet so the core stays tight and de
 - **Behavioral anomaly detection.** Each action may pass policy while the *pattern* is wrong
   (reads jump from 20 files to 4,000; sudden `~/.ssh` access; 15 new domains). Deviation raises
   the approval threshold. (`src/sandbox/anomaly/*` exists as a starting point.)
-- **Approval-fatigue detection.** Track approval rate/latency; when a human is rubber-stamping
-  50 approvals in 2 minutes, temporarily raise scrutiny. An underrated, genuinely novel control.
+- **Approval-fatigue detection: first version shipped.** `sandbox oversight` reports approval
+  rate, decision time, fast approvals, bursts and timeouts per reviewer; a reviewer flagged for
+  bursts or mostly-fast approvals must give a reason and needs a second reviewer until the flag
+  clears (`connector/oversight.py`, [DETAILS.md](DETAILS.md#oversight-indicators-and-approval-fatigue)).
+  What remains: calibrate the thresholds on real reviewer data, sign decision timestamps, and
+  measure review time from when a request was shown rather than when it was created.
 - **Break-glass.** Emergency path when the approval system is unavailable — reason + identity
   required, short expiry, extra audit, mandatory retrospective review. *Not* `--force`.
 - **Broker-held capability tokens.** Short-lived, scoped grants the *broker* holds and executes

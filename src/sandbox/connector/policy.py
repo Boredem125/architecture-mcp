@@ -132,6 +132,30 @@ class SemanticPolicy(BaseModel):
     student: bool = True
 
 
+class OversightPolicy(BaseModel):
+    """Approval-fatigue detection (sandbox/connector/oversight.py).
+
+    When a reviewer's recent approvals cross a threshold, their next approvals
+    get more scrutiny; it never lowers any. The defaults are untested starting
+    points, not values validated on real reviewer data (docs/DETAILS.md).
+    """
+
+    enabled: bool = True
+    window_minutes: float = Field(10.0, gt=0)
+    # Flag a reviewer with this many approvals inside the window.
+    burst_approvals: int = Field(20, ge=1)
+    # An approval this soon after the request was created counts as "fast".
+    fast_seconds: float = Field(5.0, ge=0)
+    # Flag a reviewer when this share of their approvals in the window was fast,
+    fast_share: float = Field(0.8, gt=0, le=1)
+    # ...once they have at least this many approvals in the window.
+    fast_min_approvals: int = Field(8, ge=1)
+    # Responses while flagged.
+    require_reason: bool = True
+    min_reason_chars: int = Field(10, ge=1)
+    require_second_reviewer: bool = True
+
+
 class TriggerPolicy(BaseModel):
     shell: str = "escalate"
     write_outside: str = "deny"
@@ -156,6 +180,7 @@ class FolderPolicy(BaseModel):
     scan: ScanPolicy = Field(default_factory=ScanPolicy)
     output: OutputPolicy = Field(default_factory=OutputPolicy)
     semantic: SemanticPolicy = Field(default_factory=SemanticPolicy)
+    oversight: OversightPolicy = Field(default_factory=OversightPolicy)
 
     def _inject_protections(self) -> None:
         """Ensure the self-protection rules are present (non-removable)."""

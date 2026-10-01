@@ -130,6 +130,25 @@ sandbox governance test          # measures each clause's reliability against it
 
 The reliability of a zero-shot clause varies, so the tool measures it: on the example policy two clauses score 6/6 and the payments clause 3/6 (flagged "needs calibration"). See [docs/GOVERNANCE.md](GOVERNANCE.md).
 
+## Oversight indicators and approval fatigue
+
+A reviewer who approves everything within two seconds is not reviewing. `sandbox oversight [PATH] [--json] [--since 24h]` reads the folder's done-records, pending records and audit log and prints, per reviewer and overall: approvals, denials, approval rate, seconds from request creation to decision (median and p90, nearest rank), approvals faster than `fast_seconds`, bursts (episodes of `burst_approvals` approvals within `window_minutes`), `oversight_fatigue` events, and, per folder, requests left pending past `escalation_timeout_seconds`. Each signed approval of a dual-control request counts for its own reviewer.
+
+The same records drive a fatigue rule in the one approval path ([connector/approval.py](../src/sandbox/connector/approval.py), logic in [connector/oversight.py](../src/sandbox/connector/oversight.py)). A reviewer is flagged while, inside the last `window_minutes`, they have either `burst_approvals` approvals, or at least `fast_min_approvals` approvals of which a `fast_share` or more came under `fast_seconds` after the request was created. While flagged, their approvals need a written reason (`--reason`, at least `min_reason_chars`; `sandbox watch` prompts for it and shows a warning), and an ordinary request they approve becomes dual control, so a different reviewer must approve it too. Each such approval writes an `oversight_fatigue` event to the audit chain. The flag clears on its own as approvals age out of the window. It only adds scrutiny; it never removes a check.
+
+Settings live under `oversight` in `.sandbox/policy.json`:
+
+| Setting | Default | Catches | Misses / false alarms |
+|---|---|---|---|
+| `window_minutes` | 10 | recent behaviour only | a slow drip of rubber-stamps spread over hours |
+| `burst_approvals` | 20 | a flood of requests approved in a row (the "bury one bad request" attack) | a reviewer approving a large, legitimate batch is flagged too |
+| `fast_seconds` | 5 | approvals given before the command could have been read | a careful reviewer who was already looking at an obvious request |
+| `fast_share` / `fast_min_approvals` | 0.8 / 8 | a habit of fast approvals, not one quick click | a slow rubber-stamper: time is measured from request creation, so a reviewer who was away and then approves without reading looks slow |
+| `require_reason`, `min_reason_chars` | on, 10 | makes the reviewer state why | the reason's quality is not checked |
+| `require_second_reviewer` | on | one tired person cannot approve alone | a single-person setup has no second reviewer; set it to `false` there and keep the reason |
+
+These defaults are starting points chosen by judgement. They have not been checked against real reviewer data, and the numbers are indicators, not proof that oversight was or was not effective. Other limits: timestamps in done-records are not covered by the record signature (only each dual-control approval's `approved_at` is), so the metrics rely on `.sandbox/` being protected from the agent; reviewer ids are not bound to people (see dual control); a dual-control request denied after its first approval loses that first approval from the record; and records written before this feature have no `created_at`, so their latency is unknown.
+
 ## Key Design Decisions
 
 - **The folder is the bus**: Atomic file operations on NTFS coordinate four independent processes (no in-memory state, no open ports, survives restarts)

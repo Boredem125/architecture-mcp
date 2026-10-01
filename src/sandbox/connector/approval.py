@@ -45,15 +45,31 @@ async def approve(layout: FolderLayout, request_id: str, reviewer_id: str, reaso
     executed        it ran (or, for a tool_call, the grant was issued); "result" holds the done-record
     awaiting_second first of two approvals recorded; nothing ran
     same_reviewer   refused: this reviewer (or key) already gave the first approval
+    reason_required refused: reviewer flagged for approval fatigue gave no written reason
     not_pending     no such pending request (taken, finished or unknown)
+
+    Approval fatigue (connector/oversight.py) only adds scrutiny: a flagged
+    reviewer must give a reason, and their approval of an ordinary request
+    makes it dual control. The outcome then carries an "oversight" entry.
     """
     from sandbox.connector.broker import FolderBroker
+    from sandbox.connector.oversight import check_approval
     from sandbox.connector.signing import sign_approval
 
     queue = EscalationQueue(layout)
     rec = queue.claim(request_id, reviewer_id)
     if rec is None:
         return {"status": "not_pending"}
+    approved_at = time.time()
+
+    oversight = check_approval(layout, rec, reviewer_id, reason)
+    extra = {"oversight": oversight} if oversight else {}
+    if oversight and oversight["reason_required"]:
+        queue.release(request_id, rec)
+        return {"status": "reason_required", **extra}
+    if oversight and oversight["second_reviewer"]:
+        rec["requires_dual"] = True
+        rec["dual_reason"] = "approval_fatigue"
 
     # Only approvals that verify AND are for exactly this request count: an
     # altered approval, or a request changed after it was approved, drops out.
@@ -63,16 +79,17 @@ async def approve(layout: FolderLayout, request_id: str, reviewer_id: str, reaso
         if any(a.get("reviewer_id") == reviewer_id or a.get("signer_public_key") == mine["signer_public_key"]
                for a in approvals):
             queue.release(request_id, rec)
-            return {"status": "same_reviewer", "approvals": len(approvals)}
+            return {"status": "same_reviewer", "approvals": len(approvals), **extra}
         approvals.append(mine)
         if len(approvals) < 2:
             queue.release(request_id, rec | {"approvals": approvals})
             queue._activity(f"APPROVED 1/2  {request_id}  by {reviewer_id}  (dual control: needs a second reviewer)")
-            return {"status": "awaiting_second", "approvals": len(approvals)}
+            return {"status": "awaiting_second", "approvals": len(approvals), **extra}
 
     result = await FolderBroker().execute(rec, reviewer_id, reason)
+    result.setdefault("approved_at", approved_at)
     if approvals:
         result["approvals"] = approvals
         result["requires_dual"] = True
     queue.finish(request_id, result)
-    return {"status": "executed", "result": result}
+    return {"status": "executed", "result": result, **extra}
