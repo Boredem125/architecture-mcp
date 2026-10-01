@@ -41,11 +41,17 @@ def _layout(root: str):
     """Resolve a FolderLayout for *root*, or raise 404 if not initialized."""
     from sandbox.connector.layout import FolderLayout
 
-    layout = FolderLayout(root)
-    if not layout.exists():
+    # A path the OS can't even stat (too long on Linux, a NUL byte) is a bad
+    # request, not a crash: ZAP's 4,000-character root raised ENAMETOOLONG.
+    try:
+        layout = FolderLayout(root)
+        found = layout.exists()
+    except (OSError, ValueError):
+        raise HTTPException(status_code=400, detail="root is not a usable path")
+    if not found:
         raise HTTPException(
             status_code=404,
-            detail=f"No .sandbox/ found in {root}. Run `sandbox init` there first.",
+            detail="No .sandbox/ found in that folder. Run `sandbox init` there first.",
         )
     return layout
 

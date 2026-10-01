@@ -131,6 +131,26 @@ def test_hook_connect_rejects_a_bad_workspace_without_leaking_paths(client, tmp_
         assert len(get_session_manager()._sessions) == before
 
 
+def test_paths_the_os_cannot_stat_are_a_400(client, monkeypatch):
+    # On Linux a 4,000-character path raises ENAMETOOLONG instead of "not
+    # found", which crashed the connector routes and hook/connect under ZAP.
+    # Windows just answers False, so simulate the Linux error here.
+    import errno
+    import pathlib
+
+    def too_long(self, *args, **kwargs):
+        raise OSError(errno.ENAMETOOLONG, "File name too long")
+
+    monkeypatch.setattr(pathlib.Path, "is_dir", too_long)
+    monkeypatch.setattr(pathlib.Path, "exists", too_long)
+    root = "x" * 4000
+    for method, url in (("GET", f"/api/v1/connector/status?root={root}"),
+                        ("GET", f"/api/v1/connector/audit?root={root}&limit=50"),
+                        ("POST", f"/api/v1/connector/r1/approve?root={root}")):
+        assert client.request(method, url).status_code == 400, url
+    assert client.post("/api/v1/hook/connect", json={"workspace_root": root}).status_code == 400
+
+
 def test_e2b_template_must_be_allowlisted(client, monkeypatch):
     r = client.post("/e2b/v1/sandboxes", json={"template": "attacker/miner:latest"})
     assert r.status_code == 422

@@ -91,7 +91,11 @@ async def hook_connect(req: HookConnectRequest) -> dict:
     workspace = req.workspace_root or os.getcwd()
     # Checked before a session is created: a bad path used to leave a dangling
     # session and echo the OS error (with server paths) back to the caller.
-    if not Path(workspace).is_dir():
+    try:
+        usable = Path(workspace).is_dir()
+    except (OSError, ValueError):  # e.g. too long for the OS, or a NUL byte
+        usable = False
+    if not usable:
         raise HTTPException(status_code=400, detail="workspace_root must be an existing directory")
     allowed_actions = [ActionType(c) for c in req.capabilities]
 

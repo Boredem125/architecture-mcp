@@ -63,6 +63,11 @@ What crashed, and the fix:
   session anyway and echoed the OS error, with server paths, to the caller.
   Now a 400 before any session exists; install errors go to the server log.
 
+- Connector routes (`?root=`) and `hook/connect`: on Linux a very long path
+  raises "file name too long" instead of "not found", so ZAP's 4,000-character
+  values crashed them (Windows just answers "not found", which hid it from
+  local testing). Any path the OS can't check is now a 400.
+
 Accepted, by design: `hook/connect` returns the generated hook script (Python
 source) so it can be installed; ZAP reports that as source code disclosure.
 
