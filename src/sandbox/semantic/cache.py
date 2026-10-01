@@ -58,7 +58,8 @@ def put(state_dir: Path, key: str, finding: Any, now: float | None = None) -> No
         pass
 
 
-def key_for(text: str, checks: dict, threshold: float, screen_url: str = "", screen_threshold: float = 0.2) -> str:
+def key_for(text: str, checks: dict, threshold: float, screen_url: str = "", screen_threshold: float = 0.2,
+            student: bool = False) -> str:
     import hashlib
 
     fingerprint: dict[str, Any] = {"c": checks, "t": threshold}
@@ -66,5 +67,11 @@ def key_for(text: str, checks: dict, threshold: float, screen_url: str = "", scr
     # Without one the key is unchanged, so existing entries stay valid.
     if screen_url:
         fingerprint["s"] = [screen_url, screen_threshold]
+    # Likewise the student; its model file's hash, so a retrained model rescans.
+    if student:
+        from sandbox.semantic.student import DEFAULT_MODEL
+
+        fingerprint["st"] = (hashlib.sha256(DEFAULT_MODEL.read_bytes()).hexdigest()
+                             if DEFAULT_MODEL.exists() else "absent")
     sig = json.dumps(fingerprint, sort_keys=True)
     return hashlib.sha256((sig + "\0" + text).encode("utf-8", "replace")).hexdigest()

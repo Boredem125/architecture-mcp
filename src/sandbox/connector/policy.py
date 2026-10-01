@@ -124,6 +124,11 @@ class SemanticPolicy(BaseModel):
     # Path to a governance policy (plain-language clauses); empty = none.
     # Evaluated on escalated shell commands; clauses only raise scrutiny.
     governance_policy: str = ""
+    # The phase-2 distilled student (sandbox/semantic/student.py): runs in the
+    # hook itself, in about a millisecond per sentence, alongside the service.
+    # A sentence is flagged if the service OR the student flags it, so it only
+    # adds scrutiny, and it still scans when the service is down.
+    student: bool = False
 
 
 class TriggerPolicy(BaseModel):

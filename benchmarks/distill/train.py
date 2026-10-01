@@ -6,8 +6,15 @@
 
 The student is TF-IDF (word 1-2 grams + char 2-5 grams) into logistic
 regression: it reads the text once, runs in well under a millisecond, and
-needs no model download. The threshold is picked on a validation slice of the
-training pool, never on a held-out set.
+needs no model download.
+
+The threshold is set where the gateway uses the student: on single benign
+developer sentences. 30% of the labelled documentation lines are held back
+from training, and the threshold is the lowest score at which at most
+``--fpr`` (default 1%) of them would flag. (The first version picked the
+lowest threshold with 90% precision on a slice of the training pool; that
+slice comes from the same datasets, so the rule bottomed out at 0.30 and
+ordinary README sentences flagged.) Never set on a held-out set.
 """
 from __future__ import annotations
 
@@ -131,29 +138,39 @@ def main() -> None:
     ap.add_argument("--labels", choices=["dataset", "groq", "agree"], default="dataset")
     ap.add_argument("--exclude-source", default="",
                     help="train without this pool source (repo, neuralchemy, deepset) to measure transfer")
+    ap.add_argument("--fpr", type=float, default=0.01,
+                    help="share of held-back benign documentation sentences allowed to flag")
     ap.add_argument("--export", default="", help="also write the gateway model file here")
     ap.add_argument("--keep", type=int, default=100_000, help="terms kept in the exported model")
+    ap.add_argument("--eval", choices=["all", "dev"], default="all",
+                    help="dev: only the hand-written dev sets (and, with --exclude-source, that "
+                         "source's unseen pool rows), so development never looks at held-out data")
     ap.add_argument("--out", default=str(HERE / "results.json"))
     args = ap.parse_args()
 
-    rows = [r for r in load_pool(args.labels) if r["source"] != args.exclude_source]
+    pool = load_pool(args.labels)
+    rows = [r for r in pool if r["source"] != args.exclude_source]
+    unseen = [r for r in pool if args.exclude_source and r["source"] == args.exclude_source]
     rng = np.random.default_rng(20261001)
-    val_mask = rng.random(len(rows)) < 0.15
-    train = [r for r, v in zip(rows, val_mask) if not v]
-    val = [r for r, v in zip(rows, val_mask) if v]
+    held = rng.random(len(rows))
+    is_calib = [r["source"] == "docs" and h < 0.3 for r, h in zip(rows, held)]
+    is_val = [r["source"] != "docs" and h < 0.15 for r, h in zip(rows, held)]
+    train = [r for r, c, v in zip(rows, is_calib, is_val) if not c and not v]
+    calib = [r for r, c in zip(rows, is_calib) if c and r["label"] == 0]
+    val = [r for r, v in zip(rows, is_val) if v]
 
     model = build().fit([r["text"] for r in train], [r["label"] for r in train])
-    # Threshold: the lowest one that reaches validation precision >= 0.9 (false
-    # alarms cost approvals), falling back to 0.5.
+    if calib:
+        benign = np.sort(model.predict_proba([r["text"] for r in calib])[:, 1])
+        k = int(np.floor(args.fpr * len(benign)))  # benign sentences allowed to flag
+        threshold = round(float(np.nextafter(benign[len(benign) - k - 1], 1.0)), 4)
+    else:  # no labelled docs lines (dataset mode): fall back to 0.5
+        threshold = 0.5
     p = model.predict_proba([r["text"] for r in val])[:, 1]
     y = np.array([r["label"] for r in val])
-    threshold = 0.5
-    for t in np.arange(0.3, 0.95, 0.01):
-        flag = p >= t
-        if flag.sum() and (y[flag].mean() >= 0.9):
-            threshold = round(float(t), 2)
-            break
-    print(f"train {len(train)}, val {len(val)}, threshold {threshold}")
+    flag = p >= threshold
+    print(f"train {len(train)}, calibration {len(calib)} benign sentences, threshold {threshold}; "
+          f"pool validation: recall {flag[y == 1].mean():.2f}, false-alarm rate {flag[y == 0].mean():.2f}")
 
     runtime = None
     if args.export:
@@ -163,8 +180,14 @@ def main() -> None:
         runtime = Student.load(args.export)
         model = _RuntimeAdapter(runtime)
 
-    report = {"labels": args.labels, "excluded_source": args.exclude_source or None, "threshold": threshold, "results": {}}
-    for name, data in held_out().items():
+    report = {"labels": args.labels, "fpr_target": args.fpr, "excluded_source": args.exclude_source or None, "threshold": threshold, "results": {}}
+    sets = held_out()
+    if args.eval == "dev":
+        sets = {k: v for k, v in sets.items() if "(dev" in k}
+    if unseen:
+        sets[f"unseen pool rows of {args.exclude_source} (not held out)"] = [
+            {"id": r["id"], "text": r["text"], "label": r["label"]} for r in unseen]
+    for name, data in sets.items():
         labels = [r["label"] for r in data]
         res = {}
         for mode in (False, True):

@@ -254,6 +254,38 @@ def scan(
     return scan_detailed(tool_name, text, client, threshold, screen, screen_threshold)[1]
 
 
+def student_scan(tool_name: str, text: str) -> InjectionFinding | None:
+    """The phase-2 student over the same segments: a finding if any redacted
+    segment reaches the student's threshold. None if the model isn't shipped."""
+    import time
+
+    from sandbox.semantic import student
+    from sandbox.semantic.redact import redact
+
+    model = student.default()
+    segs = prepare(text)
+    if model is None or not segs:
+        return None
+    start = time.perf_counter()
+    probs = [model.probability(redact(s)) for s in segs]
+    worst = max(range(len(segs)), key=probs.__getitem__)
+    if probs[worst] < model.threshold:
+        return None
+    return InjectionFinding(
+        tool=tool_name,
+        scores={"student": probs[worst]},
+        top_check="student",
+        top_score=probs[worst],
+        model=f"student:{student.DEFAULT_MODEL.name}",
+        latency_ms=(time.perf_counter() - start) * 1000,
+        text_sha256=_sha(text),
+        text_chars=len(text),
+        segment_index=worst,
+        segment_count=len(segs),
+        segment_sha256=_sha(segs[worst]),
+    )
+
+
 def _finding(tool_name, results, worst, seg_index, top_check, top_score, text, segs, screen_ms=0.0) -> InjectionFinding:
     # worst indexes results (the segments the main service scored); seg_index is
     # the same segment's position in the full text.

@@ -631,7 +631,8 @@ def _scan_untrusted_output(payload: dict[str, Any], layout: FolderLayout) -> dic
             return {}
 
         # Content-hash cache: re-reading the same content doesn't re-scan.
-        key = scan_cache.key_for(text, INJECTION_CHECKS, sem.threshold, sem.screen_url, sem.screen_threshold)
+        key = scan_cache.key_for(text, INJECTION_CHECKS, sem.threshold, sem.screen_url, sem.screen_threshold,
+                                 student=sem.student)
         hit, evidence = scan_cache.get(layout.state_dir, key, sem.taint_ttl_seconds)
         if not hit:
             # Optional fast screen first; if it is off or fails, the main
@@ -639,10 +640,15 @@ def _scan_untrusted_output(payload: dict[str, Any], layout: FolderLayout) -> dic
             status, finding = semantic_scan.scan_detailed(
                 tool_name, text, SemanticClient.from_policy(sem), sem.threshold,
                 SemanticClient.screen_from_policy(sem), sem.screen_threshold)
-            if status != "ok":
-                return {}  # service down: no scrutiny added, and don't cache it
+            # The student only adds: it is consulted when the service found
+            # nothing, including when the service is down.
+            if finding is None and sem.student:
+                finding = semantic_scan.student_scan(tool_name, text)
+            if finding is None and status != "ok":
+                return {}  # service down and nothing found: don't cache it
             evidence = finding.evidence() if finding is not None else None
-            scan_cache.put(layout.state_dir, key, evidence)
+            if status == "ok":
+                scan_cache.put(layout.state_dir, key, evidence)
         if evidence is None:
             return {}
 

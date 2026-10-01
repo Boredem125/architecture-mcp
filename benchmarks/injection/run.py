@@ -2,6 +2,7 @@
 
     python benchmarks/injection/run.py                  # base model
     python benchmarks/injection/run.py --model xsmall
+    python benchmarks/injection/run.py --reuse           # re-score the student only
 
 The semantic system here is the gateway's own pipeline, imported from
 src/sandbox/semantic/scan.py (prepare → per-segment checks → verdict), so
@@ -182,6 +183,21 @@ class Semantic:
         return "medium" if "medium" in tiers else "none"
 
 
+class StudentScan:
+    """The phase-2 student (src/sandbox/semantic/student.py), per segment like the
+    gateway: the text is flagged if any redacted segment scores >= its threshold."""
+
+    def __init__(self) -> None:
+        from sandbox.semantic import student
+        from sandbox.semantic.redact import redact
+
+        self.model = student.default()
+        self.redact = redact
+
+    def __call__(self, text: str) -> bool:
+        return any(self.model.flags(self.redact(seg)) for seg in pipeline.prepare(text))
+
+
 def metrics(flags: list[bool], labels: list[int]) -> dict:
     tp = sum(f and y for f, y in zip(flags, labels))
     fp = sum(f and not y for f, y in zip(flags, labels))
@@ -197,13 +213,19 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="base")
     ap.add_argument("--out", default=str(HERE / "results.json"))
+    ap.add_argument("--reuse", action="store_true",
+                    help="reuse every cached regex/jev-os prediction; only the student is scored")
     ap.add_argument("--only", default="",
                     help="re-run only datasets whose name contains this; the rest reuse cached predictions")
     args = ap.parse_args()
 
-    regex, sem = Regex(), Semantic(args.model)
-    sem("warm up")
-    sem.ms.clear()
+    regex = Regex()
+    sem = None
+    if not args.reuse:
+        sem = Semantic(args.model)
+        sem("warm up")
+        sem.ms.clear()
+    stu = StudentScan()
 
     deepset = load_deepset()
     neural = load_neuralchemy()
@@ -220,17 +242,18 @@ def main() -> None:
     # don't need the model again.
     preds_path = CACHE / f"preds-{args.model}.json"
     preds: dict[str, dict[str, list[str]]] = {}
-    if args.only and preds_path.exists():
+    if (args.only or args.reuse) and preds_path.exists():
         preds = json.loads(preds_path.read_text(encoding="utf-8"))
     for name, rows in sources.items():
-        if args.only and args.only not in name and name in preds:
+        if (args.reuse or (args.only and args.only not in name)) and name in preds:
             continue
         preds[name] = {r["id"]: [regex(r["text"]), sem(r["text"])] for r in rows}
     preds_path.write_text(json.dumps(preds), encoding="utf-8")
     views = {**sources, "deepset test, genuine attacks only": genuine_view(deepset)}
     preds["deepset test, genuine attacks only"] = preds["deepset test (held out)"]
 
-    report = {"model": args.model, "threshold": THRESHOLD, "checks": list(INJECTION_CHECKS), "results": {}}
+    report = {"model": args.model, "threshold": THRESHOLD, "checks": list(INJECTION_CHECKS),
+              "student_threshold": stu.model.threshold if stu.model else None, "results": {}}
     for name, rows in views.items():
         p = preds[name]
         labels = [r["label"] for r in rows]
@@ -239,6 +262,10 @@ def main() -> None:
         warn = [p[r["id"]][1] in ("high", "medium") for r in rows]
         systems = {"regex (current gateway)": rx, "semantic": taint,
                    "regex OR semantic": [a or b for a, b in zip(rx, taint)]}
+        if stu.model is not None:
+            st = [stu(r["text"]) for r in rows]
+            systems["student (phase 2)"] = st
+            systems["semantic OR student"] = [a or b for a, b in zip(taint, st)]
         report["results"][name] = {
             "n": len(rows),
             "systems": {k: metrics(v, labels) for k, v in systems.items()},
@@ -255,7 +282,7 @@ def main() -> None:
         c["semantic"] += p[r["id"]][1] == "high"
     report["neuralchemy_by_category"] = cats
 
-    ms = sorted(sem.ms)
+    ms = sorted(sem.ms) if sem else []
     if ms:
         report["semantic_ms_per_text"] = {"p50": round(ms[len(ms) // 2], 1), "p95": round(ms[int(0.95 * (len(ms) - 1))], 1)}
     elif Path(args.out).exists():  # nothing re-run: keep the last measured latency

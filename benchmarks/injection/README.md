@@ -123,3 +123,11 @@ The idea was to add only the regex's "precise" rules to the semantic layer. Per 
 - **Decision:** the semantic layer stays the only signal that taints. Detecting gibberish/adversarial suffixes properly (rather than via shell characters) is future work.
 
 **Shipped instead:** letter-spaced words (`I g n o r e   a l l   p r e v i o u s …`) are collapsed before judging, an obfuscation that defeated both detectors. It caught the one such attack in the repo sample (85 → 86), changed nothing elsewhere and added no false alarms.
+
+## Phase 2 student (opt-in)
+
+`run.py` also scores the distilled student (`src/sandbox/semantic/student.py`)
+per segment, alone and as `semantic OR student`; `run.py --reuse` re-scores
+it against the cached jev-os predictions without loading a model. Results
+and the adoption decision (not on by default: +4 dev false alarms, limit 3)
+are in [../distill/README.md](../distill/README.md).
