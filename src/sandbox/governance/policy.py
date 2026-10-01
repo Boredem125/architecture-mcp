@@ -25,6 +25,9 @@ class Clause(BaseModel):
     # on tool calls: the check alone false-alarmed on 17 of 24 benign calls
     # (benchmarks/tool_calls/README.md).
     requires_tool_actions: list[str] = Field(default_factory=list)
+    # Optional distilled classifier for this clause (governance/student.py),
+    # relative to the policy file. Fires alongside the check, behind the gate.
+    student_model: str = ""
     action: str = "escalate"  # escalate | deny (never "allow": clauses only raise scrutiny)
     framework_refs: list[str] = Field(default_factory=list)  # e.g. "EU AI Act Art. 14"
     # Labelled examples for `sandbox governance test`: does the clause fire?

@@ -30,3 +30,20 @@ the baseline as chosen on dev.
 pairs rises by at least 0.10 over the baseline, and benign commands flagged
 stay at or below the larger of the baseline's count and 10% of the benign
 test commands.
+
+### Amendment (recorded after the dev baseline, before any test run)
+
+The dev baseline (today's check AND gate) caught 23/27 violating pairs
+(recall 0.85) but flagged 9 of 35 benign commands, 10 false alarms coming
+from `no_prod_change` on staging and read-only production commands. The bar
+above targets recall and only allows an OR combination, which can't reduce
+false alarms, so it measures the wrong weakness. Added, and judged on the
+same single test run:
+
+- **Candidate B:** the clause's student replaces the check, behind the same
+  gate (`student` in `run.py`).
+- **B ships if**, on test, F1 over (command, clause) pairs rises by at least
+  0.05 over the baseline, and recall drops by no more than 0.05.
+
+The original bar still applies to the OR candidate. Both results are
+reported whichever way they go.
