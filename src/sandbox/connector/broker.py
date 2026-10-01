@@ -36,6 +36,8 @@ class FolderBroker:
         ``path_access`` performs the file op directly; ``fetch`` retrieves a URL.
         """
         kind = record.get("kind", "command")
+        if kind == "tool_call":
+            return self._approve_tool_call(record, reviewer_id, reason)
         if kind == "path_access":
             return self._execute_path_access(record, reviewer_id, reason)
         if kind == "fetch":
@@ -67,6 +69,32 @@ class FolderBroker:
             "command": command,
             "command_original": record.get("command_original", command),
             "exec_cwd": exec_cwd,
+            "root": record.get("root", ""),
+        }
+
+    def _approve_tool_call(
+        self, record: dict[str, Any], reviewer_id: str, reason: str
+    ) -> dict[str, Any]:
+        """Approve a non-shell tool call. Nothing runs here: the sandbox can't
+        make the agent's MCP call, so the signed approval lets the agent's
+        identical retry through once (connector/tool_grants.py)."""
+        from sandbox.connector.tool_grants import GRANT_TTL_SECONDS
+
+        return {
+            **_provenance(record),
+            "request_id": record.get("request_id", ""),
+            "kind": "tool_call",
+            "state": "approved",
+            "decision": "approved",
+            "reviewer_id": reviewer_id,
+            "reason": reason,
+            "command": record.get("command", ""),
+            "fingerprint": record.get("fingerprint", ""),
+            "governance": record.get("governance", []),
+            "exit_code": 0,
+            "stdout": (f"Approved. Retry the identical {record.get('tool_name', 'tool')} call within "
+                       f"{GRANT_TTL_SECONDS // 60} minutes; it will be allowed once."),
+            "stderr": "",
             "root": record.get("root", ""),
         }
 

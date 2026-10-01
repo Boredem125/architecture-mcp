@@ -68,6 +68,10 @@ def governance_list_cmd(path: str) -> None:
         click.echo(f"      check: {c.check}")
         if c.requires_actions:
             click.echo(f"      only when the command does: {', '.join(c.requires_actions)}")
+        if c.requires_tool_actions:
+            click.echo(f"      tool calls, only when the call: {', '.join(c.requires_tool_actions)}")
+        else:
+            click.echo("      not applied to tool calls (no requires_tool_actions)")
         if c.framework_refs:
             click.echo(f"      maps to: {', '.join(c.framework_refs)}")
 
@@ -365,7 +369,10 @@ def approve_cmd(request_id: str, path: str, reason: str, remember: str) -> None:
     broker = FolderBroker()
     result = asyncio.run(broker.execute(rec, "cli", reason))
     queue.finish(request_id, result)
-    click.echo(f"Approved and executed {request_id} (exit {result.get('exit_code')}).")
+    if rec.get("kind") == "tool_call":
+        click.echo(f"Approved {request_id}: the agent may retry this exact call once.")
+    else:
+        click.echo(f"Approved and executed {request_id} (exit {result.get('exit_code')}).")
 
 
 def _remember_decision(layout, rec: dict, scope: str) -> None:

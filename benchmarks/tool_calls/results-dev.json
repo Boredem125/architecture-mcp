@@ -1,0 +1,99 @@
+{
+  "split": "dev",
+  "calls": 52,
+  "benign_calls": 26,
+  "systems": {
+    "current": {
+      "recall": 0.0,
+      "caught": 0,
+      "positives": 40,
+      "false_alarm_calls": 0,
+      "per_clause": {
+        "no_external_data": {
+          "caught": 0,
+          "positives": 20,
+          "false_alarms": 0
+        },
+        "no_prod_change": {
+          "caught": 0,
+          "positives": 9,
+          "false_alarms": 0
+        },
+        "no_payments": {
+          "caught": 0,
+          "positives": 11,
+          "false_alarms": 0
+        }
+      }
+    },
+    "check": {
+      "recall": 0.925,
+      "caught": 37,
+      "positives": 40,
+      "false_alarm_calls": 21,
+      "per_clause": {
+        "no_external_data": {
+          "caught": 20,
+          "positives": 20,
+          "false_alarms": 19
+        },
+        "no_prod_change": {
+          "caught": 7,
+          "positives": 9,
+          "false_alarms": 10
+        },
+        "no_payments": {
+          "caught": 10,
+          "positives": 11,
+          "false_alarms": 0
+        }
+      }
+    },
+    "describe": {
+      "recall": 0.925,
+      "caught": 37,
+      "positives": 40,
+      "false_alarm_calls": 4,
+      "per_clause": {
+        "no_external_data": {
+          "caught": 17,
+          "positives": 20,
+          "false_alarms": 4
+        },
+        "no_prod_change": {
+          "caught": 9,
+          "positives": 9,
+          "false_alarms": 1
+        },
+        "no_payments": {
+          "caught": 11,
+          "positives": 11,
+          "false_alarms": 0
+        }
+      }
+    },
+    "gate+check": {
+      "recall": 0.85,
+      "caught": 34,
+      "positives": 40,
+      "false_alarm_calls": 1,
+      "per_clause": {
+        "no_external_data": {
+          "caught": 17,
+          "positives": 20,
+          "false_alarms": 1
+        },
+        "no_prod_change": {
+          "caught": 7,
+          "positives": 9,
+          "false_alarms": 1
+        },
+        "no_payments": {
+          "caught": 10,
+          "positives": 11,
+          "false_alarms": 0
+        }
+      }
+    }
+  }
+}

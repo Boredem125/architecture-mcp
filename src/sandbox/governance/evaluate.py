@@ -11,6 +11,8 @@ from typing import Any
 
 from sandbox.governance.policy import Clause, GovernancePolicy
 from sandbox.safety.command_actions import describe as _describe_command
+from sandbox.safety.tool_actions import describe_call as _describe_call
+from sandbox.safety.tool_actions import render as _render_call
 from sandbox.semantic.client import SemanticClient
 
 
@@ -46,10 +48,21 @@ def evaluate(
     client: SemanticClient,
     *,
     command: str = "",
+    tool_call: tuple[str, dict[str, Any]] | None = None,
 ) -> list[Violation]:
     """Clauses violated by this action, worst `action` first. Empty on any
-    service failure (no extra scrutiny, never less)."""
-    gated = [c for c in policy.clauses if _gate_ok(c, command or text)]
+    service failure (no extra scrutiny, never less).
+
+    With ``tool_call=(tool_name, tool_input)`` the action is a non-shell call:
+    only clauses whose ``requires_tool_actions`` match what the call does are
+    checked, against the call rendered as text (``text`` is ignored).
+    """
+    if tool_call is not None:
+        tags = {t for t, _ in _describe_call(*tool_call)}
+        gated = [c for c in policy.clauses if set(c.requires_tool_actions) & tags]
+        text = _render_call(*tool_call)
+    else:
+        gated = [c for c in policy.clauses if _gate_ok(c, command or text)]
     if not gated:
         return []
     result = client.ask(text, {c.id: c.question() for c in gated})

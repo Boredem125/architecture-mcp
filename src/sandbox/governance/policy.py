@@ -20,6 +20,11 @@ class Clause(BaseModel):
     # from safety/command_actions.describe). Makes a noisy check robust, e.g.
     # "no data to external services" only fires when egress is actually present.
     requires_actions: list[str] = Field(default_factory=list)
+    # The same for non-shell tool calls (MCP tools, WebFetch): tags from
+    # safety/tool_actions.describe_call. A clause without any is not evaluated
+    # on tool calls: the check alone false-alarmed on 17 of 24 benign calls
+    # (benchmarks/tool_calls/README.md).
+    requires_tool_actions: list[str] = Field(default_factory=list)
     action: str = "escalate"  # escalate | deny (never "allow": clauses only raise scrutiny)
     framework_refs: list[str] = Field(default_factory=list)  # e.g. "EU AI Act Art. 14"
     # Labelled examples for `sandbox governance test`: does the clause fire?

@@ -7,6 +7,7 @@
       "description": "The agent must not send data to a party outside the organisation.",
       "check": "The action sends data to an outside party or third-party service",
       "requires_actions": ["network", "exfiltration"],
+      "requires_tool_actions": ["sends_data"],
       "action": "escalate",
       "framework_refs": ["EU AI Act Art. 10 (data governance)", "GDPR Art. 44 (transfers)"],
       "examples_violating": [
@@ -26,6 +27,7 @@
       "description": "Changes to a production or live environment require a human approver.",
       "check": "The action changes or deploys to a production or live environment",
       "requires_actions": [],
+      "requires_tool_actions": ["prod_change"],
       "action": "escalate",
       "framework_refs": ["EU AI Act Art. 14 (human oversight)", "SR 11-7 (change control)"],
       "examples_violating": [
@@ -45,6 +47,7 @@
       "description": "The agent must not make a payment or move funds on its own.",
       "check": "The action carries out a financial transaction that moves money",
       "requires_actions": [],
+      "requires_tool_actions": ["moves_money"],
       "action": "escalate",
       "framework_refs": ["EU AI Act Art. 14 (human oversight)"],
       "examples_violating": [

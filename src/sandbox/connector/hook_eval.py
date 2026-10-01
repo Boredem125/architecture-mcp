@@ -259,6 +259,16 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
                 "until a human reviews it, this action needs approval"
             )
 
+    # Governance clauses on non-shell calls (MCP tools, WebFetch). Until now no
+    # clause saw them: an allowlisted mcp__stripe__create_refund ran silently.
+    # Only raises scrutiny; a hard deny stays a deny.
+    if result.verdict != "deny" and _is_governed_tool(tool_name):
+        gov_violations, gov_deny = _tool_governance(policy, tool_name, tool_input)
+        if gov_deny is not None or gov_violations:
+            return _govern_tool_call(
+                tool_name, tool_input, gov_violations, gov_deny, result, layout, session_id, identity,
+            )
+
     # Contextual tier upgrades (safety is monotonic — risk only raises scrutiny):
     #   observe  + high/critical risk → escalate (e.g. reading ~/.ssh outside folder)
     #   escalate + critical risk      → dual control (two approvers)
@@ -318,6 +328,106 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
         "risk": result.risk,
     })
     return _pre_output("deny", _format_escalate_redirect(result))
+
+
+def _is_governed_tool(tool_name: str) -> bool:
+    if tool_name == "WebFetch":
+        return True
+    return tool_name.startswith("mcp__") and not tool_name.startswith(("mcp__sandbox__", "mcp__sandbox_"))
+
+
+def _tool_governance(policy: Any, tool_name: str, tool_input: dict) -> tuple[list[dict], dict | None]:
+    """Governance clauses violated by a non-shell call: (evidence, deny-clause-or-None).
+
+    Only clauses with requires_tool_actions matching what the call does are
+    checked, so most calls never reach the service. No policy, or the service
+    down, → ([], None): no extra scrutiny.
+    """
+    sem = getattr(policy, "semantic", None)
+    if not sem or not sem.enabled or not sem.governance_policy:
+        return [], None
+    try:
+        from sandbox.governance.evaluate import evaluate as _gov_eval
+        from sandbox.governance.policy import load as _gov_load
+        from sandbox.semantic.client import SemanticClient
+
+        gov = _gov_load(sem.governance_policy)
+        violations = _gov_eval(gov, "", SemanticClient.from_policy(sem), tool_call=(tool_name, tool_input))
+        evidence = [v.evidence() for v in violations]
+        deny = next((v.evidence() | {"description": v.description} for v in violations if v.action == "deny"), None)
+        return evidence, deny
+    except Exception:  # noqa: BLE001 — governance must never break the hook
+        return [], None
+
+
+def _govern_tool_call(
+    tool_name: str,
+    tool_input: dict,
+    violations: list[dict],
+    deny: dict | None,
+    result: Any,
+    layout: FolderLayout,
+    session_id: str,
+    identity: Any,
+) -> dict[str, Any]:
+    """Deny, or "approve, then retry": allow the call once if a signed approval
+    for this exact call exists, else submit one and tell the agent to retry."""
+    from sandbox.connector import tool_grants
+    from sandbox.safety.tool_actions import describe_call, render
+
+    ident_dict = identity.to_dict() if identity is not None else {}
+    rendered = render(tool_name, tool_input)
+    if deny is not None:
+        _audit(layout, session_id, {
+            "event": "governance_denied", "reason_code": "GOVERNANCE", "clause": deny["clause_id"],
+            "tool": tool_name, "command": rendered, "identity": ident_dict, "governance": violations,
+        })
+        return _pre_output("deny", (
+            f"SANDBOX DENIED [GOVERNANCE]: {deny['title']} — {deny['description']} "
+            f"(policy clause {deny['clause_id']}). Choose a different approach."
+        ))
+
+    fp = tool_grants.fingerprint(tool_name, tool_input)
+    grant = tool_grants.find_grant(layout, fp)
+    if grant is not None:
+        tool_grants.consume(layout, grant["request_id"])
+        _audit(layout, session_id, {
+            "event": "governance_grant_used", "request_id": grant["request_id"], "tool": tool_name,
+            "fingerprint": fp, "reviewer_id": grant.get("reviewer_id"), "identity": ident_dict,
+            "governance": violations,
+        })
+        return _pre_output("allow", f"sandbox: approved by {grant.get('reviewer_id')} ({grant['request_id']})")
+
+    request_id = tool_grants.pending_for(layout, fp)
+    if request_id is None:
+        titles = "; ".join(v["title"] for v in violations)
+        request_id = EscalationQueue(layout).submit({
+            "root": str(layout.root),
+            "session_id": session_id,
+            "origin": "hook",
+            "trigger": ["governance"],
+            "reason_code": "GOVERNANCE",
+            "kind": "tool_call",
+            "tool_name": tool_name,
+            "command": rendered,
+            "fingerprint": fp,
+            "actual_actions": [{"tag": t, "label": lbl} for t, lbl in describe_call(tool_name, tool_input)],
+            "governance": violations,
+            "reason": f"Governance: {titles}",
+            "identity": ident_dict,
+            "risk": result.risk,
+            "requires_dual": result.requires_dual,
+        })
+    _audit(layout, session_id, {
+        "event": "governance_escalated", "request_id": request_id, "tool": tool_name,
+        "fingerprint": fp, "identity": ident_dict, "governance": violations, "risk": result.risk,
+    })
+    titles = "; ".join(f"{v['title']} ({v['clause_id']})" for v in violations)
+    return _pre_output("deny", (
+        f"SANDBOX [GOVERNANCE]: this {tool_name} call needs human approval under: {titles}. "
+        f"Request {request_id} is waiting for an approver. Once it is approved, retry exactly the "
+        f"same call (same arguments); it will be allowed once. Use check_request to see its status."
+    ))
 
 
 def _evaluate_governance(policy: Any, result: Any, tool_input: dict) -> tuple[list[dict], dict | None]:

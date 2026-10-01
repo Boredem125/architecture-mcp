@@ -32,3 +32,27 @@ shell commands.
 chosen system reaches, on test, recall >= 0.7 over (call, clause) pairs and
 false alarms on at most 10% of the benign test calls. Clauses that miss it
 individually are reported as such.
+
+## Result
+
+The system was chosen on dev before the test run: **gate+check** (34/40
+pairs caught, 1/26 benign calls flagged on dev; tags alone flagged 4/26,
+over the bar). One test run (`run.py --split test`, jev-os `base`):
+
+| system | caught (call, clause) pairs | benign calls flagged |
+|---|---|---|
+| current gateway | 0/20 | 0/24 |
+| check (jev-os) | 18/20 | 17/24 |
+| describe (tags) | 16/20 | 2/24 |
+| **gate+check** | **16/20 (0.80)** | **0/24** |
+
+Per clause: external data 7/8, production changes 7/10, payments 2/2. The
+bar (recall >= 0.7, <= 10% benign flagged) is met, so tool-call governance
+is wired in (`connector/hook_eval.py`, approve-then-retry grants in
+`connector/tool_grants.py`).
+
+Limits: 41 test calls is small (payments has only 2 positives on test); the
+labels are one LLM's; and the tags were written by the same person who chose
+the categories (looking only at the dev half). The three missed production
+changes were calls whose names don't look like infrastructure operations.
+

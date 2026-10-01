@@ -41,11 +41,12 @@ _SIGNED_FIELDS = (
     "state",
     "reviewer_id",
     "exit_code",
+    "fingerprint",  # tool-call grants: binds the approval to one exact call
 )
 
 
-def _canonical(record: dict[str, Any]) -> bytes:
-    bundle = {k: record.get(k) for k in _SIGNED_FIELDS}
+def _canonical(record: dict[str, Any], fields: list[str] | tuple[str, ...] = _SIGNED_FIELDS) -> bytes:
+    bundle = {k: record.get(k) for k in fields}
     return json.dumps(bundle, sort_keys=True, separators=(",", ":"), default=str).encode()
 
 
@@ -93,4 +94,18 @@ def verify_record(record: dict[str, Any]) -> bool:
         vk = VerifyKey(bytes.fromhex(pub))
     except (ValueError, TypeError):
         return False
-    return verify_signature(_canonical(record), sig, vk)
+    # Verify over the fields the record says were signed, so records signed
+    # before a field was added still verify.
+    fields = record.get("signed_fields") or _SIGNED_FIELDS
+    return verify_signature(_canonical(record, fields), sig, vk)
+
+
+def reviewer_public_key(layout, reviewer_id: str = "cli") -> str | None:
+    """Hex public key of this folder's approver key, or None if there is none yet."""
+    path = _seed_path(layout, reviewer_id)
+    if not path.exists():
+        return None
+    try:
+        return bytes(SigningKey(path.read_bytes()).verify_key).hex()
+    except (OSError, ValueError):
+        return None
