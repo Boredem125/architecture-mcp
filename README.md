@@ -1,4 +1,4 @@
-﻿# Agent Governance Gateway
+# Agent Governance Gateway
 
 **Authorization and runtime governance for AI coding agents.** Every tool call an agent makes (Claude Code, Codex, Cursor, Windsurf) is intercepted, classified and recorded. Risky actions go to a named human, who runs them outside the agent. Everything is signed and audited.
 
