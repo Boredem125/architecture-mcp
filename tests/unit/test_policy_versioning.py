@@ -156,6 +156,63 @@ def test_signed_approval_verifies_and_tampering_breaks_it(layout):
     assert not pv.verify_change(dict(approved, proposer="bob"))
 
 
+@pytest.mark.parametrize("typo", ["{id}:", " {id}", "{id}.", "{id}/"])
+def test_malformed_change_id_is_refused_not_signed(layout, typo):
+    """A pasted ``chg-abc:`` maps to the same file name as ``chg-abc``; it used to be
+    approved and then signed under the wrong id, so the history did not verify."""
+    before = layout.policy_file.read_text()
+    change = pv.propose(layout, pv.FOLDER, _loosened(layout), "alice", "post build results")
+    bad = typo.format(id=change["change_id"])
+
+    assert pv.load_change(layout, bad) is None
+    assert pv.similar_change_id(layout, bad) == change["change_id"]
+    assert pv.approve_change(layout, bad, "bob")["status"] == "not_open"
+    assert not pv.reject_change(layout, bad, "bob", "typo")
+    assert layout.policy_file.read_text() == before
+    assert pv.load_change(layout, change["change_id"])["status"] == "open"
+
+    # The exact id still works, and the history verifies end to end.
+    assert pv.approve_change(layout, change["change_id"], "bob")["status"] == "applied"
+    entry = pv.read_log(layout)[-1]
+    assert entry["change_id"] == change["change_id"] and pv.verify_entry(entry)
+    assert pv.verify_change(pv.load_change(layout, change["change_id"]))
+
+
+def test_exact_and_unknown_ids_have_no_suggestion(layout):
+    change = pv.propose(layout, pv.FOLDER, _loosened(layout), "alice", "post build results")
+    assert pv.similar_change_id(layout, change["change_id"]) is None
+    assert pv.similar_change_id(layout, "chg-0000000000") is None
+
+
+def test_cli_refuses_a_pasted_colon_and_suggests_the_id(layout):
+    change = pv.propose(layout, pv.FOLDER, _loosened(layout), "alice", "post build results")
+    cid = change["change_id"]
+    runner = CliRunner()
+    out = runner.invoke(cli, ["policy", "approve-change", f"{cid}:", str(layout.root), "--reviewer", "bob"])
+    assert out.exit_code == 1 and f"Did you mean {cid}?" in out.output
+    out = runner.invoke(cli, ["policy", "reject-change", f"{cid}:", str(layout.root),
+                              "--reviewer", "bob", "--reason", "typo"])
+    assert out.exit_code == 1 and f"Did you mean {cid}?" in out.output
+    assert pv.load_change(layout, cid)["status"] == "open"
+
+    out = runner.invoke(cli, ["policy", "approve-change", cid, str(layout.root), "--reviewer", "bob"])
+    assert out.exit_code == 0 and f"Approved {cid} by bob" in out.output
+    history = runner.invoke(cli, ["policy", "history", str(layout.root)])
+    assert "two reviewers verified" in history.output and "DOES NOT VERIFY" not in history.output
+
+
+def test_propose_output_has_no_colon_after_the_id(layout, tmp_path_factory):
+    proposal = tmp_path_factory.mktemp("p") / "looser.json"
+    proposal.write_text(json.dumps(_loosened(layout)))
+    out = CliRunner().invoke(cli, ["policy", "propose", str(proposal), str(layout.root),
+                                   "--reason", "post build results", "--proposer", "alice"])
+    assert out.exit_code == 0, out.output
+    first = out.output.splitlines()[0]
+    cid = first.split()[2]
+    assert cid.startswith("chg-") and not cid.endswith(":")
+    assert pv.load_change(layout, cid)["status"] == "open"
+
+
 def test_stale_change_is_refused(layout):
     a = pv.propose(layout, pv.FOLDER, _loosened(layout), "alice", "first")
     other = load_policy(layout.policy_file)
@@ -323,7 +380,7 @@ def test_cli_init_propose_approve_history_diff(tmp_path):
     r = runner.invoke(cli, ["policy", "propose", str(proposal), root, "--reason", "docs site", "--proposer", "alice"])
     assert r.exit_code == 0, r.output
     assert "network.allow_hosts" in r.output and '+      "example.org"' in r.output, r.output
-    change_id = r.output.split("Proposed change ", 1)[1].split(":", 1)[0]
+    change_id = r.output.split("Proposed change ", 1)[1].split()[0]
 
     r = runner.invoke(cli, ["policy", "approve-change", change_id, root, "--reviewer", "alice"])
     assert r.exit_code == 1 and "Refused" in r.output

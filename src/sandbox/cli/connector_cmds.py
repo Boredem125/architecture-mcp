@@ -1127,8 +1127,8 @@ def policy_propose(file: str, path: str, reason: str, proposer: str | None, is_g
         raise click.ClickException(str(e)) from e
     old = pv.load_object(layout, change["base"]) if change.get("base") else None
     new = pv.load_object(layout, change["new_sha256"])
-    click.echo(f"Proposed change {change['change_id']}: {kind} "
-               f"{pv.short(change.get('base')) or 'none'} -> {pv.short(change['new_sha256'])} by {proposer}")
+    click.echo(f"Proposed change {change['change_id']} ({kind} "
+               f"{pv.short(change.get('base')) or 'none'} -> {pv.short(change['new_sha256'])}) by {proposer}")
     for line in pv.summarize(old, new) if old is not None else []:
         click.echo(f"  {line}")
     if change.get("governance_sha256"):
@@ -1163,10 +1163,16 @@ def policy_approve_change(change_id: str, path: str, reviewer: str | None, reaso
                          "A different reviewer must approve it.",
         "stale": f"Refused: the approved policy changed since {change_id} was proposed. Propose it again.",
         "changed": f"Refused: the content no longer matches what was proposed in {change_id}.",
-        "not_open": f"No open change {change_id} (unknown, already decided, or its signature does not verify).",
+        "not_open": f"No open change {change_id} (unknown, already decided, or its signature does not verify)."
+                    + _did_you_mean(pv, layout, change_id),
     }
     click.echo(messages.get(status, status))
     raise SystemExit(1)
+
+
+def _did_you_mean(pv, layout, change_id: str) -> str:
+    real = pv.similar_change_id(layout, change_id)
+    return f" Did you mean {real}?" if real else ""
 
 
 @policy_group.command("reject-change")
@@ -1181,7 +1187,7 @@ def policy_reject_change(change_id: str, path: str, reviewer: str | None, reason
 
     layout = _semantic_layout(path)
     if not pv.reject_change(layout, change_id, reviewer or default_reviewer(), reason):
-        click.echo(f"No open change {change_id}.")
+        click.echo(f"No open change {change_id}.{_did_you_mean(pv, layout, change_id)}")
         raise SystemExit(1)
     click.echo(f"Rejected {change_id}.")
 

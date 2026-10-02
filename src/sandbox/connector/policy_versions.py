@@ -627,11 +627,30 @@ def _change_path(layout: FolderLayout, change_id: str) -> Path:
     return _changes_dir(layout) / f"{safe}.json"
 
 
-def load_change(layout: FolderLayout, change_id: str) -> dict[str, Any] | None:
+def _read_change_file(layout: FolderLayout, change_id: str) -> dict[str, Any] | None:
     try:
-        return json.loads(_change_path(layout, change_id).read_text(encoding="utf-8"))
+        change = json.loads(_change_path(layout, change_id).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    return change if isinstance(change, dict) else None
+
+
+def load_change(layout: FolderLayout, change_id: str) -> dict[str, Any] | None:
+    """The change with exactly this id, or None.
+
+    The file name is a sanitised form of the id, so ``chg-abc:`` and
+    ``chg-abc`` map to the same file. Only an exact match counts: a near
+    miss must not be approved and then signed under the wrong id.
+    """
+    change = _read_change_file(layout, change_id)
+    return change if change is not None and change.get("change_id") == change_id else None
+
+
+def similar_change_id(layout: FolderLayout, change_id: str) -> str | None:
+    """The real id that a mistyped one (e.g. with a pasted ``:``) points at, if any."""
+    change = _read_change_file(layout, change_id)
+    real = change.get("change_id") if change is not None else None
+    return real if isinstance(real, str) and real != change_id else None
 
 
 def list_changes(layout: FolderLayout, status: str | None = None) -> list[dict[str, Any]]:
@@ -724,6 +743,7 @@ def approve_change(layout: FolderLayout, change_id: str, reviewer: str, reason: 
     change = load_change(layout, change_id)
     if change is None or change.get("status") != "open" or not verify_proposal(change):
         return {"status": "not_open"}
+    change_id = change["change_id"]  # sign and record only the stored id
     if reviewer == change["proposer"] or reviewer_public_key(layout, reviewer) == change["proposer_public_key"]:
         return {"status": "same_reviewer"}
     kind = change["kind"]
@@ -778,6 +798,7 @@ def reject_change(layout: FolderLayout, change_id: str, reviewer: str, reason: s
     change = load_change(layout, change_id)
     if change is None or change.get("status") != "open":
         return False
+    change_id = change["change_id"]
     change.update({"status": "rejected", "rejected_by": reviewer, "rejected_at": time.time(),
                    "rejection_reason": reason})
     _atomic_write(layout, _change_path(layout, change_id), json.dumps(change, indent=2).encode("utf-8"))
