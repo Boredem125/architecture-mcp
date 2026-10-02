@@ -51,7 +51,7 @@ Useful commands: `sandbox verify` (audit chains), `sandbox explain <id>`, `sandb
 
 To send alerts to Slack, Teams or any collector, set `SANDBOX_ALERT_WEBHOOK` to its incoming-webhook URL.
 
-Guided walkthrough: `python demo/call_demo.py` runs 12 scenes through the real gateway, from normal work to a poisoned README, `.env` theft stopped by dual control, governance clauses on a Stripe call, a tampered log and an evidence pack. The agent is scripted to act as if it were fooled; everything else is the real gateway. Start `jevos serve` first for the governance scene.
+Guided walkthrough: `python demo/call_demo.py` runs 12 scenes through the real gateway, from normal work to a poisoned README, `.env` theft stopped by dual control, governance clauses on a Stripe call, a tampered log and an evidence pack. The agent is scripted to act as if it were fooled; everything else is the real gateway. Start `jevos serve` first for the governance scene. For a live session with the real Claude Code, `python demo/live_setup.py` builds the same project with hooks connected, and `python demo/try.py preset steal-env` (or any tool call you name) sends one call through the gateway while you approve or deny it in `sandbox watch`.
 
 Optional intent-aware layer: `pip install -e ".[semantic]"`, then `jevos serve` and `sandbox semantic enable .`
 
