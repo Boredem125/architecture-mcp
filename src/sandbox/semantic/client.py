@@ -56,7 +56,7 @@ class SemanticClient:
                 f"{self.url}/v1/system_one",
                 json={"state": text, "questions": checks},
                 headers=self._headers(),
-                timeout=self.timeout,
+                timeout=_timeout(self.timeout),
             )
             if resp.status_code != 200:
                 return None
@@ -84,7 +84,7 @@ class SemanticClient:
                     f"{self.url}/v1/batch",
                     json={"states": chunk, "questions": checks},
                     headers=self._headers(),
-                    timeout=remaining,
+                    timeout=_timeout(remaining),
                 )
                 if resp.status_code == 404:
                     return self._ask_each(texts, checks, deadline)
@@ -116,6 +116,15 @@ class SemanticClient:
 
 
 BATCH_SIZE = 64  # jev-os /v1/batch limit
+# The service is local, so connecting takes well under a millisecond when it
+# is up. When it is down, Windows takes about 2 s to report a refused
+# localhost connection, and every scan paid that. A short connect timeout
+# makes "service down" fast; the read timeout stays the full budget.
+CONNECT_TIMEOUT = 0.5
+
+
+def _timeout(total: float) -> httpx.Timeout:
+    return httpx.Timeout(total, connect=min(CONNECT_TIMEOUT, total))
 
 
 def _parse(data: dict[str, Any], checks: dict[str, dict[str, Any]]) -> SemanticResult | None:

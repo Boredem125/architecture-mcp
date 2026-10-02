@@ -319,3 +319,13 @@ def test_action_class_maps_allowlisted_calls():
     assert hook_eval._action_class("mcp__github__create_issue") == "network"
     assert hook_eval._action_class("mcp__sandbox__check_request") == ""
     assert hook_eval._action_class("Read") == ""
+
+
+def test_client_connect_timeout_is_short_and_read_timeout_is_full():
+    # Windows takes ~2 s to refuse a closed localhost port; every scan paid
+    # that while the jev-os service was down. Connect now gives up fast.
+    from sandbox.semantic.client import CONNECT_TIMEOUT, _timeout
+
+    t = _timeout(8.0)
+    assert t.connect == CONNECT_TIMEOUT <= 0.5 and t.read == 8.0
+    assert _timeout(0.2).connect == 0.2
