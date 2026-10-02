@@ -6,14 +6,17 @@ labeller can still tell two different values apart. Placeholders keep the
 shape of the text, which is all an injection judgement needs.
 
 Deliberately over-eager: a false redaction costs a little labelling context,
-a missed one leaks data.
+a missed one leaks data. ``kinds`` narrows it: the gateway's own logs and
+command output use ``SECRET_KINDS`` only, so emails, IPs and git hashes in
+ordinary output survive.
 """
 from __future__ import annotations
 
 import re
 
 # Order matters: specific secret formats before generic ones, URLs with
-# credentials before plain emails.
+# credentials before plain emails. The generic long-token rule is its own
+# kind (OPAQUE) so callers can leave it out; it still prints as [SECRET_n].
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("PRIVATE_KEY", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)", re.S)),
     ("SECRET", re.compile(
@@ -38,21 +41,30 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("PHONE", re.compile(r"(?<![\w.])\+?\d{1,3}[\s.\-]?\(?\d{2,4}\)?[\s.\-]\d{3,4}[\s.\-]?\d{3,4}\b")),
     ("SSN", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
     # Long opaque tokens (hex / base64) that no rule above named.
-    ("SECRET", re.compile(r"\b(?=[A-Za-z0-9+/_\-]*\d)(?=[A-Za-z0-9+/_\-]*[A-Za-z])[A-Za-z0-9+/_\-]{32,}={0,2}")),
+    ("OPAQUE", re.compile(r"\b(?=[A-Za-z0-9+/_\-]*\d)(?=[A-Za-z0-9+/_\-]*[A-Za-z])[A-Za-z0-9+/_\-]{32,}={0,2}")),
 ]
 
 
-def redact(text: str) -> str:
+ALL_KINDS = frozenset(k for k, _ in _PATTERNS)
+# Credentials only: named key formats, KEY=value assignments, JWTs, URL
+# credentials and private keys. No personal data, no generic long tokens.
+SECRET_KINDS = frozenset({"PRIVATE_KEY", "SECRET", "JWT", "URL_CREDENTIALS"})
+
+
+def redact(text: str, kinds: frozenset[str] = ALL_KINDS) -> str:
     """Return ``text`` with secrets and personal data replaced by placeholders."""
     counters: dict[str, dict[str, int]] = {}
 
     def placeholder(kind: str, value: str) -> str:
+        kind = "SECRET" if kind == "OPAQUE" else kind
         seen = counters.setdefault(kind, {})
         if value not in seen:
             seen[value] = len(seen) + 1
         return f"[{kind}_{seen[value]}]"
 
     for kind, pattern in _PATTERNS:
+        if kind not in kinds:
+            continue
         if pattern.groups:  # replace only the captured value, keep the key name
             def sub(m: re.Match[str], kind: str = kind) -> str:
                 s, e = m.span(1)

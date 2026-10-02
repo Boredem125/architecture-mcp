@@ -156,6 +156,52 @@ class OversightPolicy(BaseModel):
     require_second_reviewer: bool = True
 
 
+class AuditPolicy(BaseModel):
+    """What the audit chain records, and how long it is kept.
+
+    ``log_allowed`` records plain allowed calls too (tool, command or target,
+    never file contents), so the chain covers every tool call (AIUC-1 D003.3).
+    Retention is applied by ``sandbox retention``, never automatically; a
+    session is kept for the longest tier any of its records reaches.
+    """
+
+    log_allowed: bool = True
+    retention_days: int = Field(90, ge=1)
+    # A human decided something, or a critical-risk action was seen.
+    retention_days_reviewed: int = Field(365, ge=1)
+    # A denial, an injection hit or a governance violation.
+    retention_days_incident: int = Field(2555, ge=1)
+
+
+class AlertPolicy(BaseModel):
+    """Alerts on denials, critical escalations, injection hits and rate limits.
+
+    Always appended to ``.sandbox/logs/alerts.jsonl``; also POSTed as JSON to
+    the URL in the env var named here, if it is set. The URL itself never
+    goes in policy.json (it is often a secret, e.g. a Slack webhook).
+    """
+
+    enabled: bool = True
+    webhook_url_env: str = "SANDBOX_ALERT_WEBHOOK"
+    timeout_seconds: float = Field(2.0, gt=0, le=10)
+
+
+class LimitPolicy(BaseModel):
+    """Rate limits on tool calls: at most N calls of a class per window.
+
+    A call over the limit is denied (a circuit breaker for a looping or
+    hijacked agent) and raises an alert. The defaults are untested starting
+    points meant to stay out of the way of normal work.
+    """
+
+    enabled: bool = True
+    window_seconds: int = Field(60, ge=1)
+    shell: int = Field(30, ge=1)
+    write: int = Field(60, ge=1)
+    network: int = Field(20, ge=1)
+    total: int = Field(600, ge=1)
+
+
 class TriggerPolicy(BaseModel):
     shell: str = "escalate"
     write_outside: str = "deny"
@@ -203,6 +249,9 @@ class FolderPolicy(BaseModel):
     output: OutputPolicy = Field(default_factory=OutputPolicy)
     semantic: SemanticPolicy = Field(default_factory=SemanticPolicy)
     oversight: OversightPolicy = Field(default_factory=OversightPolicy)
+    audit: AuditPolicy = Field(default_factory=AuditPolicy)
+    alerts: AlertPolicy = Field(default_factory=AlertPolicy)
+    limits: LimitPolicy = Field(default_factory=LimitPolicy)
     # dev | staging | prod, or None (unset: today's behaviour, SANDBOX_ENV still
     # read by the risk score). See docs/DATA_AND_ENVIRONMENT.md.
     environment: str | None = None

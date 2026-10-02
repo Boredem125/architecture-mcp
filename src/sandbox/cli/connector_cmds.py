@@ -30,6 +30,10 @@ def register(cli: click.Group) -> None:
     from sandbox.cli.oversight_cmd import oversight_cmd
 
     cli.add_command(oversight_cmd)
+    from sandbox.cli.records_cmds import alerts_cmd, retention_cmd
+
+    cli.add_command(retention_cmd)
+    cli.add_command(alerts_cmd)
 
 
 @click.group("governance")

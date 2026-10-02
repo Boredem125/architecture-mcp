@@ -62,6 +62,13 @@ class EscalationQueue:
         Best-effort: never breaks the queue.
         """
         try:
+            from sandbox.connector import scrub
+
+            if scrub.enabled(self._layout):
+                line = scrub.scrub_text(line)
+        except Exception:  # noqa: BLE001 — logging must never break the queue
+            pass
+        try:
             self._layout.logs_dir.mkdir(parents=True, exist_ok=True)
             stamp = time.strftime("%Y-%m-%d %H:%M:%S")
             with open(self._layout.logs_dir / "activity.log", "a", encoding="utf-8") as f:
@@ -135,6 +142,15 @@ class EscalationQueue:
         """
         result.setdefault("request_id", request_id)
         result.setdefault("decided_at", time.time())
+        # Secrets in the output are replaced before anything is written, so the
+        # done-record, the out/ text and what the agent is handed back match.
+        try:
+            from sandbox.connector import scrub
+
+            if scrub.enabled(self._layout) and scrub.scrub_fields(result, scrub.OUTPUT_FIELDS):
+                result["secrets_redacted"] = True
+        except Exception:  # noqa: BLE001 — never break the approval loop
+            pass
         try:
             from sandbox.connector.signing import sign_record
 

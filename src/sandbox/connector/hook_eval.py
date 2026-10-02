@@ -206,6 +206,28 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
         tool_name, tool_input, policy, layout, cwd=cwd, blocklist=_blocklist(),
     )
 
+    # Rate limits: a call over its class limit is denied and not counted.
+    if result.verdict != "deny":
+        limit_hit = None
+        try:
+            from sandbox.connector import limits as _limits
+
+            limit_hit = _limits.check(layout, policy.limits, tool_name)
+        except Exception:  # noqa: BLE001 — the limiter never breaks the hook
+            limit_hit = None
+        if limit_hit is not None:
+            why = (f"rate limit: {limit_hit['count']} {limit_hit['class']} calls in the last "
+                   f"{limit_hit['window_seconds']}s (limit {limit_hit['limit']})")
+            _audit(layout, session_id, {
+                "event": "rate_limited", "tool": tool_name, "reason_code": "RATE_LIMIT",
+                "reason": why, "command": result.command, "target": result.target_path,
+                "identity": identity.to_dict(), "limit": limit_hit,
+            })
+            return _pre_output("deny", (
+                f"SANDBOX DENIED [RATE_LIMIT]: {why}. Slow down and wait before retrying; if this "
+                "rate is expected, ask the user to review `sandbox logs` and raise policy.limits."
+            ))
+
     # Transparent, explainable risk score — refines the tier, never overrides a
     # hard deny/allow. Attach it so it travels into the record and the audit.
     assessment = assess(
@@ -309,6 +331,15 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
             return _allow_or_additive(policy, f"remembered: {remembered.get('scope')}")
 
     if result.verdict == "allow":
+        # Every tool call is in the chain, not only the gated ones: what was
+        # called and on what (command, path or host), never file contents.
+        if policy.audit.log_allowed:
+            _audit(layout, session_id, {
+                "event": "allowed", "tool": tool_name, "trigger": result.trigger,
+                "reason_code": result.reason_code, "reason": result.reason,
+                "command": result.command, "target": result.target_path, "host": result.host,
+                "identity": identity.to_dict(), "risk": result.risk,
+            })
         return _allow_or_additive(policy, result.reason)
 
     if result.verdict == "observe":
@@ -323,6 +354,7 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
         _audit(layout, session_id, {
             "event": "denied", "tool": tool_name, "trigger": result.trigger,
             "reason_code": result.reason_code, "reason": result.reason,
+            "command": result.command, "target": result.target_path,
             "identity": identity.to_dict(), "risk": result.risk,
         })
         return _pre_output("deny", _format_policy_deny(result))
@@ -344,7 +376,7 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
     _audit(layout, session_id, {
         "event": "escalate_redirect", "tool": tool_name, "trigger": result.trigger,
         "reason_code": result.reason_code, "identity": identity.to_dict(),
-        "risk": result.risk,
+        "target": result.target_path, "risk": result.risk, "requires_dual": result.requires_dual,
     })
     return _pre_output("deny", _format_escalate_redirect(result))
 
@@ -452,7 +484,7 @@ def _govern_tool_call(
     _audit(layout, session_id, {
         "event": "tool_call_escalated", "request_id": request_id, "tool": tool_name,
         "reason_code": reason_code, "fingerprint": fp, "identity": ident_dict,
-        "governance": violations, "risk": result.risk,
+        "governance": violations, "risk": result.risk, "requires_dual": result.requires_dual,
     })
     return _pre_output("deny", (
         f"SANDBOX [{reason_code}]: this {tool_name} call needs human approval: {why}. "
@@ -503,14 +535,28 @@ def _allow_or_additive(policy: FolderPolicy, reason: str) -> dict[str, Any]:
 
 
 def _audit(layout: FolderLayout, session_id: str, record: dict[str, Any]) -> None:
-    """Best-effort audit append; never blocks the hook decision."""
+    """Best-effort audit append; never blocks the hook decision.
+
+    Stamps the time and policy version, scrubs secrets from the text fields
+    (output.scrub_secrets), and raises an alert if the record is one.
+    """
     try:
+        from sandbox.connector import scrub
         from sandbox.connector.audit import FolderAudit
         from sandbox.connector.policy_versions import current_version
 
+        record.setdefault("ts", time.time())
         record.setdefault("policy_version", current_version(layout))
+        if scrub.enabled(layout):
+            scrub.scrub_fields(record, scrub.AUDIT_FIELDS)
         FolderAudit(layout.audit_dir, session_id).append(record)
     except Exception:  # noqa: BLE001
+        pass
+    try:
+        from sandbox.connector import alerts
+
+        alerts.emit(layout, session_id, record)
+    except Exception:  # noqa: BLE001 — alerting never breaks the hook
         pass
 
 
@@ -571,6 +617,13 @@ async def _escalate_shell(
         "execute_on_approve": True,
     }
     request_id = queue.submit(record)
+    # In the chain (and alerted, if critical) as soon as it is raised, not
+    # only once a human has decided.
+    _audit(layout, session_id, {
+        "event": "shell_escalated", "request_id": request_id, "tool": tool_name,
+        "reason_code": result.reason_code, "command": result.command,
+        "identity": ident_dict, "risk": result.risk, "requires_dual": result.requires_dual,
+    })
 
     block_seconds = min(policy.escalation_timeout_seconds, 55)
     done = await queue.wait(request_id, timeout=block_seconds)

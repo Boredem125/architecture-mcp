@@ -218,9 +218,13 @@ _INTERSECT_FIELDS = (
 )
 _AND_FIELDS = (("auto_allow",), ("network", "allow_search"))           # True only if both say so
 _OR_FIELDS = (("semantic", "enabled"), ("semantic", "student"),        # True if either says so
-              ("output", "scrub_secrets"), ("scan", "preserve_originals"))
-_MIN_FIELDS = (("semantic", "threshold"), ("semantic", "screen_threshold"))
-_MAX_FIELDS = (("semantic", "taint_ttl_seconds"), ("semantic", "max_scan_chars"))
+              ("output", "scrub_secrets"), ("scan", "preserve_originals"),
+              ("audit", "log_allowed"), ("alerts", "enabled"), ("limits", "enabled"))
+_MIN_FIELDS = (("semantic", "threshold"), ("semantic", "screen_threshold"),
+               ("limits", "shell"), ("limits", "write"), ("limits", "network"), ("limits", "total"))
+_MAX_FIELDS = (("semantic", "taint_ttl_seconds"), ("semantic", "max_scan_chars"),
+               ("audit", "retention_days"), ("audit", "retention_days_reviewed"),
+               ("audit", "retention_days_incident"), ("limits", "window_seconds"))
 # Every other field (URLs, timeouts, the governance pointer, ...) has no
 # "stricter" direction, so the approved value is kept.
 
