@@ -75,6 +75,30 @@ Security decides whether an action is safe; governance has to show who decided, 
 - **Context.** A folder can be marked dev, staging or prod (prod audits allowlisted calls and needs two approvers from a lower risk score), and paths can be classified PUBLIC to RESTRICTED by glob (sending a CONFIDENTIAL or RESTRICTED file out needs dual control). Classification is by path, not content.
 - **A negative result.** Distilled per-clause classifiers were tested against the zero-shot clause checks on a frozen set of 105 escalated commands. Replacing the checks cut benign commands flagged from 7 of 29 to 1 but lost recall (0.79 to 0.71), past the limit set in advance, so the checks stay.
 
+## Checking it against AIUC-1
+
+[AIUC-1](https://standard.aiuc-1.com) is a certification standard written specifically for AI agents. Its July 2026 release has 51 active requirements, each with core and supplemental controls, and widened its coding-agent requirements. I mapped the gateway against all 51 ([AIUC-1_MAP.md](AIUC-1_MAP.md)). This is a self-assessment, not an audit, and AIUC-1 certifies an organization's agent product, not a tool.
+
+The first pass came out at **2 supported, 18 partial, 31 not covered**. The gateway met several *supplemental* controls (pre-execution authorization hooks, human approval, tamper-evident logs) while missing a *core* control in five places. Checking each "supports" claim against the code, rather than against the docs, turned up these gaps:
+
+- **A setting that did nothing.** `output.scrub_secrets: true` sat in every policy file, but nothing on the hook path read it. Approved command output, audit records and the activity log kept any secrets as they were.
+- **Allowed calls were invisible.** Only gated calls reached the audit chain. A plain allowed read or command left no record, so "every tool call is logged" wasn't true.
+- **No alerting.** Denials went to the chain, but nothing told anyone.
+- **No rate limits** on the path Claude Code actually uses. An older API path had them; the hooks did not.
+- **No retention.** A retention module existed, written for the older path's record format, and was never wired in.
+
+All five are now closed:
+
+- Secrets are scrubbed from output, before the agent or any log sees it.
+- Every call is audited: the command or target, never file contents.
+- Denials, critical escalations, injection hits and rate-limit trips raise alerts, to a local log and an optional webhook.
+- Per-class rate limits deny an agent that loops.
+- `sandbox retention` keeps sessions for 90 days, 1 year or 7 years depending on what happened in them. It deletes only on request, and records each deletion with the deleted chain's head hash.
+
+Each new setting is under the same change control as the rest of the policy, so loosening one needs a second reviewer. The result is now **5 supported, 16 partial, 30 not covered**.
+
+Most of the 30 not covered are organizational: third-party testing, vendor due diligence, failure plans, disclosure to end users. A runtime gateway can produce evidence for those processes, but it can't be them. That boundary is worth stating plainly, because an agent-governance tool that claims to make a company "compliant" is overclaiming.
+
 ## What didn't work
 
 - **Zero-shot alone hit a ceiling.** Whole-document scoring missed a planted instruction in a README (top score 0.04); per-sentence scoring found it (0.99). After that, the remaining misses were wording the model didn't recognise, and the false alarms were text it confidently misread.
@@ -99,11 +123,14 @@ Writing this up also surfaced a documentation error: the README said critical ac
 - **Benchmarks are small.** The tool-call test half has 41 calls, with only 2 payment violations.
 - **Dual control enforces two distinct reviewer ids and keys, not two distinct humans.** Keys live in the control plane; binding them to people needs SSO or hardware keys.
 - **ZAP's API scan reported 288 low or informational alerts at first.** My SARIF converter labelled every 4xx as a server error; separated, there were real server errors (an unconfigured route group, unvalidated capability names, an unbounded duration, a never-working `runtime/spawn`, very long paths on Linux) plus error and path disclosures and missing headers. After four fix rounds the scan shows **0 server errors and 0 disclosures**; what remains is expected 4xx responses and intended timestamps.
+- **The rate limits are untested defaults** (per minute: 30 shell, 60 write, 20 network and 600 total calls), chosen to stay out of the way of normal work rather than tuned on real workloads.
+- **Logs are protected from the agent, not from people.** The agent can't write to the control plane, and the chain makes edits detectable, but who can read the logs is up to the operating system.
 - **English only**, and the false-alarm rate on look-alike benign text is still about 20% for the combined scan on the fresh dev set (30 of 149).
 
 ## What's next
 
 - Give the injection check the user's actual request, so "do X" can be compared with what was asked. This is the only route I see for the paraphrased attacks that got through.
 - Per-person approver authentication for dual control.
+- The next AIUC-1 gaps: a central log store with its own access control, integrity checks on MCP tool definitions, and credential checks on input and generated code.
 
 The code, benchmarks, frozen test sets and every decision rule are in the repository, with commit hashes for each freeze. The [benchmark READMEs](../benchmarks/) have the full tables.

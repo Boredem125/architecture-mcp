@@ -24,7 +24,7 @@ evidence lives.
 
 ## AIUC-1 (AI agent standard)
 
-There's a requirement-by-requirement mapping to the July 15, 2026 release in [AIUC-1_MAP.md](AIUC-1_MAP.md): 2 requirements supported, 18 partial and 31 not covered, with the gap for each one.
+There's a requirement-by-requirement mapping to the July 15, 2026 release in [AIUC-1_MAP.md](AIUC-1_MAP.md): 5 requirements supported, 16 partial and 30 not covered, with the gap for each one.
 
 ## Where the evidence lives
 

@@ -12,6 +12,7 @@
 - **Detects intent, not just keywords** (optional, local): a small distilled classifier plus [jev-os](https://github.com/Boredem125/jev-os) zero-shot checks scan what the agent *reads* for prompt injection, sentence by sentence. On a hit, even allowlisted shell and network actions need a human.
 - **Governance-as-code:** plain-language clauses ("no moving money without human review") mapped to EU AI Act / GDPR / SR 11-7 references, checked on shell commands and on MCP/WebFetch calls, with a `test` command that measures each clause before you trust it.
 - **Governance records:** versioned policies with second-reviewer change control and drift protection, a signed evidence pack for auditors, oversight metrics with approval-fatigue detection, and dev/staging/prod plus data-classification rules.
+- **Operations:** every tool call is audited, with secrets scrubbed from output and logs. Denials and critical actions raise alerts (local log plus an optional webhook). Per-class rate limits stop an agent that loops, and audit retention is tiered at 90 days, 1 year or 7 years.
 
 **Design rule:** models may only *raise* scrutiny. Deterministic rules stay in charge, so a fooled model means an extra approval, never an open door.
 
@@ -27,6 +28,7 @@ Prompt injection in what the agent reads, held-out sets (caught, false alarms):
 
 - Governance on MCP/WebFetch calls: 16/20 violations caught, 0/24 benign calls flagged (frozen test set).
 - Red team: 10 of 113 evasive attacks still get through, all plain-sounding instructions with no AI wording. That case is left to the authorization layer.
+- AIUC-1 (the AI agent standard, July 2026 release): 5 of 51 requirements supported, 16 partial, 30 not covered, self-assessed with the gap for each ([mapping](docs/AIUC-1_MAP.md)). Most of the 30 are organizational processes a runtime tool can't supply.
 - Every adoption decision used a rule written before the test run; two candidates that missed their rule were not shipped. Full numbers, method and limits: [the write-up](docs/INTENT_AWARE_AUTHORIZATION.md).
 
 ## Security of the gateway itself
@@ -35,7 +37,7 @@ CI runs Semgrep, Gitleaks, Trivy and a ZAP API scan on every push, with SARIF up
 
 ## Tech
 
-Python 3.12 · FastAPI · MCP · Claude Code hooks · ONNX Runtime · Pydantic · PyNaCl (Ed25519) · pytest (482 tests)
+Python 3.12 · FastAPI · MCP · Claude Code hooks · ONNX Runtime · Pydantic · PyNaCl (Ed25519) · pytest (506 tests)
 
 ## Quick start
 
@@ -45,7 +47,9 @@ sandbox init . --claude --mcp      # connect a folder
 sandbox watch .                    # approve escalations in another terminal
 ```
 
-Useful commands: `sandbox verify` (audit chains), `sandbox explain <id>`, `sandbox oversight`, `sandbox export-evidence --out pack.zip`, `sandbox policy history`.
+Useful commands: `sandbox verify` (audit chains), `sandbox explain <id>`, `sandbox alerts`, `sandbox oversight`, `sandbox retention`, `sandbox export-evidence --out pack.zip`, `sandbox policy history`.
+
+To send alerts to Slack, Teams or any collector, set `SANDBOX_ALERT_WEBHOOK` to its incoming-webhook URL.
 
 Optional intent-aware layer: `pip install -e ".[semantic]"`, then `jevos serve` and `sandbox semantic enable .`
 

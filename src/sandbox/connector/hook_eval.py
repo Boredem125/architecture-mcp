@@ -621,7 +621,7 @@ async def _escalate_shell(
     # only once a human has decided.
     _audit(layout, session_id, {
         "event": "shell_escalated", "request_id": request_id, "tool": tool_name,
-        "reason_code": result.reason_code, "command": result.command,
+        "reason_code": result.reason_code, "reason": result.reason, "command": result.command,
         "identity": ident_dict, "risk": result.risk, "requires_dual": result.requires_dual,
     })
 
