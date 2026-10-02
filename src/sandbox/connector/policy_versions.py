@@ -428,13 +428,19 @@ def enforced_policy(layout: FolderLayout) -> tuple[FolderPolicy, dict[str, Any]]
         store(layout, effective)
         if materialize is not None:
             store(layout, materialize)
-        _report_drift(layout, info)
     policy = FolderPolicy.model_validate(effective)
     policy._inject_protections()
+    if drifted:
+        _report_drift(layout, info, policy)
     return policy, info
 
 
-def _report_drift(layout: FolderLayout, info: dict[str, Any]) -> None:
+def _report_drift(layout: FolderLayout, info: dict[str, Any], policy: FolderPolicy) -> None:
+    """Record a newly seen drift once: audit chain, activity log and an alert.
+
+    The marker is written first, and the alert gets the enforced policy's
+    alert settings passed in, so raising it can never re-enter this check.
+    """
     marker = layout.state_dir / "policy_drift_seen.json"
     key = json.dumps(info.get("on_disk"), sort_keys=True)
     try:
@@ -442,17 +448,35 @@ def _report_drift(layout: FolderLayout, info: dict[str, Any]) -> None:
             return
     except (OSError, ValueError):
         pass
-    audit(layout, {
-        "event": "policy_drift",
-        "policy_version": info,
-        "handling": "enforcing the approved version, tightened by stricter settings on disk",
-    })
-    _activity(layout, f"POLICY DRIFT  on disk {info.get('on_disk')} != approved {info.get('approved')}; "
-                      "enforcing the stricter of the two. Review with `sandbox policy diff approved current`.")
     try:
         _atomic_write(layout, marker, json.dumps({"key": key, "at": time.time()}).encode("utf-8"))
     except OSError:
         pass
+    record = {
+        "event": "policy_drift",
+        "ts": time.time(),
+        "reason_code": "POLICY_DRIFT",
+        "reason": (f"policy.json on disk ({info.get('on_disk')}) differs from the approved version "
+                   f"({info.get('approved')}); loosening ignored"),
+        "policy_version": info,
+        "handling": "enforcing the approved version, tightened by stricter settings on disk",
+    }
+    audit(layout, record)
+    _activity(layout, f"POLICY DRIFT  on disk {info.get('on_disk')} != approved {info.get('approved')}; "
+                      "enforcing the stricter of the two. Review with `sandbox policy diff approved current`.")
+    try:
+        from sandbox.connector import alerts
+
+        alerts.emit(layout, _session_id(layout), record, alert_policy=policy.alerts)
+    except Exception:  # noqa: BLE001 — alerting never breaks enforcement
+        pass
+
+
+def _session_id(layout: FolderLayout) -> str:
+    try:
+        return json.loads(layout.session_file.read_text(encoding="utf-8")).get("session_id", "")
+    except (OSError, ValueError):
+        return ""
 
 
 # ---------------------------------------------------------------------------

@@ -294,10 +294,13 @@ def scene_tamper(d: Demo) -> None:
     rec_file = d.layout.audit_dir / sid / "records.jsonl"
     original = rec_file.read_text(encoding="utf-8")
     lines = original.splitlines()
-    i = next(k for k, line in enumerate(lines) if '"event": "denied"' in line)
-    lines[i] = lines[i].replace('"event": "denied"', '"event": "allowed"', 1)
+    # Prefer a denial (the story is "turn a no into a yes"); any record works.
+    i = next((k for k, line in enumerate(lines) if '"event": "denied"' in line), 0)
+    old_event = json.loads(lines[i]).get("event")
+    new_event = "allowed" if old_event != "allowed" else "observed"
+    lines[i] = lines[i].replace(f'"event": "{old_event}"', f'"event": "{new_event}"', 1)
     rec_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"\n{RED}(someone changed record {i + 1} from 'denied' to 'allowed'){RESET}")
+    print(f"\n{RED}(someone changed record {i + 1} from '{old_event}' to '{new_event}'){RESET}")
     d.human("verify")
     rec_file.write_text(original, encoding="utf-8")
     print(f"\n{DIM}(original restored){RESET}")

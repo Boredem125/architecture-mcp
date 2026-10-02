@@ -44,6 +44,8 @@ SUMMARY = "summary.json"
 DECISIONS_INDEX = "decisions/index.json"
 CHAINS_FILE = "audit/chains.json"
 REVIEWER_KEYS = "keys/reviewers.json"
+AIUC1_INDEX = "aiuc1/controls.json"
+ALERTS_FILE = "alerts/alerts.jsonl"
 
 # A record's signature must at least cover these, or it does not bind who
 # decided what.
@@ -282,6 +284,7 @@ def build_pack(layout: FolderLayout, since: float | None = None, until: float | 
     # Audit chains, whole.
     chains: dict[str, Any] = {}
     audit_records: list[dict[str, Any]] = []
+    audit_by_file: dict[str, list[dict[str, Any]]] = {}
     if layout.audit_dir.is_dir():
         for d in sorted(p for p in layout.audit_dir.iterdir() if p.is_dir()):
             f = d / "records.jsonl"
@@ -291,10 +294,12 @@ def build_pack(layout: FolderLayout, since: float | None = None, until: float | 
             path = f"audit/{d.name}/records.jsonl"
             files[path] = data
             chains[d.name] = {"file": path, **verify_chain_bytes(data)}
+            audit_by_file[path] = []
             for line in data.split(b"\n"):
                 rec = _read_json(line) if line.strip() else None
                 if isinstance(rec, dict):
                     audit_records.append(rec)
+                    audit_by_file[path].append(rec)
     files[CHAINS_FILE] = _pretty(chains)
 
     # Done-records in the window.
@@ -368,6 +373,35 @@ def build_pack(layout: FolderLayout, since: float | None = None, until: float | 
             if isinstance(parsed, dict):
                 gov_clauses = [c for c in parsed.get("clauses") or [] if isinstance(c, dict)]
 
+    # Alerts (B006.2 evidence), as they are at export.
+    alert_rows: list[dict[str, Any]] = []
+    alerts_path = layout.logs_dir / "alerts.jsonl"
+    if alerts_path.is_file():
+        data = alerts_path.read_bytes()
+        files[ALERTS_FILE] = data
+        for line in data.split(b"\n"):
+            row = _read_json(line) if line.strip() else None
+            if isinstance(row, dict):
+                alert_rows.append(row)
+
+    # AIUC-1 index: which control each record is evidence for.
+    from sandbox.connector import aiuc1
+
+    try:
+        from sandbox.connector.policy_versions import enforced_policy
+
+        enforced = enforced_policy(layout)[0]
+    except Exception:  # noqa: BLE001 — fall back to the file as it is
+        enforced = load_policy(layout.policy_file)
+    aiuc1_index = aiuc1.build_index(
+        audit_by_file,
+        {f"decisions/{stem}.json": rec for stem, _, rec in raw if isinstance(rec, dict)},
+        alert_rows,
+        all(c["ok"] for c in chains.values()),
+        enforced,
+    )
+    files[AIUC1_INDEX] = _pretty(aiuc1_index)
+
     # Summary.
     by_reviewer: dict[str, Counter] = defaultdict(Counter)
     approvals_by_reviewer: Counter = Counter()
@@ -403,6 +437,9 @@ def build_pack(layout: FolderLayout, since: float | None = None, until: float | 
                   "all_chains_valid": all(c["ok"] for c in chains.values()),
                   "chains": chains},
         "governance": _governance_summary(gov_clauses, decisions, audit_records),
+        "aiuc1": {"release": aiuc1_index["release"], "file": AIUC1_INDEX, "note": aiuc1_index["note"],
+                  "by_requirement": aiuc1_index["by_requirement"]},
+        "alerts": {"file": ALERTS_FILE if ALERTS_FILE in files else None, "count": len(alert_rows)},
         "policies": policies,
         "failed_checks": failed + [{"file": c["file"], "check": "audit_chain", "detail": c["message"]}
                                    for c in chains.values() if not c["ok"]],

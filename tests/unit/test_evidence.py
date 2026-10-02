@@ -312,3 +312,74 @@ def test_cli_export_and_verify(folder, tmp_path):
 
     missing = runner.invoke(cli, ["verify-evidence", str(tmp_path / "nope")])
     assert missing.exit_code == 1 and "not found" in missing.output
+
+
+# --- AIUC-1 index -------------------------------------------------------------
+
+def test_pack_has_aiuc1_index_tied_to_records(folder, tmp_path):
+    out, s = _export(folder, tmp_path)
+    index = json.loads((out / "aiuc1" / "controls.json").read_text(encoding="utf-8"))
+    assert index["standard"] == "AIUC-1" and index["release"] == "2026-07-15"
+    assert "not an audit or certification" in index["note"]
+    c = index["controls"]
+    # Every signed decision is human-approval evidence.
+    assert c["D003.4"]["evidence"]["decisions"] == 4
+    assert c["D003.4"]["evidence"]["audit_records"] == 2  # tool_call_escalated + shell_decided
+    # The dual-control approval is B006.1 evidence; the governed tool call is C005.1.
+    assert c["B006.1"]["evidence"]["decisions"] == 1
+    assert c["C005.1"]["evidence"] == {"audit_records": 1, "decisions": 1, "alerts": 0}
+    assert c["E015.4"]["evidence"]["audit_records"] == 3 and "all valid" in c["E015.4"]["examples"][0]
+    # Examples point at real files in the pack, and line numbers at the right record.
+    ref = next(e for e in c["C005.1"]["examples"] if e.startswith("audit/"))
+    path, line = ref.split(" ")[0].split("#L")
+    rec = json.loads((out / path).read_text(encoding="utf-8").splitlines()[int(line) - 1])
+    assert rec["event"] == "tool_call_escalated"
+    assert all((out / e.split(" ")[0].split("#")[0]).is_file() for e in c["D003.4"]["examples"])
+    # Configuration evidence comes from the enforced policy.
+    assert any("rate limits" in x for x in c["D003.2"]["configuration"])
+    assert index["by_requirement"]["B006"]["self_assessed_status"] == "supports"
+    assert s["aiuc1"]["by_requirement"] == index["by_requirement"]
+    assert verify_evidence(out, s["exporter_public_key"])["ok"]
+
+
+def test_tampered_aiuc1_index_fails_verify(folder, tmp_path):
+    out, _ = _export(folder, tmp_path)
+    _rewrite_json(out / "aiuc1" / "controls.json",
+                  lambda d: d["by_requirement"]["E015"].update(self_assessed_status="supports"))
+    r = verify_evidence(out)
+    assert not r["ok"] and any("aiuc1/controls.json: sha256 does not match" in f for f in r["failures"])
+
+
+def test_alerts_are_in_the_pack(folder, tmp_path):
+    from sandbox.connector import alerts
+
+    alerts.emit(folder, "s1", {"event": "denied", "tool": "Write", "reason_code": "WRITE_OUTSIDE",
+                               "target": "C:/Windows/x"})
+    out, s = _export(folder, tmp_path)
+    assert s["alerts"]["count"] == 1 and (out / "alerts" / "alerts.jsonl").is_file()
+    index = json.loads((out / "aiuc1" / "controls.json").read_text(encoding="utf-8"))
+    assert index["controls"]["B006.2"]["evidence"]["alerts"] == 1
+    assert verify_evidence(out, s["exporter_public_key"])["ok"]
+
+
+def test_index_statuses_match_the_published_mapping():
+    """The pack must never claim more than docs/AIUC-1_MAP.md does."""
+    import re
+    from pathlib import Path
+
+    from sandbox.connector.aiuc1 import REQUIREMENTS
+
+    doc = (Path(__file__).resolve().parents[2] / "docs" / "AIUC-1_MAP.md").read_text(encoding="utf-8")
+    published = {m.group(1): m.group(2).strip("* ").lower()
+                 for m in re.finditer(r"^\| ([A-F]\d{3}) \|[^|]*\| ([^|]+) \|", doc, re.M)}
+    for req, (_, status) in REQUIREMENTS.items():
+        assert published[req] == status, f"{req}: index says {status}, mapping says {published[req]}"
+
+
+def test_cli_prints_aiuc1_summary(folder, tmp_path):
+    from sandbox.cli.main import cli
+
+    res = CliRunner().invoke(cli, ["export-evidence", str(folder.root), "--out", str(tmp_path / "p")])
+    assert res.exit_code == 0, res.output
+    assert "AIUC-1 evidence (release 2026-07-15, self-assessed" in res.output
+    assert "D003 Restrict unsafe tool calls [supports]" in res.output

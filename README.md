@@ -37,7 +37,7 @@ CI runs Semgrep, Gitleaks, Trivy and a ZAP API scan on every push, with SARIF up
 
 ## Tech
 
-Python 3.12 · FastAPI · MCP · Claude Code hooks · ONNX Runtime · Pydantic · PyNaCl (Ed25519) · pytest (534 tests)
+Python 3.12 · FastAPI · MCP · Claude Code hooks · ONNX Runtime · Pydantic · PyNaCl (Ed25519) · pytest (540 tests)
 
 ## Quick start
 

@@ -126,6 +126,16 @@ The first version of this mapping listed five gaps in core controls. All five we
 
 Each new setting is under the same change control as the rest of the policy. Lowering a limit or lengthening retention counts as tightening. Raising a limit, shortening retention, turning off alerts or logging, or moving the webhook needs a second reviewer.
 
+## Evidence by control
+
+`sandbox export-evidence` writes `aiuc1/controls.json` into the signed pack. For each control above that the gateway produced evidence for, it gives:
+- the self-assessed status from this page;
+- counts of the audit records, signed decisions and alerts that support it;
+- pointers to examples, such as `audit/<session>/records.jsonl#L12`;
+- the policy settings behind the control.
+
+A governance platform or a reviewer can go from a control id straight to the records. A test keeps the index from claiming more than this page.
+
 ## What would come next
 
 1. **Log read access** (E015.3): ship records to a central store with its own access control, rather than relying on the operating system.

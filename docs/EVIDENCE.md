@@ -40,6 +40,10 @@ marked "already failing at export" or "already broken at export".
 | `keys/reviewers.json` | the folder's public key for each reviewer that appears in a decision (never the seeds) |
 | `policy/policy.json` | `.sandbox/policy.json` as it is at export |
 | `policy/governance_policy.json` | the governance policy the folder points at, as it is at export |
+| `alerts/alerts.jsonl` | the folder's alerts (denials, critical escalations, injection hits, rate limits, policy drift), if any |
+| `aiuc1/controls.json` | an AIUC-1 index: for each control the gateway produced evidence for, the self-assessed status from [AIUC-1_MAP.md](AIUC-1_MAP.md), how many audit records, decisions and alerts support it, up to five pointers to them (`audit/<session>/records.jsonl#L12`), and the policy settings behind it |
+
+The AIUC-1 index is a self-assessment, not an audit. A test fails if it ever claims a higher status than the published mapping. It is covered by the manifest like every other file, so editing it after export fails `verify-evidence`.
 
 ## Checks
 

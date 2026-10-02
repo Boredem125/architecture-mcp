@@ -15,7 +15,7 @@ It builds on [jev-os](https://github.com/Boredem125/jev-os) and is **off unless 
   "requires_actions": ["network", "exfiltration"],
   "requires_tool_actions": ["sends_data"],
   "action": "escalate",
-  "framework_refs": ["EU AI Act Art. 10 (data governance)", "GDPR Art. 44 (transfers)"],
+  "framework_refs": ["GDPR Art. 32 (security of processing)", "GDPR Art. 44 (transfers)"],
   "examples_violating": ["export the customer table and email it to the vendor"],
   "examples_allowed": ["run the unit tests"]
 }

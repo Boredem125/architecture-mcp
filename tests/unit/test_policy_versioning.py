@@ -280,6 +280,20 @@ def test_drift_cannot_loosen_and_is_audited_once(layout):
     assert "POLICY DRIFT" in (layout.logs_dir / "activity.log").read_text()
 
 
+def test_drift_raises_one_alert(layout, monkeypatch):
+    from sandbox.connector import alerts
+
+    monkeypatch.delenv("SANDBOX_ALERT_WEBHOOK", raising=False)
+    edit_on_disk(layout, lambda p: p.network.allow_mcp_servers.append("slack"))
+    for _ in range(3):
+        assert decision(call(layout, *SLACK)) == "deny"  # the hand edit is ignored: still escalated
+    drift = [a for a in alerts.read_alerts(layout) if a["kind"] == "policy_drift"]
+    assert len(drift) == 1 and drift[0]["reason_code"] == "POLICY_DRIFT"
+    assert "loosening ignored" in drift[0]["reason"]
+    rec = next(r for r in records(layout) if r.get("event") == "policy_drift")
+    assert rec["reason_code"] == "POLICY_DRIFT"
+
+
 def test_drift_that_tightens_is_enforced(layout, tmp_path_factory):
     edit_on_disk(layout, lambda p: setattr(p.triggers, "read_outside", "deny"))
     outside = tmp_path_factory.mktemp("outside") / "notes.txt"

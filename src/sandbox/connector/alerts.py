@@ -27,6 +27,7 @@ _ALWAYS = {
     "governance_denied": "governance",
     "semantic_injection_detected": "injection",
     "rate_limited": "rate_limit",
+    "policy_drift": "policy_drift",
 }
 # Escalations alert only when critical or dual control.
 _ESCALATIONS = {"shell_escalated", "tool_call_escalated", "escalate_redirect"}
@@ -90,19 +91,26 @@ def _summary(a: dict[str, Any]) -> str:
     return f"[sandbox:{a['folder']}] {a['kind'].upper()}{risk}: {what} {a.get('reason') or ''}".strip()
 
 
-def emit(layout: FolderLayout, session_id: str, record: dict[str, Any]) -> dict[str, Any] | None:
-    """Raise an alert for *record* if it is one. Returns the alert, or None."""
+def emit(layout: FolderLayout, session_id: str, record: dict[str, Any],
+         alert_policy: Any = None) -> dict[str, Any] | None:
+    """Raise an alert for *record* if it is one. Returns the alert, or None.
+
+    ``alert_policy`` is passed by callers that are themselves computing the
+    enforced policy (drift reporting), so this never reads it back.
+    """
     kind = alert_kind(record)
     if kind is None:
         return None
-    try:
-        from sandbox.connector.policy_versions import enforced_policy
+    policy = alert_policy
+    if policy is None:
+        try:
+            from sandbox.connector.policy_versions import enforced_policy
 
-        policy = enforced_policy(layout)[0].alerts
-    except Exception:  # noqa: BLE001 — fall back to the defaults
-        from sandbox.connector.policy import AlertPolicy
+            policy = enforced_policy(layout)[0].alerts
+        except Exception:  # noqa: BLE001 — fall back to the defaults
+            from sandbox.connector.policy import AlertPolicy
 
-        policy = AlertPolicy()
+            policy = AlertPolicy()
     if not policy.enabled:
         return None
     alert = build(layout, session_id, record, kind)

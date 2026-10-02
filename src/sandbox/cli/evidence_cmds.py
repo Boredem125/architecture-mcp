@@ -28,7 +28,16 @@ def export_evidence_cmd(path: str, out: str, since: str | None, until: str | Non
     click.echo(f"  Decisions: {d['total']}  {d['by_outcome']}  passing all checks: {d['passing_all_checks']}")
     click.echo(f"  Audit: {a['sessions']} session(s), {a['records']} records, "
                f"chains {'all valid' if a['all_chains_valid'] else 'NOT all valid'}")
+    if s.get("alerts", {}).get("count"):
+        click.echo(f"  Alerts: {s['alerts']['count']}")
     click.echo(f"  Exporter public key: {s['exporter_public_key']}")
+    au = s.get("aiuc1") or {}
+    if au.get("by_requirement"):
+        click.echo(f"  AIUC-1 evidence (release {au['release']}, self-assessed, details in {au['file']}):")
+        for req, r in au["by_requirement"].items():
+            seen = f"{r['evidence_items']} item(s)" if r["evidence_items"] else "configured, no events yet"
+            click.echo(f"    {req} {r['title']} [{r['self_assessed_status']}]: "
+                       f"{seen}; {', '.join(r['controls'])}")
     for note in s["notes"]:
         click.echo(f"  Note: {note}")
     if s["failed_checks"]:
