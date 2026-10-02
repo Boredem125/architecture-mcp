@@ -51,7 +51,7 @@ Optional intent-aware layer: `pip install -e ".[semantic]"`, then `jevos serve` 
 
 ## Docs
 
-[Write-up: intent-aware authorization](docs/INTENT_AWARE_AUTHORIZATION.md) · [Full details](docs/DETAILS.md) · [Threat model](docs/THREAT_MODEL.md) · [Governance-as-code](docs/GOVERNANCE.md) · [Evidence pack](docs/EVIDENCE.md) · [Data and environment](docs/DATA_AND_ENVIRONMENT.md) · [Compliance mapping](docs/COMPLIANCE_MAP.md) · [Benchmarks](benchmarks/injection/README.md)
+[Write-up: intent-aware authorization](docs/INTENT_AWARE_AUTHORIZATION.md) · [Full details](docs/DETAILS.md) · [Threat model](docs/THREAT_MODEL.md) · [Governance-as-code](docs/GOVERNANCE.md) · [Evidence pack](docs/EVIDENCE.md) · [Data and environment](docs/DATA_AND_ENVIRONMENT.md) · [Compliance mapping](docs/COMPLIANCE_MAP.md) · [AIUC-1 mapping](docs/AIUC-1_MAP.md) · [Benchmarks](benchmarks/injection/README.md)
 
 *Compliance mappings show design intent, not certification. No software is "compliant" on its own; organisations are.*
 

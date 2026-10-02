@@ -22,6 +22,10 @@ evidence lives.
 | Examiner evidence export: `sandbox export-evidence` / `verify-evidence`, a signed pack of decisions, approvals, audit chains and policy files *(integrity relative to control-plane keys; see [EVIDENCE.md](EVIDENCE.md))* | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Policy change control: versioned policy, changes approved by a second signed reviewer, drift cannot loosen *(distinct reviewer ids and keys; not proof of two humans)* | ✓ | ✓ change control | ✓ | ✓ ICT change mgmt | ✓ |
 
+## AIUC-1 (AI agent standard)
+
+There's a requirement-by-requirement mapping to the July 15, 2026 release in [AIUC-1_MAP.md](AIUC-1_MAP.md): 2 requirements supported, 18 partial and 31 not covered, with the gap for each one.
+
 ## Where the evidence lives
 
 - **Decisions & approvals:** `.sandbox/escalations/done/<id>.json` (signed) — read with
