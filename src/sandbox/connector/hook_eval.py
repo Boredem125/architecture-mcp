@@ -170,6 +170,67 @@ def _shell_verdict(command: str, policy: FolderPolicy) -> str:
 
 
 # ---------------------------------------------------------------------------
+# hook input validation — malformed input fails closed
+# ---------------------------------------------------------------------------
+
+BAD_INPUT_REASON = "SANDBOX: unreadable hook input (fail-closed)"
+
+
+def _input_problem(payload: Any) -> str | None:
+    """Why a PreToolUse payload can't be evaluated, or None if it can.
+
+    ``{}`` is what the stubs pass for empty stdin; it keeps its old behaviour
+    (classified as an unknown tool).
+    """
+    if not isinstance(payload, dict):
+        return f"expected a JSON object, got {type(payload).__name__}"
+    if not payload:
+        return None
+    name = payload.get("tool_name")
+    if not isinstance(name, str) or not name.strip():
+        return "missing tool_name"
+    return None
+
+
+def _bad_input(layout: FolderLayout, problem: str) -> dict[str, Any]:
+    """Deny an unreadable call and record it; never classify it as a tool."""
+    _audit(layout, _read_session(layout).get("session_id", ""), {
+        "event": "denied", "tool": "", "reason_code": "BAD_INPUT",
+        "reason": f"unreadable hook input: {problem}",
+    })
+    return _pre_output("deny", BAD_INPUT_REASON)
+
+
+def payload_cwd(raw: str) -> str | None:
+    """The ``cwd`` of a raw payload, if it has one. Never raises: only used to
+    find ``.sandbox/``, so malformed input still reaches the deny path."""
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        return None
+    cwd = payload.get("cwd") if isinstance(payload, dict) else None
+    return cwd if isinstance(cwd, str) and cwd else None
+
+
+async def pre_tool_use_raw(raw: str, layout: FolderLayout) -> dict[str, Any]:
+    """PreToolUse from raw stdin — the entry point for both stub paths.
+
+    Empty stdin is evaluated as ``{}`` (unchanged). Anything else must be a
+    JSON object with a non-empty ``tool_name``, or the call is denied with
+    reason_code BAD_INPUT.
+    """
+    if not raw.strip():
+        return await pre_tool_use({}, layout)
+    try:
+        payload = json.loads(raw)
+    except ValueError as exc:
+        return _bad_input(layout, f"invalid JSON ({exc.msg})")
+    if payload == {}:
+        return _bad_input(layout, "missing tool_name")
+    return await pre_tool_use(payload, layout)
+
+
+# ---------------------------------------------------------------------------
 # the PreToolUse entry point
 # ---------------------------------------------------------------------------
 
@@ -185,6 +246,10 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
     from sandbox.connector.memory import DecisionMemory
     from sandbox.connector.policy_versions import enforced_policy
     from sandbox.connector.risk import assess
+
+    problem = _input_problem(payload)
+    if problem is not None:
+        return _bad_input(layout, problem)
 
     # The approved policy version (or, if the file drifted, the stricter of the
     # approved and on-disk versions). _audit stamps policy_version on records.
@@ -1001,13 +1066,11 @@ def main(argv: list[str] | None = None) -> int:
         return _main_post()
     try:
         raw = sys.stdin.read()
-        payload = json.loads(raw) if raw.strip() else {}
-        cwd = payload.get("cwd") or "."
-        layout = FolderLayout.discover(cwd)
+        layout = FolderLayout.discover(payload_cwd(raw) or ".")
         if layout is None:
             # No sandbox here — do nothing, let the agent proceed.
             return _emit(_pre_output(None, ""))
-        result = asyncio.run(pre_tool_use(payload, layout))
+        result = asyncio.run(pre_tool_use_raw(raw, layout))
         return _emit(result)
     except Exception as exc:  # noqa: BLE001 — fail closed
         sys.stderr.write(f"SANDBOX: internal error, blocking (fail-closed): {exc}")

@@ -1,6 +1,6 @@
 """Stdlib-only hook stubs written into ``.sandbox/hooks/``.
 
-The stub carries no policy and is never regenerated — it only reads stdin,
+The stub carries no policy (``sandbox init`` rewrites it each run) — it only reads stdin,
 locates ``.sandbox/``, and delegates to ``sandbox.connector.hook_eval``. The
 delegation ladder: in-process import (fast) → subprocess with the captured
 interpreter → fail-closed. ``session.json`` supplies the absolute python and
@@ -35,12 +35,18 @@ def _fail_closed(msg):
 
 def main():
     raw = sys.stdin.read()
+    # Parsed only to locate .sandbox/. Malformed input is judged by the
+    # package (pre_tool_use_raw), which denies it: the stub never allows.
     try:
         payload = json.loads(raw) if raw.strip() else {}
     except Exception:
         payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
 
     cwd = payload.get("cwd") or os.getcwd()
+    if not isinstance(cwd, str):
+        cwd = os.getcwd()
     root = _find_sandbox(cwd) or _find_sandbox(os.path.dirname(os.path.abspath(__file__)))
     if root is None:
         # No sandbox — do nothing, let the agent proceed.
@@ -62,10 +68,10 @@ def main():
         if package_src and package_src not in sys.path:
             sys.path.insert(0, package_src)
         import asyncio
-        from sandbox.connector.hook_eval import pre_tool_use
+        from sandbox.connector.hook_eval import pre_tool_use_raw
         from sandbox.connector.layout import FolderLayout
         layout = FolderLayout(root)
-        result = asyncio.run(pre_tool_use(payload, layout))
+        result = asyncio.run(pre_tool_use_raw(raw, layout))
         sys.stdout.write(json.dumps(result))
         sys.stdout.flush()
         sys.exit(0)
