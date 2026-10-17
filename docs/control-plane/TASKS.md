@@ -14,3 +14,7 @@ Planning phase only: no code, no commits until the founder approves the M0 plan 
 - [x] P5 — QA review + M0 test strategy -> docs/control-plane/REVIEW_QA.md — qa-engineer — done — APPROVE WITH CHANGES; measured baseline 539 passed/1 skipped/1 deselected (crasher), post-M0 frozen at 511 collected/510 passed/1 skipped before T0; 2 Class C misclassifications + 4 B functions found; E2E, C-unchanged proof, CI and ADR gaps defined
 - [x] T0-tests — failing tests for T0a-T0e + SEC-04 guard -> tests/security/test_t0_hotfix.py — qa-engineer — done — 162 tests, on main 122 fail for the stated bugs and 40 guards pass; existing suite unchanged at 539/1/1; hotfix gate frozen at 701 passed/0 failed/1 skipped (REVIEW_QA.md section 8); no Class C test encodes the bugs
 - [x] P6 — Lead resolves review findings, final plan for founder — orchestrator — done — QA/security must-fixes folded into M0_PLAN.md (5-part C proof, T2 Win+Linux, T1b R3/R7/N1/N2 first, T11 spawner); decisions recorded in M0_PLAN + ADR 0003/0004/0006; founder approved M0 on 17 Oct 2026
+
+## M0 build
+- [ ] T1 — Freeze baseline at c411c35 -> M0_BASELINE.md + M0_C_MANIFEST.sha256 — qa-engineer — claimed —
+- [ ] T1b — Write R3, R7, N1, N2 before any deletion — qa-engineer — claimed —
