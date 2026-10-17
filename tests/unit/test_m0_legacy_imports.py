@@ -105,7 +105,6 @@ def _imported(tree: ast.AST, module: str, is_pkg: bool) -> set[str]:
     return found
 
 
-@RED_UNTIL_T5
 def test_n1_no_kept_module_imports_a_deleted_module():
     kept = [p for p in sorted(PKG.rglob("*.py")) if not _is_deleted(_module_name(p))]
     # Sanity (holds today): the connector core is there and every file parses.
