@@ -16,7 +16,7 @@ Planning phase only: no code, no commits until the founder approves the M0 plan 
 - [x] P6 — Lead resolves review findings, final plan for founder — orchestrator — done — QA/security must-fixes folded into M0_PLAN.md (5-part C proof, T2 Win+Linux, T1b R3/R7/N1/N2 first, T11 spawner); decisions recorded in M0_PLAN + ADR 0003/0004/0006; founder approved M0 on 17 Oct 2026
 
 ## M0 build
-- [ ] T1 — Freeze baseline at c411c35 -> M0_BASELINE.md + M0_C_MANIFEST.sha256 — qa-engineer — claimed —
+- [x] T1 — Freeze baseline at c411c35 -> M0_BASELINE.md + M0_C_MANIFEST.sha256 — qa-engineer — done — measured 703 collected: 701 passed/1 skipped/1 deselected (A 26, B 32, C 645 in 48 files); manifest (52 LF blobs) + M0_C_NODEIDS.txt frozen at c0d4912 with test_posttooluse_fallback.py as named exception; post-M0 gate re-derived = 673/672/1/0 (unchanged); E2E steps 1-3, 7, 8 run at baseline
 - [ ] T1b — Write R3, R7, N1, N2 before any deletion — qa-engineer — claimed —
 - [ ] T2 — pytest CI (Windows + Linux matrix, connector-standalone job) — devops-engineer — blocked (push) — 20d9368 local: tests.yml (pytest Win+Linux, connector-standalone Win+Linux, JUnit artifact, junit_gate.py failures=0, stray-file check); Windows local 701 passed/1 skipped; push needs founder GitHub login, Linux count unmeasured until CI runs
 - [ ] T11 — Find and fix the spawner writing %SystemDrive% cache DBs into the repo; untrack them — devops-engineer — blocked (commit) — culprit tests/unit/test_posttooluse_fallback.py:21 (env lacks SYSTEMDRIVE, cwd=repo; any Windows python start then writes the DBs cwd-relative); env fix signed off by security, commit blocked by permission system; 78fc763 untracks DBs + .gitignore; full local run with fix leaves git status clean
