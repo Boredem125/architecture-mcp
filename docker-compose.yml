@@ -1,49 +1,8 @@
-version: "3.9"
-
+# Local API (`sandbox serve` equivalent) in a hardened container: non-root
+# user, read-only root filesystem, no capabilities, no privilege escalation.
+# Tokens come from the environment; nothing secret is baked into the image.
+# The control-plane stack (Postgres, OIDC) is ADR 0005, from M1.
 services:
-  # --- Shared infrastructure ---
-
-  nats:
-    image: nats:2.10-alpine
-    ports:
-      - "4222:4222"
-      - "8222:8222"
-    command: ["--jetstream", "--store_dir=/data", "-m", "8222"]
-    volumes:
-      - nats-data:/data
-    networks:
-      - sandbox-net
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb"]
-    volumes:
-      - redis-data:/data
-    networks:
-      - sandbox-net
-    restart: unless-stopped
-
-  opa:
-    image: openpolicyagent/opa:0.68.0
-    ports:
-      - "8181:8181"
-    command:
-      - "run"
-      - "--server"
-      - "--addr=0.0.0.0:8181"
-      - "--log-level=info"
-      - "/policies"
-    volumes:
-      - ./policies/rego:/policies:ro
-    networks:
-      - sandbox-net
-    restart: unless-stopped
-
-  # --- Zone 2: Sandbox services ---
-
   sandbox-api:
     build:
       context: .
@@ -57,18 +16,11 @@ services:
       # workers per-process generated tokens would differ between workers.
       - SANDBOX_AGENT_TOKEN=${SANDBOX_AGENT_TOKEN:?set SANDBOX_AGENT_TOKEN}
       - SANDBOX_APPROVER_TOKEN=${SANDBOX_APPROVER_TOKEN:?set SANDBOX_APPROVER_TOKEN}
-      - NATS_URL=nats://nats:4222
-      - REDIS_URL=redis://redis:6379/0
-      - OPA_URL=http://opa:8181
       - AUDIT_LOG_DIR=/data/audit_logs
       - SNAPSHOT_STORAGE_DIR=/data/snapshots
     volumes:
       - audit-data:/data/audit_logs
       - snapshot-data:/data/snapshots
-    depends_on:
-      - nats
-      - redis
-      - opa
     networks:
       - sandbox-net
     restart: unless-stopped
@@ -77,45 +29,13 @@ services:
       - /tmp
     security_opt:
       - no-new-privileges:true
-
-  # --- Zone 3: Executor (isolated) ---
-
-  executor:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.executor
-    environment:
-      - NATS_URL=nats://nats:4222
-      - EXECUTOR_MAX_MEMORY_MB=512
-      - EXECUTOR_MAX_PIDS=32
-      - EXECUTOR_EXECUTE_TIMEOUT_SECONDS=120
-    volumes:
-      - workspace:/tmp/workspace
-    depends_on:
-      - nats
-    networks:
-      - executor-net
-    restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
     cap_drop:
       - ALL
-    cap_add:
-      - DAC_OVERRIDE
-    pids_limit: 64
-    mem_limit: 1g
-    cpus: 2.0
 
 networks:
   sandbox-net:
     driver: bridge
-  executor-net:
-    driver: bridge
-    internal: true
 
 volumes:
-  nats-data:
-  redis-data:
   audit-data:
   snapshot-data:
-  workspace:

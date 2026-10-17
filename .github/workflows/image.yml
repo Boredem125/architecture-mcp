@@ -1,0 +1,52 @@
+# Build the API image and run it through the real docker-compose.yml.
+#
+# Proves the hardened packaging still works: the compose file is valid, the
+# image builds, the container starts read-only, non-root, with no capabilities,
+# answers /health, and refuses unauthenticated calls. Tokens are generated per
+# run and masked; nothing secret is in the image or the repo.
+name: image
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compose-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Throwaway tokens
+        run: |
+          agent=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+          approver=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+          echo "::add-mask::$agent"
+          echo "::add-mask::$approver"
+          echo "SANDBOX_AGENT_TOKEN=$agent" >> "$GITHUB_ENV"
+          echo "SANDBOX_APPROVER_TOKEN=$approver" >> "$GITHUB_ENV"
+      - name: Compose file is valid
+        run: docker compose config -q
+      - name: Build and start
+        run: docker compose up -d --build --wait --wait-timeout 120
+      - name: Health, auth and hardening checks
+        run: |
+          curl -sf http://127.0.0.1:8000/health
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/v1/connector/status)" = 401
+          test "$(docker compose exec -T sandbox-api id -u)" != 0
+          test "$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' "$(docker compose ps -q sandbox-api)")" = true
+          if docker compose exec -T sandbox-api sh -c 'touch /app/x' 2>/dev/null; then echo "root fs is writable"; exit 1; fi
+          docker compose exec -T sandbox-api sh -c 'touch /data/audit_logs/.w && rm /data/audit_logs/.w'
+      - name: Logs
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Stop
+        if: always()
+        run: docker compose down -v

@@ -8,10 +8,13 @@ RUN pip install --no-cache-dir --prefix=/install .
 
 FROM python:3.12-slim
 
-RUN groupadd -r sandbox && useradd -r -g sandbox -s /sbin/nologin sandbox
+RUN groupadd -r sandbox && useradd -r -g sandbox -s /sbin/nologin sandbox \
+ && mkdir -p /data/audit_logs /data/snapshots && chown -R sandbox:sandbox /data
+# The root filesystem is read-only at run time (compose read_only: true); only
+# /tmp (tmpfs) and the /data volumes are writable. New named volumes copy this
+# ownership, so the non-root user can write its audit logs.
 
 COPY --from=builder /install /usr/local
-COPY policies/ /app/policies/
 
 WORKDIR /app
 USER sandbox
