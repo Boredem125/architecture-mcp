@@ -18,7 +18,9 @@ SRC = str(Path(__file__).resolve().parents[2] / "src")
 
 
 def _run_module(args: list[str], payload: dict) -> subprocess.CompletedProcess:
-    env = {"PYTHONPATH": SRC, "SYSTEMROOT": __import__("os").environ.get("SYSTEMROOT", "")}
+    os_env = __import__("os").environ
+    env = {"PYTHONPATH": SRC, "SYSTEMROOT": os_env.get("SYSTEMROOT", ""),
+           "SYSTEMDRIVE": os_env.get("SYSTEMDRIVE", "")}
     return subprocess.run(
         [sys.executable, "-m", "sandbox.connector.hook_eval", *args],
         input=json.dumps(payload), capture_output=True, text=True, env=env, timeout=60,
