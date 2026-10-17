@@ -66,7 +66,7 @@ Status: Reviewed (18 Oct 2026, lead-architect). The founder approved M1 on 18 Oc
 
 ## Tests
 
-**Baseline:** the M0 gate set, one figure per environment (Q7a): local Windows `.venv` 678 collected, 677 passed, 1 skipped (symlink); CI `windows-latest` 678 passed, 0 skipped (the symlink test runs there); Linux = the M0 measured figure, 5 named T12 deselects. QA freezes it at the M0 gate commit in `docs/control-plane/M1_BASELINE.md`, with `M1_FROZEN_MANIFEST.sha256` (every tracked file under `tests/`), the node-id set, and **the Linux skip set by node id** from the `junit-pytest-Linux` artifact (Q7b).
+**Baseline:** the M0 gate set, one figure per environment (Q7a): local Windows `.venv` 679 collected, 678 passed, 1 skipped (symlink); CI `windows-latest` 679 passed, 0 skipped (the symlink test runs there); Linux = the M0 measured figure, 5 named T12 deselects. (679 includes M0 T4's `test_ws_refused.py`; see `M0_BASELINE.md` section 3.) QA freezes it at the M0 gate commit in `docs/control-plane/M1_BASELINE.md`, with `M1_FROZEN_MANIFEST.sha256` (every tracked file under `tests/`), the node-id set, and **the Linux skip set by node id** from the `junit-pytest-Linux` artifact (Q7b).
 
 **Tests first, per task:** QA commits the failing tests (`strict=True` xfail with a named exception, as in M0 T1b), then the owner's fix commit removes the decorator. The test count per task is written into `M1_BASELINE.md` in the tests-first commit, before any fix runs.
 
@@ -119,7 +119,7 @@ Security review is mandatory on T1-T4, T7-T9 and T11 (auth, keys, policy, audit,
 
 ## Gate: M1 is done when all of these are true (frozen 18 Oct 2026, before any run)
 
-1. **Connector suite** (N = the Phase A count QA froze in `M1_BASELINE.md`): local Windows `.venv` 678 + N collected, 677 + N passed, 1 skipped (symlink); CI `windows-latest` 678 + N passed, 0 skipped; Linux = the M0 figure + N, skip set equal to the frozen node-id list, only the 5 named T12 deselects. Everywhere: 0 failed, 0 xfailed, 0 xpassed, 0 other deselects. The new-test node-id set equals the frozen one. `M1_FROZEN_MANIFEST.sha256` checks OK except the named list; `pyproject` pytest options unchanged. `git status --porcelain` clean after the run.
+1. **Connector suite** (N = the Phase A count QA froze in `M1_BASELINE.md`): local Windows `.venv` 679 + N collected, 678 + N passed, 1 skipped (symlink); CI `windows-latest` 679 + N passed, 0 skipped; Linux = the M0 figure + N, skip set equal to the frozen node-id list, only the 5 named T12 deselects. Everywhere: 0 failed, 0 xfailed, 0 xpassed, 0 other deselects. The new-test node-id set equals the frozen one. `M1_FROZEN_MANIFEST.sha256` checks OK except the named list; `pyproject` pytest options unchanged. `git status --porcelain` clean after the run.
 2. **`ee/` suite in CI:** node-id set equal to the one frozen per task in `M1_BASELINE.md` (Q7c); 0 failed, **0 skipped** (pg included); RLS catalog test covers 100% of tables; RBAC and IDOR cover the frozen walked route list; coverage by `coverage run --branch --source=ee/src/agg_cp -m pytest ee/tests` then `coverage report --fail-under=85`, no omit list.
 3. **Standalone:** with `ee/` removed, the connector suite gives the same count; `pip install .` in a fresh E: venv runs the M0 E2E steps 1-7 headless (steps 4-5 with `sandbox approve <id> --reviewer alice/bob`, not `watch`; step 6 with `--root`).
 4. **Scanners:** Semgrep 0 error, Gitleaks 0, Trivy 0 HIGH/CRITICAL (fs and `api` image), ZAP no High on the compose proxy.

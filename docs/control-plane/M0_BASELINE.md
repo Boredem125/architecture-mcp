@@ -79,7 +79,7 @@ The manifest is frozen at `c0d4912`, so it holds this file's post-fix hash. Its 
 
 ## 3. Frozen post-M0 gate (Windows)
 
-**Re-frozen 18 Oct 2026 for T12, before any run: 678 collected, 677 passed, 1 skipped (the symlink test), 0 deselected, 0 failed, 0 xfailed, 0 xpassed.** That is the T1 figure (673 / 672, re-derived from the real collected set and equal to `M0_PLAN.md` and `REVIEW_QA.md` section 2) plus the 5 OS-native twins added in T12 (section 7), which run and pass on Windows too.
+**Re-frozen 18 Oct 2026 for T4's `test_ws_refused.py`, before backend's T4 run: 679 collected, 678 passed, 1 skipped (the symlink test), 0 deselected, 0 failed, 0 xfailed, 0 xpassed.** (Previous freeze, for T12: 678 / 677 / 1.) That is the T1 figure (673 / 672, re-derived from the real collected set and equal to `M0_PLAN.md` and `REVIEW_QA.md` section 2) plus the 5 OS-native twins added in T12 (section 7), which run and pass on Windows too.
 
 | Bucket | Tests |
 |---|---|
@@ -89,7 +89,10 @@ The manifest is frozen at `c0d4912`, so it holds this file's post-fix hash. Its 
 | B deleted (5 legacy-only + the 2 replaced by R3/R7 + websocket) | -8 |
 | New in T1b: R3, R7 (`tests/security/test_m0_routes.py`), N1, N2 (`tests/unit/test_m0_legacy_imports.py`) | 4 |
 | New in T12: 5 OS-native twins (`tests/unit/test_outside_paths_native.py`) | 5 |
-| **Total** | **678** |
+| New in T4: `tests/security/test_ws_refused.py` (1) | 1 |
+| **Total** | **679** |
+
+Reason for the T4 +1: security made T4's sign-off conditional on `tests/security/test_ws_refused.py`, one test. It checks that the auth middleware closes every WebSocket with code 1008 before accepting it, for no token, the agent token and the approver token. It replaces the deleted `test_api_auth.py::test_websocket_needs_approver_token`, so the WebSocket auth property keeps a test after `api/websocket.py` is removed.
 
 Difference in shape from `REVIEW_QA.md` (not in the number): REVIEW_QA counted R3 and R7 as in-place rewrites of `test_agent_can_submit_but_not_approve` and `test_m1_routes_still_exist`. I wrote them as new tests in a new file instead, so the old tests keep guarding the legacy broker until T4 deletes it. T4 therefore **deletes** those 2 functions (B "auth 7" and "api_connector 6" above) rather than rewriting them. 645 + 24 + 4 = 673 either way; T12 adds 5 (678).
 
@@ -99,10 +102,10 @@ Interim expectations (Windows, so each step can be checked):
 | T1b (measured) | 707 | 702 | 3 (R3, R7, N1) | 1 | 1 |
 | T12 (5 twins) | 712 | 707 | 3 | 1 | 1 |
 | T3 | 712 | 707 | 3 | 1 | 1 |
-| T4 (8 B deleted; R3/R7 decorators removed) | 704 | 702 | 1 (N1) | 1 | 0 |
-| T5 (26 A deleted; N1 decorator removed) | **678** | **677** | 0 | 1 | 0 |
+| T4 (8 B deleted; R3/R7 decorators removed; + `test_ws_refused.py`) | 705 | 703 | 1 (N1) | 1 | 0 |
+| T5 (26 A deleted; N1 decorator removed) | **679** | **678** | 0 | 1 | 0 |
 
-**Linux:** the gate is T2's measured Linux figure, with exactly the 5 named deselects in section 7 and nothing else deselected after T4. The twins must pass there.
+**Linux:** the gate is T2's measured Linux figure plus 1 (`test_ws_refused.py`), with exactly the 5 named deselects in section 7 and nothing else deselected after T4. The twins and `test_ws_refused.py` must pass there. CI `windows-latest` likewise gets +1.
 
 The xfails are `strict=True, raises=LegacyStillPresent`: any other failure fails the run, and a pass fails the run until the decorator is removed. So a legacy route or import left behind cannot hide: the gate requires 0 xfailed.
 
