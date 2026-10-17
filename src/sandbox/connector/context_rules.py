@@ -58,7 +58,7 @@ def raise_verdict(current: str, floor: str) -> str:
 
 
 def _is_own_tool(tool_name: str) -> bool:
-    return tool_name.startswith(("mcp__sandbox__", "mcp__sandbox_"))
+    return tool_name.startswith("mcp__sandbox__")
 
 
 def _is_governed(tool_name: str) -> bool:

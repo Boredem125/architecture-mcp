@@ -19,7 +19,8 @@ from pydantic import BaseModel, Field, field_validator
 VERDICTS = ("allow", "observe", "escalate", "deny")
 
 # Non-removable protections re-injected on every load.
-_PROTECT_WRITE_GLOBS = (".sandbox/**", ".git/hooks/**")
+_PROTECT_WRITE_GLOBS = (".sandbox/**", ".git/hooks/**", ".mcp.json", ".claude/settings*.json",
+                        "**/.mcp.json", "**/.claude/settings*.json")
 _PROTECT_SHELL_PATTERNS = (r"\.sandbox",)
 
 

@@ -160,12 +160,15 @@ def _format_pending(request_id: str) -> str:
 
 def _shell_verdict(command: str, policy: FolderPolicy) -> str:
     """Return one of allow | escalate | deny for a shell command."""
+    from sandbox.connector.classify import command_allowlisted, shell_deny_reason
+
+    if shell_deny_reason(command):  # protected path or approver CLI: non-removable
+        return "deny"
     for pat in policy.shell.deny_patterns:
         if re.search(pat, command):
             return "deny"
-    for pat in policy.shell.allow_patterns:
-        if re.search(pat, command):
-            return "allow"
+    if command_allowlisted(command, policy.shell.allow_patterns):
+        return "allow"
     return policy.triggers.shell  # default: escalate
 
 
@@ -449,7 +452,7 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
 def _is_governed_tool(tool_name: str) -> bool:
     if tool_name == "WebFetch":
         return True
-    return tool_name.startswith("mcp__") and not tool_name.startswith(("mcp__sandbox__", "mcp__sandbox_"))
+    return tool_name.startswith("mcp__") and not tool_name.startswith("mcp__sandbox__")
 
 
 def _tool_governance(
