@@ -11,6 +11,7 @@ also runs `sha256sum -c` on it (gate check 1), so C files stay byte-identical.
 from __future__ import annotations
 
 import subprocess
+import sys
 
 CLASS_A = {
     "tests/integration/test_pipeline.py",
@@ -27,6 +28,7 @@ CLASS_B = {
 
 
 def main() -> None:
+    sys.stdout.reconfigure(newline="\n")  # no CRLF on Windows: paths go through $(cat ...)
     tracked = subprocess.run(
         ["git", "ls-files", "tests"], capture_output=True, text=True, check=True
     ).stdout.split()
