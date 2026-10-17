@@ -17,13 +17,13 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import xml.etree.ElementTree as ET  # nosemgrep: our own pytest output, not untrusted XML
+from defusedxml.ElementTree import parse  # installed by tests.yml next to the test runner
 
 CR, LF = chr(13), chr(10)
 
 
 def totals(path: str) -> dict[str, int]:
-    root = ET.parse(path).getroot()
+    root = parse(path).getroot()
     suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
     t = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
     for s in suites:
@@ -39,7 +39,7 @@ def _escape(text: str) -> str:
 
 def failing(path: str) -> list[tuple[str, str]]:
     out = []
-    for case in ET.parse(path).getroot().iter("testcase"):
+    for case in parse(path).getroot().iter("testcase"):
         for tag in ("failure", "error"):
             el = case.find(tag)
             if el is not None:

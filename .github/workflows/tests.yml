@@ -57,7 +57,8 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install (editable, dev extras)
-        run: python -m pip install --quiet -e ".[dev]"
+        # defusedxml: junit_gate.py parses the JUnit XML (semgrep use-defused-xml-parse).
+        run: python -m pip install --quiet -e ".[dev]" "defusedxml>=0.7.1"
       - name: Run the suite
         # The deselected test crashes the interpreter (0xC0000005 in the e2b
         # Job Object path). Deselect removed in T4, once the e2b route is gone.
@@ -108,7 +109,7 @@ jobs:
         # Test runner versions match the [dev] extra in pyproject.toml.
         run: |
           python -m pip install --quiet .
-          python -m pip install --quiet "pytest>=8.3.0" "pytest-asyncio>=0.24.0" "pytest-timeout>=2.3.0"
+          python -m pip install --quiet "pytest>=8.3.0" "pytest-asyncio>=0.24.0" "pytest-timeout>=2.3.0" "defusedxml>=0.7.1"
       - name: Class C files unchanged (M0_C_MANIFEST.sha256, once QA commits it)
         # Hashes are of LF content; only the Linux checkout is LF on disk.
         if: runner.os == 'Linux' && hashFiles('docs/control-plane/M0_C_MANIFEST.sha256') != ''
