@@ -1,0 +1,110 @@
+# Test suite on every push and pull request (M0 T2, SEC-09).
+#
+#   pytest                full suite, Windows + Linux, Python 3.12, editable
+#                         install with the dev extras (the dev-box setup)
+#   connector-standalone  `pip install .` with no extras, then only the
+#                         connector (Class C) tests: the OSS connector must
+#                         work without anything the legacy code pulled in
+#
+# Each run uploads its JUnit XML. junit_gate.py fails on any failure or error
+# and writes the counts to the job summary; counts are recorded, not pinned,
+# so new tests never break CI. Frozen gate numbers live in
+# docs/control-plane/M0_BASELINE.md. The per-test 30 s timeout comes from
+# pyproject.toml ([tool.pytest.ini_options] timeout = 30); it is not overridden.
+# Tests must not write into the checkout: the last step fails on any stray or
+# modified file (T11: a spawner once wrote Windows cache DBs into the repo).
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  pytest:
+    name: pytest (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install (editable, dev extras)
+        run: python -m pip install --quiet -e ".[dev]"
+      - name: Run the suite
+        # The deselected test crashes the interpreter (0xC0000005 in the e2b
+        # Job Object path). Deselect removed in T4, once the e2b route is gone.
+        run: >
+          python -m pytest -q -p no:logging
+          --deselect tests/security/test_api_robustness.py::test_no_route_crashes_on_malformed_input
+          --junitxml "$RUNNER_TEMP/junit-pytest-${{ runner.os }}.xml"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: success() || failure()
+        with:
+          name: junit-pytest-${{ runner.os }}
+          path: ${{ runner.temp }}/junit-pytest-${{ runner.os }}.xml
+      - name: Gate (no failures or errors; counts to summary)
+        if: success() || failure()
+        run: python .github/scripts/junit_gate.py "$RUNNER_TEMP/junit-pytest-${{ runner.os }}.xml" --label "pytest ${{ runner.os }}" --min-tests 500
+      - name: No stray files in the checkout
+        if: success() || failure()
+        run: |
+          stray=$(git status --porcelain --untracked-files=all)
+          if [ -n "$stray" ]; then echo "Tests left files in the repo:"; echo "$stray"; exit 1; fi
+
+  connector-standalone:
+    name: connector standalone (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install the package (no extras) and only the test runner
+        # Test runner versions match the [dev] extra in pyproject.toml.
+        run: |
+          python -m pip install --quiet .
+          python -m pip install --quiet "pytest>=8.3.0" "pytest-asyncio>=0.24.0" "pytest-timeout>=2.3.0"
+      - name: Class C files unchanged (M0_C_MANIFEST.sha256, once QA commits it)
+        # Hashes are of LF content; only the Linux checkout is LF on disk.
+        if: runner.os == 'Linux' && hashFiles('docs/control-plane/M0_C_MANIFEST.sha256') != ''
+        run: sha256sum -c --quiet docs/control-plane/M0_C_MANIFEST.sha256
+      - name: Run the connector (Class C) tests
+        run: |
+          python .github/scripts/c_tests.py > "$RUNNER_TEMP/c_tests.txt"
+          echo "$(wc -l < "$RUNNER_TEMP/c_tests.txt") test files"
+          python -m pytest -q -p no:logging --junitxml "$RUNNER_TEMP/junit-connector-${{ runner.os }}.xml" $(cat "$RUNNER_TEMP/c_tests.txt")
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: success() || failure()
+        with:
+          name: junit-connector-${{ runner.os }}
+          path: ${{ runner.temp }}/junit-connector-${{ runner.os }}.xml
+      - name: Gate (no failures or errors; counts to summary)
+        if: success() || failure()
+        run: python .github/scripts/junit_gate.py "$RUNNER_TEMP/junit-connector-${{ runner.os }}.xml" --label "connector ${{ runner.os }}" --min-tests 400
+      - name: No stray files in the checkout
+        if: success() || failure()
+        run: |
+          stray=$(git status --porcelain --untracked-files=all)
+          if [ -n "$stray" ]; then echo "Tests left files in the repo:"; echo "$stray"; exit 1; fi
