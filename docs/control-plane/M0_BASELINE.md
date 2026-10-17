@@ -159,5 +159,16 @@ On POSIX, 5 Class C tests use hard-coded Windows paths (`C:\Windows\evil.txt`, `
 Verified on Windows: the 5 twins pass, and with a mutation that makes `classify.is_contained` always return True (every path "inside"), all 5 fail (write allowed, read allowed, no observe record, no deny). I did not run them on Linux locally (no Linux runtime on this box); Linux CI is the first Linux run.
 
 Security sign-off (security-engineer, 18 Oct 2026) for the twin file at sha256 `497e6c72461958b5ed22b6b673891e875fbe7377b081243bb2c35d9acba785ca`, with 2 conditions:
-1. The first ubuntu CI run must show all 5 twins **passed** (not skipped or deselected) in both the pytest job and the connector-standalone job; the JUnit counts go here. If any twin fails on Linux, the sign-off lapses and that is a finding, not something to deselect. **Status: pending the first CI run after this commit.**
+1. The first ubuntu CI run must show all 5 twins **passed** (not skipped or deselected) in both the pytest job and the connector-standalone job; the JUnit counts go here. If any twin fails on Linux, the sign-off lapses and that is a finding, not something to deselect. **Status: met.** tests run 7 on `79f94e4` (https://github.com/Boredem125/architecture-mcp/actions/runs/39064316243), compared with run 6 on `9731124`: every job shows +5 run and +5 passed, 0 failed, and the same skipped count (the twin file has no skip calls), so all 5 twins passed in both ubuntu jobs (and on Windows). Counts are in section 8.
 2. The twin file is frozen like Class C: it is added to `M0_C_MANIFEST.sha256` (now 53 lines). It is not counted in the 645 C node ids (`M0_C_NODEIDS.txt` is unchanged); its 5 ids are listed above.
+
+## 8. CI counts measured by T2 (`tests.yml`, Python 3.12)
+
+Source: the `junit_gate.py` notice annotations. JUnit "skipped" includes xfail. "Run" excludes deselected tests. Every job deselects the e2b crasher (until T4). Linux also deselects the 5 named tests in section 7.
+
+| Run (commit) | pytest Linux | pytest Windows | connector Linux | connector Windows |
+|---|---|---|---|---|
+| tests 6 (`9731124`), [39064037272](https://github.com/Boredem125/architecture-mcp/actions/runs/39064037272) | 701 run: 677 passed, 24 skipped | 706 run: 703 passed, 3 skipped | 644 run: 620 passed, 24 skipped | 649 run: 646 passed, 3 skipped |
+| tests 7 (`79f94e4`, + T12 twins), [39064316243](https://github.com/Boredem125/architecture-mcp/actions/runs/39064316243) | 706 run: 682 passed, 24 skipped | 711 run: 708 passed, 3 skipped | 649 run: 625 passed, 24 skipped | 654 run: 651 passed, 3 skipped |
+
+All runs had 0 failed and 0 errors, and the stray-file check passed on every job. Linux skips 21 more than Windows (24 vs 3, xfail included). I measured that figure; I did not break it down by test, because job logs and JUnit artifacts need a GitHub token. The skip reasons are in the uploaded `junit-pytest-Linux` artifact. The C manifest check (`sha256sum -c`, Linux) passed.
