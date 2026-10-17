@@ -1,0 +1,16 @@
+# Control-plane shared task list
+
+Format: `- [ ] ID — task — owner — status (open|claimed|done) — result`
+Claim before starting (set owner + `claimed`). Mark `done` with one line: what changed, how verified.
+Planning phase only: no code, no commits until the founder approves the M0 plan and ADRs.
+
+## Planning (M0 + design)
+- [x] P1 — Inventory legacy paths and their test/import coupling -> docs/control-plane/M0_INVENTORY.md — backend-engineer — done — M0_INVENTORY.md written: 16 legacy areas with file:line, import graph (AST), tests A=31/B=32/C=478 of 541 collected (revised: audit/sink.py kept); baseline 539 pass/1 skip with 1 crashing legacy test deselected (full suite aborts: 0xC0000005 in e2b Job Object path)
+- [x] P2 — Draft M0 plan -> docs/control-plane/M0_PLAN.md — lead-architect — done — M0_PLAN.md written (delete/keep/move lists, test classes A/B/C, 10 tasks, gate, roadmap M1-M6); revised with M0_INVENTORY.md + QA P5 + security SEC-01: baseline 539/1 skip/1 deselected (e2b crash), T0 security fixes first (SEC-01 reproduced via classify()), sink kept, test classes corrected
+- [x] P3 — Draft ADRs 0001-0005 (sync, data model, OIDC/keys, ee/ split, compose) -> docs/adr/ — lead-architect — done — docs/adr/0001..0005 written, status Proposed, grounded in cited connector files; awaiting P4/P5 review
+- [x] P7 — MCP security: inventory current MCP governance (hooks on mcp__* tools, mcp_server.py) -> section in M0_INVENTORY.md — backend-engineer — done — section 5 of M0_INVENTORY.md: Claude Code hooks gate mcp__* by server allowlist + grants + optional clauses; no pinning/description hashing; Codex/Cursor ungoverned; gaps: mcp__sandbox_ prefix bypass, .mcp.json and .claude settings not write-protected
+- [x] P8 — ADR 0006 MCP security (server inventory/pinning, tool-definition drift, per-tool/arg policy, MCP proxy for non-Claude agents) — lead-architect — done — docs/adr/0006-mcp-security.md written (lands in M4); MCP gaps (a)-(e) from P7 folded in; (a),(c) routed to security as M0 T0d
+- [x] P4 — Security review of plan + ADRs -> docs/control-plane/REVIEW_SECURITY.md — security-engineer — done — APPROVE WITH CHANGES; 22 findings (1 critical, 10 high); SEC-01/02/03 + key read-deny + CI pytest must land first (M0 T0/T2); verified by running hook_eval.pre_tool_use probes on a temp folder; Semgrep/Gitleaks clean, Trivy only an untracked pyc
+- [x] P5 — QA review + M0 test strategy -> docs/control-plane/REVIEW_QA.md — qa-engineer — done — APPROVE WITH CHANGES; measured baseline 539 passed/1 skipped/1 deselected (crasher), post-M0 frozen at 511 collected/510 passed/1 skipped before T0; 2 Class C misclassifications + 4 B functions found; E2E, C-unchanged proof, CI and ADR gaps defined
+- [x] T0-tests — failing tests for T0a-T0e + SEC-04 guard -> tests/security/test_t0_hotfix.py — qa-engineer — done — 162 tests, on main 122 fail for the stated bugs and 40 guards pass; existing suite unchanged at 539/1/1; hotfix gate frozen at 701 passed/0 failed/1 skipped (REVIEW_QA.md section 8); no Class C test encodes the bugs
+- [x] P6 — Lead resolves review findings, final plan for founder — orchestrator — done — QA/security must-fixes folded into M0_PLAN.md (5-part C proof, T2 Win+Linux, T1b R3/R7/N1/N2 first, T11 spawner); decisions recorded in M0_PLAN + ADR 0003/0004/0006; founder approved M0 on 17 Oct 2026

