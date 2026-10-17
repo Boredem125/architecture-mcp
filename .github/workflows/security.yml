@@ -154,8 +154,8 @@ jobs:
           cat api.log; exit 1
       - name: Check auth is enforced before scanning
         run: |
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/v1/broker/pending)" = 401
-          test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $SANDBOX_AGENT_TOKEN" http://127.0.0.1:8000/api/v1/broker/pending)" = 403
+          test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8000/api/v1/connector/status?root=.')" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $SANDBOX_AGENT_TOKEN" 'http://127.0.0.1:8000/api/v1/connector/status?root=.')" = 403
       - name: ZAP API scan
         run: |
           mkdir -p zap && chmod 777 zap

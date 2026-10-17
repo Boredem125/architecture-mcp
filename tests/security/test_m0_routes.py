@@ -142,7 +142,6 @@ def _audit_lines(layout: FolderLayout) -> list[str]:
 
 # --- R3 -----------------------------------------------------------------------
 
-@RED_UNTIL_T4
 def test_r3_agent_token_cannot_decide_or_read(app, tmp_path):
     """R3: with a queued escalation, the agent token gets 403 on approve, deny,
     pending, audit and status; the request stays pending and nothing runs; the
@@ -213,7 +212,6 @@ def test_r3_agent_token_cannot_decide_or_read(app, tmp_path):
 
 # --- R7 -----------------------------------------------------------------------
 
-@RED_UNTIL_T4
 def test_r7_only_health_and_connector_routes_exist(app):
     """R7: OpenAPI paths are a subset of {/health, /ready, /api/v1/connector/*};
     the legacy paths are absent and get 404 with the approver token. Also keeps

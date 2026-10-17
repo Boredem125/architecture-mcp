@@ -105,32 +105,6 @@ def test_schema_valid_bodies_with_junk_values_do_not_crash(client):
     assert not crashes, crashes[:10]
 
 
-def test_spawn_reaches_the_toolkit(client, monkeypatch):
-    # runtime/spawn raised NameError ('docker_sandbox') on every call. The
-    # agent's own run is replaced by a no-op so nothing real starts.
-    from sandbox.agents.runtime import AgentRuntime
-
-    async def no_run(self, run, toolkit, *args, **kwargs):
-        return None
-
-    monkeypatch.setattr(AgentRuntime, "_run_generic_agent", no_run)
-    r = client.post("/api/v1/runtime/spawn", json={"agent_type": "custom", "task": "t", "workspace_root": "ws"})
-    assert r.status_code == 200, r.text
-    assert client.post("/api/v1/runtime/spawn", json={"agent_type": "zap", "task": "t"}).status_code == 422
-
-
-def test_hook_connect_rejects_a_bad_workspace_without_leaking_paths(client, tmp_path):
-    from sandbox.api.app import get_session_manager
-
-    before = len(get_session_manager()._sessions) if hasattr(get_session_manager(), "_sessions") else None
-    bad = tmp_path / "not-a-dir.txt"
-    bad.write_text("x")
-    r = client.post("/api/v1/hook/connect", json={"workspace_root": str(bad)})
-    assert r.status_code == 400 and str(tmp_path) not in r.text
-    if before is not None:
-        assert len(get_session_manager()._sessions) == before
-
-
 def test_paths_the_os_cannot_stat_are_a_400(client, monkeypatch):
     # On Linux a 4,000-character path raises ENAMETOOLONG instead of "not
     # found", which crashed the connector routes and hook/connect under ZAP.
@@ -148,26 +122,20 @@ def test_paths_the_os_cannot_stat_are_a_400(client, monkeypatch):
                         ("GET", f"/api/v1/connector/audit?root={root}&limit=50"),
                         ("POST", f"/api/v1/connector/r1/approve?root={root}")):
         assert client.request(method, url).status_code == 400, url
-    assert client.post("/api/v1/hook/connect", json={"workspace_root": root}).status_code == 400
 
 
-def test_e2b_template_must_be_allowlisted(client, monkeypatch):
-    r = client.post("/e2b/v1/sandboxes", json={"template": "attacker/miner:latest"})
-    assert r.status_code == 422
-    monkeypatch.setenv("E2B_TEMPLATES", "python:3.12-slim,node:22-slim")
-    from sandbox.api.routes.e2b import CreateSandboxRequest
+def test_security_headers_on_every_response(client, tmp_path):
+    # R6: /health, an authenticated connector read (200), the 401 path and a
+    # 404 path all carry the headers.
+    from sandbox.connector.install import init
 
-    assert CreateSandboxRequest(template="node:22-slim").template == "node:22-slim"
-
-
-def test_unconfigured_redis_review_api_is_not_mounted(client):
-    assert client.get("/api/v1/hitl/pending").status_code == 404
-    assert not any(p.startswith("/api/v1/hitl/") for p in client.app.openapi()["paths"])
-
-
-def test_security_headers_on_every_response(client):
-    for r in (client.get("/health"), client.get("/api/v1/broker/pending"),
-              TestClient(client.app).get("/api/v1/broker/pending")):  # 401 path too
+    init(tmp_path, claude=False, mcp=False)
+    pending, root = "/api/v1/connector/pending", {"root": str(tmp_path)}
+    responses = [(client.get("/health"), 200), (client.get(pending, params=root), 200),
+                 (TestClient(client.app).get(pending, params=root), 401),
+                 (client.get("/api/v1/no-such-route"), 404)]
+    for r, status in responses:
+        assert r.status_code == status, r.request.url
         assert r.headers["x-content-type-options"] == "nosniff"
         assert r.headers["cross-origin-resource-policy"] == "same-origin"
         assert r.headers["cache-control"] == "no-store"

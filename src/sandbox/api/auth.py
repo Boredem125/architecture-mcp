@@ -1,14 +1,16 @@
 """Bearer-token authentication for the HTTP API, with two roles.
 
-Capability is not authority, over HTTP too: the token an agent holds lets it
-*ask* (submit a broker request, have a tool call evaluated), never *decide*.
+Capability is not authority, over HTTP too: the agent may never *decide*.
 
-- agent token     agent-side routes only (AGENT_ROUTES). The launcher puts it
-                  in a jailed agent's environment; the hook config carries it.
-- approver token  every route, including approve/deny, launch, policies and
-                  the dashboard. Never handed to an agent.
+- approver token  every non-public route: the connector view, including
+                  approve/deny. Never handed to an agent.
+- agent token     no route today (AGENT_ROUTES is empty since M0 removed the
+                  legacy broker, hook and e2b routes). It is still generated
+                  and checked, so it is refused (403) everywhere rather than
+                  being mistaken for no token; M1 sync may give it routes.
 
 Unauthenticated: /health, /ready, the OpenAPI schema and the docs pages.
+WebSocket connections are refused (there are no WebSocket routes).
 
 Tokens come from SANDBOX_AGENT_TOKEN / SANDBOX_APPROVER_TOKEN. When unset,
 random ones are generated per process (``ensure_tokens``), so a server is
@@ -32,13 +34,9 @@ AGENT_ENV = "SANDBOX_AGENT_TOKEN"
 APPROVER_ENV = "SANDBOX_APPROVER_TOKEN"
 
 PUBLIC_ROUTES = ("/health", "/ready", "/openapi.json", "/docs", "/redoc")
-# (method, path prefix). Anything not listed needs the approver token.
-AGENT_ROUTES = (
-    ("POST", "/api/v1/broker/request"),
-    ("POST", "/api/v1/hook/evaluate"),
-    ("POST", "/api/v1/hook/audit"),
-    ("*", "/e2b/v1/"),
-)
+# (method, path prefix) the agent token may call. Empty since M0 (SEC-08):
+# anything not listed needs the approver token.
+AGENT_ROUTES: tuple[tuple[str, str], ...] = ()
 
 
 def ensure_tokens() -> tuple[str, str]:
@@ -102,15 +100,17 @@ def _bearer(request: Request) -> str | None:
 class TokenAuthMiddleware:
     """Pure ASGI middleware: HTTP requests need a token for their role.
 
-    WebSocket connections pass through here and are checked in the route
-    (browsers can't set headers on a WebSocket, so the token comes as
-    ``?token=``).
+    WebSocket connections are closed before accept (fail closed: a WebSocket
+    route added later must not be reachable without a token check).
     """
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+            return
         if scope["type"] != "http" or scope["method"] == "OPTIONS" or is_public(scope["path"]):
             await self.app(scope, receive, send)
             return

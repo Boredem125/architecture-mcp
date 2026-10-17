@@ -1,7 +1,8 @@
 """Connector REST view — first create_app + TestClient test in the repo.
 
-Also guards the M1 regression: /api/v1/launch and /api/v1/hook/* must still
-exist after we mounted the connector router.
+The old guard that /api/v1/launch and /api/v1/hook/* still exist was inverted
+in M0: tests/security/test_m0_routes.py (R7) asserts only health and connector
+routes are mounted.
 """
 from __future__ import annotations
 
@@ -29,15 +30,6 @@ def client():
 def folder(tmp_path):
     init(tmp_path, claude=False, mcp=False)
     return tmp_path
-
-
-# --- M1 regression guard ---------------------------------------------------
-
-def test_m1_routes_still_exist(client):
-    paths = set(client.get("/openapi.json").json()["paths"].keys())
-    assert "/api/v1/launch" in paths
-    assert any(p.startswith("/api/v1/hook") for p in paths)
-    assert any(p.startswith("/api/v1/connector") for p in paths)
 
 
 # --- connector view --------------------------------------------------------

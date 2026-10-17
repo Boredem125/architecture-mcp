@@ -20,9 +20,7 @@ async def health_check() -> dict:
 @router.get("/ready")
 async def readiness_check() -> dict:
     checks = {
-        "pipeline": True,
-        "session_manager": True,
-        "audit": True,
+        "connector_routes": True,
     }
     all_ready = all(checks.values())
     return {
