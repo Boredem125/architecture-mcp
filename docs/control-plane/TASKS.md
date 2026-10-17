@@ -18,3 +18,5 @@ Planning phase only: no code, no commits until the founder approves the M0 plan 
 ## M0 build
 - [ ] T1 — Freeze baseline at c411c35 -> M0_BASELINE.md + M0_C_MANIFEST.sha256 — qa-engineer — claimed —
 - [ ] T1b — Write R3, R7, N1, N2 before any deletion — qa-engineer — claimed —
+- [ ] T2 — pytest CI (Windows + Linux matrix, connector-standalone job) — devops-engineer — blocked (push) — 20d9368 local: tests.yml (pytest Win+Linux, connector-standalone Win+Linux, JUnit artifact, junit_gate.py failures=0, stray-file check); Windows local 701 passed/1 skipped; push needs founder GitHub login, Linux count unmeasured until CI runs
+- [ ] T11 — Find and fix the spawner writing %SystemDrive% cache DBs into the repo; untrack them — devops-engineer — blocked (commit) — culprit tests/unit/test_posttooluse_fallback.py:21 (env lacks SYSTEMDRIVE, cwd=repo; any Windows python start then writes the DBs cwd-relative); env fix signed off by security, commit blocked by permission system; 78fc763 untracks DBs + .gitignore; full local run with fix leaves git status clean
