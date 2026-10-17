@@ -40,6 +40,17 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
+        include:
+          # Windows-path tests, POSIX variant pending (A): they hard-code
+          # C:\... paths, which on POSIX are relative names inside the folder.
+          # Linux only; Windows runs them with no deselection. Task T12.
+          - os: ubuntu-latest
+            deselect: >-
+              --deselect tests/unit/test_classify.py::test_write_outside_folder_denied_by_default
+              --deselect tests/unit/test_classify.py::test_read_outside_folder_observed
+              --deselect tests/unit/test_hook_eval_m4.py::test_read_outside_is_observed_not_blocked
+              --deselect tests/unit/test_hook_eval_m4.py::test_write_outside_denied_with_pointer
+              --deselect tests/unit/test_hook_eval_m4.py::test_risk_upgrades_sensitive_read_from_observe_to_escalate
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
@@ -53,6 +64,7 @@ jobs:
         run: >
           python -m pytest -q -p no:logging
           --deselect tests/security/test_api_robustness.py::test_no_route_crashes_on_malformed_input
+          ${{ matrix.deselect }}
           --junitxml "$RUNNER_TEMP/junit-pytest-${{ runner.os }}.xml"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: success() || failure()
@@ -76,6 +88,17 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
+        include:
+          # Windows-path tests, POSIX variant pending (A): they hard-code
+          # C:\... paths, which on POSIX are relative names inside the folder.
+          # Linux only; Windows runs them with no deselection. Task T12.
+          - os: ubuntu-latest
+            deselect: >-
+              --deselect tests/unit/test_classify.py::test_write_outside_folder_denied_by_default
+              --deselect tests/unit/test_classify.py::test_read_outside_folder_observed
+              --deselect tests/unit/test_hook_eval_m4.py::test_read_outside_is_observed_not_blocked
+              --deselect tests/unit/test_hook_eval_m4.py::test_write_outside_denied_with_pointer
+              --deselect tests/unit/test_hook_eval_m4.py::test_risk_upgrades_sensitive_read_from_observe_to_escalate
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
@@ -94,7 +117,7 @@ jobs:
         run: |
           python .github/scripts/c_tests.py > "$RUNNER_TEMP/c_tests.txt"
           echo "$(wc -l < "$RUNNER_TEMP/c_tests.txt") test files"
-          python -m pytest -q -p no:logging --junitxml "$RUNNER_TEMP/junit-connector-${{ runner.os }}.xml" $(cat "$RUNNER_TEMP/c_tests.txt")
+          python -m pytest -q -p no:logging ${{ matrix.deselect }} --junitxml "$RUNNER_TEMP/junit-connector-${{ runner.os }}.xml" $(cat "$RUNNER_TEMP/c_tests.txt")
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: success() || failure()
         with:

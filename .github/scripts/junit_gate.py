@@ -68,6 +68,7 @@ def main() -> int:
     line = (f"{args.label}: {t['tests']} run, {t['passed']} passed, {t['failures']} failed, "
             f"{t['errors']} errors, {t['skipped']} skipped (incl. xfail)")
     print(line)
+    print(f"::notice title={args.label} counts::{line}")  # readable via the public API
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as f:
