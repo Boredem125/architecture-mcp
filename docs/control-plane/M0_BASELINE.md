@@ -4,7 +4,7 @@ Author: qa-engineer, 18 Oct 2026. Written before any M0 deletion (adoption-gate 
 
 - **Measured at:** `c411c35` (T0 hotfix `094302e` + `tests/security/test_t0_hotfix.py`), Windows 11, Python 3.12, repo `.venv`.
 - **Frozen at (manifest and C list):** `c0d4912`. That is `c411c35` plus exactly one test change, the named exception below.
-- Machine-readable companions: `M0_C_MANIFEST.sha256` (52 files) and `M0_C_NODEIDS.txt` (645 node ids).
+- Machine-readable companions: `M0_C_MANIFEST.sha256` (52 files at T1; 53 since T12, see section 7) and `M0_C_NODEIDS.txt` (645 node ids).
 
 ## 1. Measured counts
 
@@ -79,7 +79,7 @@ The manifest is frozen at `c0d4912`, so it holds this file's post-fix hash. Its 
 
 ## 3. Frozen post-M0 gate (Windows)
 
-**673 collected, 672 passed, 1 skipped (the symlink test), 0 deselected, 0 failed, 0 xfailed, 0 xpassed.** Re-derived from the real collected set; it equals the number frozen in `M0_PLAN.md` and `REVIEW_QA.md` section 2.
+**Re-frozen 18 Oct 2026 for T12, before any run: 678 collected, 677 passed, 1 skipped (the symlink test), 0 deselected, 0 failed, 0 xfailed, 0 xpassed.** That is the T1 figure (673 / 672, re-derived from the real collected set and equal to `M0_PLAN.md` and `REVIEW_QA.md` section 2) plus the 5 OS-native twins added in T12 (section 7), which run and pass on Windows too.
 
 | Bucket | Tests |
 |---|---|
@@ -88,17 +88,21 @@ The manifest is frozen at `c0d4912`, so it holds this file's post-fix hash. Its 
 | B kept in place (incl. R1, R2, R4, R5, R6 rewrites) | 24 |
 | B deleted (5 legacy-only + the 2 replaced by R3/R7 + websocket) | -8 |
 | New in T1b: R3, R7 (`tests/security/test_m0_routes.py`), N1, N2 (`tests/unit/test_m0_legacy_imports.py`) | 4 |
-| **Total** | **673** |
+| New in T12: 5 OS-native twins (`tests/unit/test_outside_paths_native.py`) | 5 |
+| **Total** | **678** |
 
-Difference in shape from `REVIEW_QA.md` (not in the number): REVIEW_QA counted R3 and R7 as in-place rewrites of `test_agent_can_submit_but_not_approve` and `test_m1_routes_still_exist`. I wrote them as new tests in a new file instead, so the old tests keep guarding the legacy broker until T4 deletes it. T4 therefore **deletes** those 2 functions (B "auth 7" and "api_connector 6" above) rather than rewriting them. 645 + 24 + 4 = 673 either way.
+Difference in shape from `REVIEW_QA.md` (not in the number): REVIEW_QA counted R3 and R7 as in-place rewrites of `test_agent_can_submit_but_not_approve` and `test_m1_routes_still_exist`. I wrote them as new tests in a new file instead, so the old tests keep guarding the legacy broker until T4 deletes it. T4 therefore **deletes** those 2 functions (B "auth 7" and "api_connector 6" above) rather than rewriting them. 645 + 24 + 4 = 673 either way; T12 adds 5 (678).
 
 Interim expectations (Windows, so each step can be checked):
 | After | Collected | Passed | xfailed | Skipped | Deselected |
 |---|---|---|---|---|---|
-| T1b | 707 | 702 | 3 (R3, R7, N1) | 1 | 1 |
-| T3 | 707 | 702 | 3 | 1 | 1 |
-| T4 (8 B deleted; R3/R7 decorators removed) | 699 | 697 | 1 (N1) | 1 | 0 |
-| T5 (26 A deleted; N1 decorator removed) | **673** | **672** | 0 | 1 | 0 |
+| T1b (measured) | 707 | 702 | 3 (R3, R7, N1) | 1 | 1 |
+| T12 (5 twins) | 712 | 707 | 3 | 1 | 1 |
+| T3 | 712 | 707 | 3 | 1 | 1 |
+| T4 (8 B deleted; R3/R7 decorators removed) | 704 | 702 | 1 (N1) | 1 | 0 |
+| T5 (26 A deleted; N1 decorator removed) | **678** | **677** | 0 | 1 | 0 |
+
+**Linux:** the gate is T2's measured Linux figure, with exactly the 5 named deselects in section 7 and nothing else deselected after T4. The twins must pass there.
 
 The xfails are `strict=True, raises=LegacyStillPresent`: any other failure fails the run, and a pass fails the run until the decorator is removed. So a legacy route or import left behind cannot hide: the gate requires 0 xfailed.
 
@@ -139,3 +143,21 @@ Run 18 Oct 2026 at `c411c35` (plus the uncommitted fallback env fix, which touch
 | R7 `test_r7_only_health_and_connector_routes_exist` | xfail (RED) until T4 | Legacy paths are mounted (`/api/v1/agents/*`, `/broker/*`, `/hook/*`, `/e2b/v1/*`, `/launch*`, `/hitl-mem/*`, `/ws/events`, …). Plain asserts that hold today: `/health` 200, connector routes in OpenAPI, `/api/v1/hitl/pending` 404 and absent from OpenAPI, agent token cannot reach hook connect/disconnect. Legacy URLs are only requested once no legacy route is mounted (the e2b route crashes the interpreter). |
 | N1 `test_n1_no_kept_module_imports_a_deleted_module` | xfail (RED) until T5 | 40 kept-to-deleted import edges in 3 kept modules: `sandbox.api.app` (routes, agents, pipeline, …), `sandbox.connector.recorder` (`launcher.recorder`, fixed by T3), `sandbox.crypto` (`__init__` re-exports `tokens`). |
 | N2 `test_n2_connector_entry_points_load_no_legacy_package` | **passes now** | Contrary to REVIEW_QA's "RED until T3/T5": importing `hook_eval`, `mcp_server` and `cli.main` loads no `sandbox.{launcher,executor,pipeline,agents,hitl,containment}`, because `hook_eval` imports `connector.recorder` lazily inside functions. N1 sees that lazy edge. N2 stays a regression guard for the `__init__` edits in T3-T5. |
+
+## 7. T12: Linux-only deselects (named exceptions) and their OS-native twins
+
+On POSIX, 5 Class C tests use hard-coded Windows paths (`C:\Windows\evil.txt`, `C:\Users\dell\.ssh\id_rsa`, …). Those are relative names there, so they resolve inside the test folder and the outside-folder verdicts cannot hold. The C files stay byte-identical (manifest unchanged). `.github/workflows/tests.yml` deselects the 5 on `ubuntu-latest` only (committed by devops in `9731124`); Windows runs them with no deselection. Each is covered on both OSes by a twin in `tests/unit/test_outside_paths_native.py`, which asserts the same verdicts and reasons with an absolute path outside the folder on the running OS (POSIX: `/etc/evil.txt`, `/etc/hosts`, `/home/dell/notes.txt`, `/root/.ssh/id_rsa`; Windows: the originals' `C:\` paths). Each twin first asserts its path is absolute and outside the folder, so it cannot pass vacuously.
+
+| Deselected on Linux only (Class C, unchanged) | Reason | Covered by twin | Sign-off |
+|---|---|---|---|
+| `tests/unit/test_classify.py::test_write_outside_folder_denied_by_default` | `C:\Windows\evil.txt` is an in-folder relative name on POSIX | `test_native_write_outside_folder_denied_by_default` | signed off: security-engineer |
+| `tests/unit/test_classify.py::test_read_outside_folder_observed` | same (`C:\Windows\System32\drivers\etc\hosts`) | `test_native_read_outside_folder_observed` | signed off: security-engineer |
+| `tests/unit/test_hook_eval_m4.py::test_read_outside_is_observed_not_blocked` | same | `test_native_read_outside_is_observed_not_blocked` | signed off: security-engineer |
+| `tests/unit/test_hook_eval_m4.py::test_write_outside_denied_with_pointer` | same (`C:\Windows\evil.txt`) | `test_native_write_outside_denied_with_pointer` | signed off: security-engineer |
+| `tests/unit/test_hook_eval_m4.py::test_risk_upgrades_sensitive_read_from_observe_to_escalate` | same (`C:\Users\dell\notes.txt`, `…\.ssh\id_rsa`) | `test_native_risk_upgrades_sensitive_read_from_observe_to_escalate` | signed off: security-engineer |
+
+Verified on Windows: the 5 twins pass, and with a mutation that makes `classify.is_contained` always return True (every path "inside"), all 5 fail (write allowed, read allowed, no observe record, no deny). I did not run them on Linux locally (no Linux runtime on this box); Linux CI is the first Linux run.
+
+Security sign-off (security-engineer, 18 Oct 2026) for the twin file at sha256 `497e6c72461958b5ed22b6b673891e875fbe7377b081243bb2c35d9acba785ca`, with 2 conditions:
+1. The first ubuntu CI run must show all 5 twins **passed** (not skipped or deselected) in both the pytest job and the connector-standalone job; the JUnit counts go here. If any twin fails on Linux, the sign-off lapses and that is a finding, not something to deselect. **Status: pending the first CI run after this commit.**
+2. The twin file is frozen like Class C: it is added to `M0_C_MANIFEST.sha256` (now 53 lines). It is not counted in the 645 C node ids (`M0_C_NODEIDS.txt` is unchanged); its 5 ids are listed above.
