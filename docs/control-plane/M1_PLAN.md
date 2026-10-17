@@ -1,0 +1,152 @@
+# M1 plan: control-plane skeleton (plus connector hardening)
+
+Status: Reviewed (18 Oct 2026, lead-architect). The founder approved M1 on 18 Oct 2026 ("approve m1, explicit permission given"). Security and QA verdicts: APPROVE WITH CHANGES (`REVIEW_M1.md`); all must-fixes folded in below, marked by reviewer and number (S1-S10, Q1-Q8). The one disagreement (D3.1, key enrolment) was settled with security; no founder decision needed. No M1 code until the M0 gate (M0 T9) is green on `main`.
+
+## Next action
+
+1. **Founder:** glance at the open questions; each has a default, so none blocks the start.
+2. **Lead:** write ADR 0007 (T0b) before any Phase A code.
+3. **QA, first M1 task once M0 T9 is green:** freeze the M1 baseline, the Linux skip ids and the frozen-file manifest (T0a).
+
+## Goal
+
+1. Close the connector gaps the control plane would inherit: `?root=` trust (SEC-10), signing keys reachable by Grep/Glob (T0 residual), unanchored signatures (SEC-05).
+2. Stand up a self-hosted `ee/` server a design partner can run with `docker compose up`: OIDC login, orgs, projects, roles, on Postgres with RLS that holds (SEC-07, SEC-13).
+3. Nothing in the connector depends on `ee/`. Local enforcement stays authoritative and fails closed.
+
+**Out of M1** (later milestones): enrollment and sync (M2), approval inbox, passkeys, key registry (M3), MCP proxy (M4). Claude Code only: no Cursor or Codex adapters.
+
+## Scope by phase
+
+**Phase A: connector hardening (MIT, `src/sandbox/`).** Ships and demos on its own, even if Phase B slips.
+**Phase B: `ee/` skeleton (ELv2, `ee/`).** Every table, route and role arrives with its isolation and authorization tests.
+**Phase C: review, gate, demo.**
+
+## Decisions
+
+### D1. `?root=` allowlist (SEC-10, M0 decision "M1 task 1")
+1. Roots come only from `sandbox serve --root PATH` (repeatable) or `SANDBOX_CONNECTOR_ROOTS` (`os.pathsep`-separated). `serve` runs uvicorn by import string, so `--root` is passed **through the environment** to every worker; `create_app()` reads it once into `app.state`. No per-request config. (Q6.)
+2. **No roots configured = every `/api/v1/connector/*` call is 403** (fail closed). `serve` prints a warning naming the flag.
+3. Match is exact and **pure string**: the request value must be absolute (relative input is rejected, never `abspath`'d against the server cwd), then `os.path.normcase(os.path.normpath(...))` is compared with the configured set. **No filesystem access on request input** (no stat, no resolve), so the route is not an existence oracle. Configured roots are stored normalized and resolved at startup. Subfolders do not match. **After a match the route uses the stored configured root, never the request string.** (S7.)
+4. Order: auth (401/403 by token) first; then string-shape checks give 400 (NUL byte, **length over 1024 characters**, non-absolute), with no stat, so R5 (`test_api_robustness.py:108`) passes unchanged; then not-listed gives 403 with a body that does not echo the path; then the existing 404 for a listed root without `.sandbox/`. A listed root whose `stat` raises `OSError` gives 400, not 500 (Q2).
+5. SEC-10 condition kept: `serve` binds loopback by default and a non-loopback bind needs the explicit flag and both tokens (`auth.check_bind`); a test covers it.
+6. The CI curl smoke (`security.yml`) and the ZAP target move to a configured root in the same commit (devops).
+
+### D2. Signing keys leave the workspace (T0 residual, security "M1 blocker")
+1. Today seeds live at `.sandbox/state/keys/*.seed` (`signing._seed_path`). Grep or Glob with no path, or `path: "."`, searches the folder and can return seed bytes (t0-hotfix notes). A per-tool deny cannot fix this without breaking ordinary search.
+2. Fix: seeds and the pin file move to a **key home outside every workspace**: `SANDBOX_KEY_HOME`, default the per-user OS data dir (`%LOCALAPPDATA%\agg\keys`, `~/.local/share/agg/keys`, `~/Library/Application Support/agg/keys`), one subfolder per workspace id (random, written at `init` into `.sandbox/`). **Seeds and pins are per workspace id**, so reviewer `cli` in two workspaces has two keys and two pins, and a cross-workspace approval is refused. A `.sandbox/` copied into another folder is caught by the root recorded in each pin (D3.1): approvals there are refused until `sandbox keys rotate` gives it a new workspace id. Files 0600; the folder ACL is user-only on Windows. (Q4.)
+3. **The key home is a non-removable deny for read, write, delete and rename** (Read, Grep, Glob, Write, Edit, shell), covering seeds, `pins.json` and the workspace-id map, re-injected like `_PROTECT_WRITE_GLOBS`. It is not the configurable `read_outside` / `write_outside` trigger (`read_outside` defaults to `observe`, and allowlisted `cat` reads outside the root today). Shell path arguments are resolved like Read's: `$LOCALAPPDATA`, `%LOCALAPPDATA%`, `$env:LOCALAPPDATA`, `~`, 8.3 short names, case variants and an in-tree symlink or junction to the key home all end in deny or escalate, never allow. (S1, S4.)
+4. **Rotate, never migrate.** Every pre-M1 in-tree seed counts as exposed (SEC-01 showed the agent could read it). On first use a new key is generated in the key home and pinned; the old public key is recorded with `retired_at`; old records verify as `legacy`; `key_rotated` is audited. An in-tree seed is never copied out, and **never moved or deleted**, least of all inside `pre_tool_use`: it stays in place, retired and inert, under the existing in-tree deny. So `test_t0_hotfix.py` (its fake `a.seed`) stays unchanged and green. (S2, Q5.)
+5. **Fail closed:** if the key home cannot be resolved or written (no `LOCALAPPDATA`/`HOME`, unwritable), there is no signing and approvals are invalid. Never fall back to `.sandbox/state/keys`, the cwd or any relative path (the M0 T11 `%SystemDrive%` bug). Tested with the minimal env of `test_posttooluse_fallback.py`'s child, plus `git status --porcelain` clean. (S3, Q5.)
+6. OS keystore (DPAPI / Keychain) is M2, per ADR 0001 Q3. The dev box sets `SANDBOX_KEY_HOME` on E:.
+7. **Stated limit (ADR 0007):** the key home stops the hook-governed agent, not other code running as the same OS user, including an approved `python` command. DPAPI does not change that; passkeys (M3) do. Standalone dual control means two pinned keys, not provably two humans; the evidence pack says so.
+
+### D3. Pinned reviewer keys and domain-tagged signatures (SEC-05, standalone half)
+1. **Pins on first use, from human surfaces only** (S5, settled with security 18 Oct). Today `_load_or_create_key` silently creates a key for any new `reviewer_id`. Rules: (a) the pin write lives only in the approver CLI / approver-token API signing path; the `hook_eval` and `mcp_server` paths cannot create a pin, and a test proves a hook or MCP call with an unknown reviewer creates none; (b) every new pin is audited `key_pinned` and alerted, shown in `watch` and `status`, never overwritten; a tighten-only policy flag `keys.enrol: explicit` refuses unenrolled ids; (c) `sandbox verify` and the evidence pack flag a dual-control decision whose pin was created after the request was queued as **"new-key approval"**, so one human approving as alice and bob on the fly is visible to auditors. Strict explicit enrolment is rejected in ADR 0007: it would not stop one approver pinning two ids either, and about 11 frozen files sign with ad-hoc reviewer ids. `pins.json` (per workspace id) records `reviewer_id`, public key, workspace root, `pinned_at`, `retired_at`; entries are never overwritten in place; rotation is explicit; an approval is checked against the key valid at its `approved_at`; a workspace-root mismatch is refused. `approval._valid_for`, `distinct_approvals`, `tool_grants` and `policy approve-change` check the pin, not the embedded key. Unpinned or mismatched = invalid, plus an alert. The registry half (managed mode) is M3.
+2. **Domain tags:** signed bytes = `tag || 0x00 || canonical JSON`. Tags live in `src/sandbox/protocol/domains.py` (MIT, ADR 0004 layout): `agg/approval/v1`, `agg/record/v1`, `agg/grant/v1`, `agg/policy-change/v1`, `agg/evidence/v1`; reserved for M2/M3: `agg/registry/v1`, `agg/bundle/v1`, `agg/device-assert/v1`, `agg/audit-head/v1`. Records carry `sig_v: 1`. **The verifier takes the tag and the signed-field set from context (kind + `sig_v`) in code, never from the record.** Today `verify_record` trusts `record["signed_fields"]` (`signing.py:100`): a record claiming `signed_fields=["request_id"]` verifies with `decision` and `command` unsigned. For `sig_v: 1` the field set is fixed per kind. Legacy (untagged) records verify only against a **code-defined list of historical field sets** (the past `_SIGNED_FIELDS` versions), never an arbitrary subset the record claims. (S6.)
+3. **No downgrade:** new decisions (dual control, grants, policy change) reject any record without `sig_v: 1` and a pinned key. Untagged records still verify for history only, labelled `legacy` in `sandbox verify` and the evidence pack. A half-done dual approval from before the upgrade must be re-approved (stated in the release note).
+4. **Compatibility constraint (Q3, option a):** the private helpers `_load_or_create_key`, `_canonical` and `_SIGNED_FIELDS` keep their signatures and meaning; evidence check names and detail texts stay as they are (`signer_is_folder_key`, `dual_control`, "not signed by the folder's key"); new checks get new names. This keeps `test_tool_governance.py::test_records_signed_before_fingerprint_was_added_still_verify`, `::test_grant_signed_by_another_key_is_ignored`, `test_evidence.py::test_forged_record_signed_by_non_folder_key_is_flagged` and `::test_dual_control_with_a_foreign_approval_is_flagged` unchanged. If one fails anyway: stop and list it.
+5. Recorded in **ADR 0007** (keys out of tree, pins, domain tags, the D2.7 limit) before Phase A code: it changes a security property.
+
+### D4. `ee/` layout, licence, dependency direction (ADR 0004, decided)
+1. `ee/LICENSE` = Elastic License 2.0, verbatim. Root `LICENSE` (MIT) unchanged; README states the split.
+2. `ee/pyproject.toml` (package `agg-control-plane`, depends on `sandbox`), `ee/src/agg_cp/`, `ee/tests/`, `ee/deploy/`, `ee/web/`.
+3. One-way imports: `sandbox` never imports `agg_cp`. Enforced by an `import-linter` contract in CI and a test that imports every `sandbox` module with `ee/` absent (REVIEW_QA section 5).
+4. Server deps (SQLAlchemy 2 async, Alembic, psycopg 3, Authlib) go in `ee/pyproject.toml` only.
+
+### D5. Data model, RLS, OIDC (ADR 0002, SEC-07; ADR 0003 section 1, SEC-13)
+1. **M1 migrates only the tables M1 code uses:** `orgs`, `org_oidc_config`, `projects`, `users`, `role_bindings`, `web_sessions`, `setup_codes`, `admin_audit`. The other ADR 0002 tables land with their first user (M2/M3), as expand-only migrations, each with its RLS and IDOR tests. No untested schema.
+2. **SEC-07:** roles `agg_owner` (owns tables, runs `migrate`), `agg_app` (not owner, no `BYPASSRLS`), `agg_worker` reserved and documented (no worker in M1). Every tenant table has `ENABLE` and `FORCE ROW LEVEL SECURITY`. The org is set with `set_config('app.org_id', ..., true)` (transaction-local) inside each request transaction. Policies read `NULLIF(current_setting('app.org_id', true), '')::uuid`, so an unset or reset value gives 0 rows, not an error. **Pre-auth org lookup** (login before the org is known) goes through one `SECURITY DEFINER` function returning only `(org_id, issuer, client_id)` by slug, with `SET search_path = pg_catalog, pg_temp`, `REVOKE EXECUTE FROM PUBLIC`, `GRANT EXECUTE` to `agg_app` only, owned by a non-superuser; security reviews it. (S8.)
+3. **`admin_audit`** is hash-chained per org; `agg_app` has `INSERT, SELECT` only; row triggers reject `UPDATE`/`DELETE` for every role, a `BEFORE TRUNCATE` trigger rejects truncation, and `TRUNCATE` is revoked. **Stated limit:** `agg_owner` can still drop the table; the external anchor (heads exported to SIEM) is SEC-15, M3. No retention role in v1 (security answer). (S9.)
+4. **SEC-13 OIDC:** Authlib, code flow + PKCE S256, `state`, `nonce`; exact `iss` per org from discovery (Entra `tid`-templated); `aud` contains `client_id`, `azp` checked if present; alg allowlist (RS256, PS256, ES256; reject `none` and HS*); `auth_time` checked for `max_age` on sensitive actions (15 min); link by `(iss, sub)` only, never by email; no new issuer without an admin. Discovery and JWKS fetches are https only and refuse private, loopback and link-local addresses unless allowlisted (the Keycloak demo is; this pulls the SEC-20 egress guard forward). **Two cookies:** a short-lived (10 min) `SameSite=Lax` login-transaction cookie carries state, nonce and the PKCE verifier across the IdP's cross-site redirect; the session cookie is `__Host-`, `Secure`, `HttpOnly`, `SameSite=Strict`. Never `SameSite=None`. Session id rotated at login; server-side sessions in Postgres; idle timeout 30 min plus an absolute lifetime of 12 h; logout invalidates server-side; CSRF token on every state-changing route. (S10.)
+5. **Bootstrap:** `migrate` prints a one-time setup code (at least 128 bits of entropy, stored hashed, constant-time compare, rate-limited, single use, 30 min expiry) that makes the first OIDC login the org admin. It appears in `docker logs`; the docs say so, and it is dead after use or expiry. After that, OIDC only. **RBAC:** roles from ADR 0002; every route declares its role and scope; a route without one fails a test. DB roles never authorize a connector approval (SEC-15, M3).
+
+### D6. Compose stack (ADR 0005)
+`ee/deploy/compose.yml`: `proxy` (Caddy, pinned digest, serves `ee/web` static bundle with strict CSP, routes `/api`), `api`, `migrate` (one-shot), `postgres:16` (pinned digest, internal network only), and a `demo` profile with Keycloak (pinned) holding two demo orgs. `worker` is deferred to M2 (nothing to deliver yet). Secrets as files (`*_FILE`), `init-secrets` helper, read-only root FS, non-root, `no-new-privileges`, `/ready` checks DB and schema head.
+
+## Tests
+
+**Baseline:** the M0 gate set, one figure per environment (Q7a): local Windows `.venv` 678 collected, 677 passed, 1 skipped (symlink); CI `windows-latest` 678 passed, 0 skipped (the symlink test runs there); Linux = the M0 measured figure, 5 named T12 deselects. QA freezes it at the M0 gate commit in `docs/control-plane/M1_BASELINE.md`, with `M1_FROZEN_MANIFEST.sha256` (every tracked file under `tests/`), the node-id set, and **the Linux skip set by node id** from the `junit-pytest-Linux` artifact (Q7b).
+
+**Tests first, per task:** QA commits the failing tests (`strict=True` xfail with a named exception, as in M0 T1b), then the owner's fix commit removes the decorator. The test count per task is written into `M1_BASELINE.md` in the tests-first commit, before any fix runs.
+
+**Frozen files** stay byte-identical except this named list. Each change is fixture or setup lines only, no assertion removed or loosened; security signs off by node id; QA checks the diff.
+
+| File / node | Why it changes | Change allowed |
+|---|---|---|
+| `tests/integration/test_api_connector.py` (`client` fixture; 6 connector tests) | D1: unconfigured roots get 403 | Fixture configures `tmp_path` and its `empty` subfolder as roots; `test_status_404_without_sandbox` keeps asserting 404 |
+| `tests/security/test_dual_control.py::test_api_counts_as_one_reviewer` | D1 | +1 line: `SANDBOX_CONNECTOR_ROOTS` set to `layout.root` |
+| `tests/security/test_api_auth.py::test_approver_reaches_approver_and_agent_routes` (R4) | D1 (Q1) | +1 line, same, for `tmp_path` |
+| `tests/unit/test_oversight.py::test_api_asks_for_a_reason_when_flagged` | D1 | +1 line, same |
+| `tests/security/test_m0_routes.py` (`app` fixture), `tests/security/test_api_robustness.py::test_security_headers_on_every_response` | D1: the approver's 200 path needs a listed root | Fixture/setup only. R5 (`test_paths_the_os_cannot_stat_are_a_400`) must pass **unchanged** (400 before the allowlist). `test_t0_hotfix.py::test_sec04_agent_token_403_on_every_connector_route` must pass unchanged (auth first) |
+| `tests/unit/test_evidence.py::test_pack_layout_and_no_private_keys`, `::test_pinned_exporter_key`; `tests/conftest.py` | D2: seeds leave the tree. Line 127's in-tree glob would go vacuous; line 285 asserts the in-tree path | Point both at the key home; line 127 also asserts it found 3 or more seeds (stronger). Conftest gains one autouse fixture that sets **only** `SANDBOX_KEY_HOME` = per-test tmp dir, so no test writes the real user dir on C: |
+
+Security signed off this list by node id (`REVIEW_M1.md`) on four conditions: the conftest fixture sets nothing else; R5 and SEC-04 pass byte-unchanged; line 127 keeps the no-seed-bytes check; subprocess tests with a hand-built env (for example `test_posttooluse_fallback.py`) get no `SANDBOX_KEY_HOME`. CI points `LOCALAPPDATA`/`HOME` at an empty tmp dir and asserts it is still empty after the run. The R4 row was added after sign-off (QA Q1); it is the same one-line kind of change, and security confirms it at T1.
+
+Any other frozen test that fails: stop, list it, security decides. Never edit it silently.
+
+**New test areas (REVIEW_QA section 5 plus `REVIEW_M1.md`):**
+1. **Phase A, D1:** exact match, case and `..` variants, symlink alias refused, no FS touch on unlisted input (stat monkeypatched to raise), empty config = 403, 1025 characters = 400, listed root with `OSError` on stat = 400; the agent token still gets 403 on a **listed** root (SEC-04's test can no longer tell the two 403s apart); a **new fuzz test with a listed root**, because the robustness route walkers now stop at 403 (Q1); a **subprocess test against real `sandbox serve --root X`** with `--workers 2`: X 200, others 403 (Q6); loopback default (S7).
+2. **Phase A, D2-D3:** no seed bytes (raw or hex) in any file under the workspace after init, approvals, grants and evidence export; every S4 shell variant and Grep/Glob/Write/Edit on the key home ends in deny or escalate through `pre_tool_use`; default key home with `SANDBOX_KEY_HOME` unset (OS dir monkeypatched to tmp) and the unresolvable case (S3); two workspaces, same reviewer id, cross-workspace approval refused (Q4); hook and MCP paths create no pin; forged approval with an unpinned key refused; "new-key approval" flagged; cross-kind replay refused; a record claiming a short `signed_fields` refused (S6); legacy records verify and are labelled.
+3. **Fake IdP** in-process (signed id_tokens with controllable `iss/sub/aud/azp/nonce/exp/auth_time/alg`, JWKS rotation) behind an injectable verifier. One test per SEC-13 check.
+4. **Injected clock** for every expiry (setup code, session idle and absolute lifetime, `max_age`, login-transaction cookie); a lint test bans `time.time()` / `datetime.now()` in `agg_cp`, with a positive control that it fails on a planted `time.time()` (Q7e).
+5. **Postgres:** CI service container (Linux) and testcontainers locally, `postgres:16` pinned; **no SQLite**. A `pg` mark may skip locally without Docker but **fails if skipped in CI**. RLS catalog test over every table (RLS enabled and forced, owner is not `agg_app`, `agg_app` has no `BYPASSRLS`, the `SECURITY DEFINER` settings of S8); `admin_audit` UPDATE, DELETE and TRUNCATE rejected; Alembic up/down round trip. **With positive controls (Q7e):** rows seeded in every table are visible with the org set and 0 with none; the pooled-connection test proves the same `pg_backend_pid()`; IDOR: org A gets 404 on an id where org B's own session gets 200, one seeded object per route type. **Route set (Q7d):** a recursive router walk (not only OpenAPI: `_IncludedRouter` wrappers, WebSockets, `include_in_schema=False`) must equal a frozen route list; RBAC and IDOR run over it.
+6. **Multi-worker:** real `uvicorn --workers 4` on one Postgres: a session made on one worker works on the others, concurrent role grants are idempotent, and a lint test rejects module-level mutable state in `agg_cp` API modules.
+
+## Tasks (in order; one small commit each; tests-first commits by QA precede each fix)
+
+| ID | Owner | Task | Done when |
+|---|---|---|---|
+| T0a | qa | Freeze M1 baseline at the M0 gate commit | `M1_BASELINE.md`: figure per environment, node-id set, Linux skip ids, `M1_FROZEN_MANIFEST.sha256`, the named-exception table |
+| T0b | lead | ADR 0007 (D2, D3, the S5 settlement, the D2.7 limit); set ADR 0002 and 0005 to Accepted with SEC-07 and the M1 table subset folded in | ADRs committed; security approves 0007 in writing |
+| T1 | qa, backend | D1 `?root=` allowlist (`serve --root` via env, 403, 400 rules), named fixture edits, CI smoke and ZAP target moved | D1 tests pass incl. real `serve` subprocess; named fixture diffs only; CI green; security signs off |
+| T2 | qa, backend | D2 key home per workspace id, rotation (no migration), fail closed, non-removable read/write/delete/rename deny incl. shell variants | D2 tests pass through `pre_tool_use`; `test_t0_hotfix.py` unchanged and green; CI key-home-empty check passes; security signs off |
+| T3 | qa, backend | D3.1 pins on first use from human surfaces, `key_pinned` alert, `keys.enrol: explicit`, "new-key approval" flag | Forged approval refused in dual control, grants and approve-change; hook/MCP create no pin; security signs off |
+| T4 | qa, backend | D3.2-4 domain tags in `sandbox/protocol/domains.py`, `sig_v`, field sets from code, legacy label, no downgrade | Replay and short-`signed_fields` tests refused; the 4 Q3 nodes unchanged and green; M0 demo folder still verifies; security signs off |
+| T5 | backend | `ee/` skeleton: ELv2 `ee/LICENSE`, `ee/pyproject.toml`, `agg_cp` app with `/health` and `/ready`, import-linter contract, ee-absent import test, CI `ee` job | `pip install ./ee` works; connector suite passes with `ee/` deleted from the checkout; contract green in CI |
+| T6 | backend, devops | Postgres and Alembic harness: async engine, `pg` fixture (testcontainers + CI service), injected clock, lint tests (clock, module state) | Alembic up/down round trip passes; a skipped `pg` test fails CI |
+| T7 | qa, backend | D5.1-3 M1 tables, roles, RLS, `admin_audit` chain and trigger (SEC-07) | RLS catalog, zero-rows, pooled-connection and append-only tests pass; security reviews the `SECURITY DEFINER` function |
+| T8 | qa, backend | D5.4 OIDC login with fake IdP (SEC-13) and D5.5 bootstrap setup code | One passing test per SEC-13 check; replayed id_token and reused setup code refused; security signs off |
+| T9 | qa, backend | Orgs, projects, role bindings, `/me`; RBAC dependency; `admin_audit` writes; `agg-cp audit verify --org` command | The walked route set equals the frozen list and every route declares a role; IDOR with positive controls passes; `audit verify` passes, and fails on a flipped byte |
+| T10 | qa, devops | Multi-worker test (4 workers, one Postgres) | "Tests" item 6 passes in CI |
+| T11 | devops | D6 compose stack and `init-secrets`; Keycloak `demo` profile; setup code as one JSON line in `migrate` logs | `docker compose config` valid; stack up on a clean E: checkout; `/ready` 200; Trivy no HIGH/CRITICAL; ZAP baseline on the proxy has no High |
+| T12 | frontend | Move the M0 `frontend/` shell to `ee/web/`; one page: login, `/me`, projects, members | `npm run build` and `lint` pass; served by `proxy` under strict CSP with no inline script |
+| T13 | security | Hostile review of the M1 diff (adversarial-reviewer skill) | `M1_SECURITY_SIGNOFF.md` with findings and resolutions |
+| T14 | qa | Gate run and the design-partner demo, scripted headless (`ee/deploy/demo.py`: httpx follows the Keycloak code+PKCE form, no Playwright) | Gate checklist filled with measured numbers; demo script passes and is recorded in `M1_DEMO.md` |
+| T15 | lead | Docs (`CONNECTOR.md`: `--root`, key home; README licence split; `docs/TCB.md`); M1 summary to the founder | Docs grep clean; summary sent; wait for founder approval |
+
+Security review is mandatory on T1-T4, T7-T9 and T11 (auth, keys, policy, audit, the API boundary).
+
+## Gate: M1 is done when all of these are true (frozen 18 Oct 2026, before any run)
+
+1. **Connector suite** (N = the Phase A count QA froze in `M1_BASELINE.md`): local Windows `.venv` 678 + N collected, 677 + N passed, 1 skipped (symlink); CI `windows-latest` 678 + N passed, 0 skipped; Linux = the M0 figure + N, skip set equal to the frozen node-id list, only the 5 named T12 deselects. Everywhere: 0 failed, 0 xfailed, 0 xpassed, 0 other deselects. The new-test node-id set equals the frozen one. `M1_FROZEN_MANIFEST.sha256` checks OK except the named list; `pyproject` pytest options unchanged. `git status --porcelain` clean after the run.
+2. **`ee/` suite in CI:** node-id set equal to the one frozen per task in `M1_BASELINE.md` (Q7c); 0 failed, **0 skipped** (pg included); RLS catalog test covers 100% of tables; RBAC and IDOR cover the frozen walked route list; coverage by `coverage run --branch --source=ee/src/agg_cp -m pytest ee/tests` then `coverage report --fail-under=85`, no omit list.
+3. **Standalone:** with `ee/` removed, the connector suite gives the same count; `pip install .` in a fresh E: venv runs the M0 E2E steps 1-7 headless (steps 4-5 with `sandbox approve <id> --reviewer alice/bob`, not `watch`; step 6 with `--root`).
+4. **Scanners:** Semgrep 0 error, Gitleaks 0, Trivy 0 HIGH/CRITICAL (fs and `api` image), ZAP no High on the compose proxy.
+5. **Demo (below) runs on a fresh clone**, recorded; security sign-off (T13); founder approval.
+
+## Demo a design partner can run (T14, `M1_DEMO.md`)
+
+1. `ee/deploy`: `init-secrets`, then `docker compose --profile demo up -d`; `/ready` is 200.
+2. Use the setup code, log in as alice (Keycloak, org Acme): admin. Create project `payments` (prod); make bob an approver.
+3. bob logs in: sees `payments`, gets 403 on role changes. eve (org Globex) sees nothing of Acme; Acme ids give 404.
+4. Connector: `sandbox serve --root <demo>`; another path gives 403. The agent's Grep for seed bytes finds nothing; a forged approval with a fresh key is refused.
+5. `docker compose down` then `up`: data persists; `agg-cp audit verify --org acme` passes.
+
+All 5 steps run headless from `ee/deploy/demo.py` (Q8); a partner can also click through steps 2-3 in a browser.
+
+## Risks
+
+1. **Docker on C:.** Docker Desktop is installed but not running, and its disk image defaults to C: (nearly full). Founder moves the disk image to E: before T6. Without it, `pg` tests run only in CI, and T6, T11 and T14 are blocked locally.
+2. **Key rotation disrupts existing folders** (demo folder, design-partner installs): new keys, half-done dual approvals re-approved, old records `legacy`. Mitigation: tests on an M0-era folder, release note. Default key home on Windows is C: for customers; the dev box overrides it.
+3. **Pre-auth org lookup is the classic RLS hole.** One `SECURITY DEFINER` function, narrow output, security review, catalog test.
+4. **Scope for a solo founder.** Phase A ships alone. Cut order if late: T12 (web page; the demo falls back to the API), then the Keycloak profile (fake IdP only). T7-T10 are never cut.
+5. **Racing M0.** M0 T3-T5 are still running in this checkout. M1 code waits for the M0 gate; T0a freezes the baseline on that commit.
+
+## Open questions for the founder
+
+1. `sandbox serve` with no `--root`: every connector call 403 (proposed) or default to the current folder?
+2. Key home default: the per-user OS data dir (proposed), overridable by `SANDBOX_KEY_HOME`?
+3. Tables land with their first user (proposed), not all ADR 0002 tables in M1?
+4. CLA or DCO for outside contributions to `ee/` (ADR 0004 Q3)? Not blocking M1.
+5. Move Docker Desktop's disk image to E: (your action, before T6)?
