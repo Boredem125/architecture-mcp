@@ -1,25 +1,7 @@
 import { NavLink } from 'react-router-dom';
-import {
-  LayoutDashboard,
-  Bot,
-  FileText,
-  UserCheck,
-  ScrollText,
-  Shield,
-  Monitor,
-  PlugZap,
-} from 'lucide-react';
+import { Shield, LayoutDashboard } from 'lucide-react';
 
-const navItems = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/connect', icon: PlugZap, label: 'Connect Agent' },
-  { to: '/agents', icon: Bot, label: 'Agent Hub' },
-  { to: '/policies', icon: FileText, label: 'Policy Center' },
-  { to: '/hitl', icon: UserCheck, label: 'HITL Review' },
-  { to: '/audit', icon: ScrollText, label: 'Audit Log' },
-  { to: '/security', icon: Shield, label: 'Security' },
-  { to: '/sessions', icon: Monitor, label: 'Sessions' },
-];
+const navItems = [{ to: '/', icon: LayoutDashboard, label: 'Control plane' }];
 
 export default function Sidebar() {
   return (
@@ -28,7 +10,7 @@ export default function Sidebar() {
         <Shield className="w-8 h-8 text-blue-500" />
         <div>
           <h1 className="text-lg font-bold text-white">AI Sandbox</h1>
-          <p className="text-xs text-gray-500">Security System</p>
+          <p className="text-xs text-gray-500">Agent Governance</p>
         </div>
       </div>
 
@@ -53,10 +35,7 @@ export default function Sidebar() {
       </nav>
 
       <div className="px-4 py-4 border-t border-gray-800">
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-          <span className="text-xs text-gray-500">System Online</span>
-        </div>
+        <span className="text-xs text-gray-500">M0 shell</span>
       </div>
     </aside>
   );
