@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import time
 
-from sandbox.launcher.recorder import SessionRecorder
+from sandbox.connector.file_scan import SessionRecorder
 
 
 def _touch(p, content: str) -> None:

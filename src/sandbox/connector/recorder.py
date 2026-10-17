@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from sandbox.launcher.recorder import FileStat, SessionRecorder
+from sandbox.connector.file_scan import FileStat, SessionRecorder
 
 
 class FolderRecorder(SessionRecorder):

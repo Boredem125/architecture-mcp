@@ -18,7 +18,7 @@ from sandbox.config import SandboxConfig
 from sandbox.crypto.tokens import TokenIssuer
 from sandbox.hitl.memory_orchestrator import MemoryHITLOrchestrator
 from sandbox.launcher.launcher import AppLauncher
-from sandbox.launcher.recorder import SessionRecorder
+from sandbox.connector.file_scan import SessionRecorder
 from sandbox.pipeline.session_manager import SessionManager
 from sandbox.translate.translator import ActionTranslator
 

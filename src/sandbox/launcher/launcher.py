@@ -22,7 +22,7 @@ import structlog
 from sandbox.config import LauncherSettings
 from sandbox.executor.isolation import IsolationProfile, SubprocessIsolator
 from sandbox.launcher.jail import JailManager, JailMode
-from sandbox.launcher.recorder import SessionRecorder
+from sandbox.connector.file_scan import SessionRecorder
 from sandbox.launcher.registry import AppRegistry
 
 logger = structlog.get_logger(__name__)
