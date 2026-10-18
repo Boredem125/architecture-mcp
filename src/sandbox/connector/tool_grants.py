@@ -50,6 +50,10 @@ def find_grant(layout: FolderLayout, fp: str, now: float | None = None) -> dict[
             continue
         if rec.get("kind") != "tool_call" or rec.get("fingerprint") != fp or rec.get("decision") != "approved":
             continue
+        from sandbox.connector.queue import valid_request_id
+
+        if not valid_request_id(rec.get("request_id")):
+            continue
         if now - float(rec.get("decided_at", 0)) > GRANT_TTL_SECONDS:
             continue
         if (used / f"{rec.get('request_id')}.used").exists():
@@ -63,6 +67,10 @@ def find_grant(layout: FolderLayout, fp: str, now: float | None = None) -> dict[
 
 
 def consume(layout: FolderLayout, request_id: str) -> None:
+    from sandbox.connector.queue import valid_request_id
+
+    if not valid_request_id(request_id):
+        raise ValueError("malformed request id")
     used = _consumed_dir(layout)
     used.mkdir(parents=True, exist_ok=True)
     (used / f"{request_id}.used").write_text(str(time.time()), encoding="utf-8")

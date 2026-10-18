@@ -39,10 +39,6 @@ class RootAllowlistOpen(AssertionError):
     """The connector API still trusts the request's `root` (SEC-10 open)."""
 
 
-RED_T1 = pytest.mark.xfail(raises=RootAllowlistOpen, strict=True,
-                           reason="M1 T1 open: ?root= is not allowlisted yet")
-
-
 def _require(cond: bool, msg: str) -> None:
     if not cond:
         raise RootAllowlistOpen(msg)
@@ -81,7 +77,6 @@ def _status(c: TestClient, root) -> httpx.Response:
 
 # --- fail closed and exact match ------------------------------------------------------
 
-@RED_T1
 def test_no_roots_configured_means_403(monkeypatch, ws):
     r = _status(_client(monkeypatch, None), ws)
     _require(r.status_code == 403, f"no roots configured, initialized folder -> {r.status_code}, want 403")
@@ -92,13 +87,11 @@ def test_guard_listed_root_answers(monkeypatch, ws):
     assert r.status_code == 200, r.text
 
 
-@RED_T1
 def test_unlisted_initialized_folder_is_403(monkeypatch, ws, other):
     r = _status(_client(monkeypatch, [ws]), other)
     _require(r.status_code == 403, f"unlisted folder -> {r.status_code}, want 403")
 
 
-@RED_T1
 def test_subfolder_of_a_listed_root_is_403(monkeypatch, ws):
     sub = ws / "pkg"
     sub.mkdir()
@@ -107,7 +100,6 @@ def test_subfolder_of_a_listed_root_is_403(monkeypatch, ws):
     _require(r.status_code == 403, f"subfolder of a listed root -> {r.status_code}, want 403")
 
 
-@RED_T1
 def test_dotdot_escape_from_a_listed_root_is_403(monkeypatch, ws, other):
     escape = str(ws) + os.sep + ".." + os.sep + other.name
     r = _status(_client(monkeypatch, [ws]), escape)
@@ -120,9 +112,6 @@ def test_guard_dotdot_that_normalizes_to_the_listed_root_is_accepted(monkeypatch
     assert r.status_code == 200, r.text
 
 
-# On Windows this already holds (no allowlist yet, NTFS folds case); RED on POSIX only.
-@pytest.mark.xfail(not WINDOWS, raises=RootAllowlistOpen, strict=True,
-                   reason="M1 T1 open: ?root= is not allowlisted yet")
 def test_case_variant_matches_only_where_the_os_folds_case(monkeypatch, ws):
     variant = str(ws).upper() if str(ws) != str(ws).upper() else str(ws).lower()
     r = _status(_client(monkeypatch, [ws]), variant)
@@ -135,7 +124,6 @@ def test_case_variant_matches_only_where_the_os_folds_case(monkeypatch, ws):
                  f"route used the request string {r.json()['root']!r}, not the configured root")
 
 
-@RED_T1
 def test_symlink_or_junction_alias_of_a_listed_root_is_403(monkeypatch, ws, tmp_path):
     alias = tmp_path / "alias"
     if WINDOWS:
@@ -149,7 +137,6 @@ def test_symlink_or_junction_alias_of_a_listed_root_is_403(monkeypatch, ws, tmp_
 
 # --- 400 on string shape, no filesystem access, no echo --------------------------------
 
-@RED_T1
 def test_relative_root_is_400_never_resolved_against_the_server_cwd(monkeypatch, ws):
     monkeypatch.chdir(ws)
     for rel in (".", "ws", "./"):
@@ -162,7 +149,6 @@ def test_guard_nul_byte_is_400(monkeypatch, ws):
     assert r.status_code == 400, r.text
 
 
-@RED_T1
 def test_length_limit_is_1024(monkeypatch, ws):
     c = _client(monkeypatch, [ws])
     anchor = os.path.splitdrive(str(ws))[0] + os.sep
@@ -174,7 +160,6 @@ def test_length_limit_is_1024(monkeypatch, ws):
     _require(r.status_code == 403, f"1024-character unlisted root -> {r.status_code}, want 403")
 
 
-@RED_T1
 def test_unlisted_root_touches_no_filesystem_and_is_not_echoed(monkeypatch, ws, tmp_path):
     probe = str(tmp_path / "probe-target-7f3a")
     seen: list[str] = []
@@ -243,13 +228,9 @@ class RequestIdUnvalidated(AssertionError):
     """`request_id` reaches the filesystem unvalidated (NUL -> 500, backslash traversal on Windows)."""
 
 
-RED_REQUEST_ID = pytest.mark.xfail(raises=RequestIdUnvalidated, strict=True,
-                                   reason="request_id is not validated before it reaches the queue")
-
 JUNK = ["zap", "../../../../etc/passwd", "-1", "99999999999999999999", "' OR '1'='1", "%00", "x" * 300]
 
 
-@RED_REQUEST_ID
 def test_junk_values_on_a_listed_root_never_5xx(monkeypatch, ws):
     c = _client(monkeypatch, [ws])
     crashes = []
@@ -268,7 +249,6 @@ def test_junk_values_on_a_listed_root_never_5xx(monkeypatch, ws):
         raise RequestIdUnvalidated(f"{len(crashes)} server errors with a listed root: {crashes[:6]}")
 
 
-@RED_REQUEST_ID
 def test_request_id_cannot_reach_files_outside_the_queue(monkeypatch, ws, tmp_path):
     victim = tmp_path / "victim.json"
     body = json.dumps({"request_id": "victim", "command": "echo x"})
@@ -290,7 +270,6 @@ def test_request_id_cannot_reach_files_outside_the_queue(monkeypatch, ws, tmp_pa
 
 # --- D1.7: is_agent_route uses a path boundary -------------------------------------
 
-@RED_T1
 def test_is_agent_route_matches_on_a_path_boundary(monkeypatch):
     monkeypatch.setattr(auth, "AGENT_ROUTES", (("POST", "/api/v1/sync"),))
     assert auth.is_agent_route("POST", "/api/v1/sync")
@@ -323,7 +302,6 @@ def _free_port() -> int:
     return port
 
 
-@RED_T1
 def test_real_serve_with_root_and_two_workers(ws, other, tmp_path):
     port = _free_port()
     env = {**os.environ, auth.AGENT_ENV: AGENT, auth.APPROVER_ENV: APPROVER,

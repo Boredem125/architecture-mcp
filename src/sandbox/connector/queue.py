@@ -13,12 +13,29 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 from sandbox.connector.layout import FolderLayout
+
+
+# SEC-26: a request id becomes a file name, so it is validated against a strict
+# pattern inside every queue method (not only at the API routes). Ids minted by
+# `submit` are 16 hex digits; hand-written ids in tests and tools are short words.
+_REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+
+
+def valid_request_id(request_id: object) -> bool:
+    return isinstance(request_id, str) and _REQUEST_ID.fullmatch(request_id) is not None
+
+
+def _require_id(request_id: object) -> str:
+    if not valid_request_id(request_id):
+        raise ValueError("malformed request id")
+    return request_id  # type: ignore[return-value]
 
 
 class EscalationQueue:
@@ -34,7 +51,7 @@ class EscalationQueue:
 
     def submit(self, record: dict[str, Any]) -> str:
         """Enqueue a request. Returns its request_id (minted if absent)."""
-        request_id = record.get("request_id") or uuid.uuid4().hex[:16]
+        request_id = _require_id(record.get("request_id") or uuid.uuid4().hex[:16])
         record["request_id"] = request_id
         record.setdefault("created_at", time.time())
         # Which policy version escalated it; copied into the signed done-record.
@@ -95,6 +112,8 @@ class EscalationQueue:
 
     def get(self, request_id: str) -> dict[str, Any] | None:
         """Return the merged view of a request across all stages."""
+        if not valid_request_id(request_id):
+            return None
         for d in (self._layout.done_dir, self._layout.claimed_dir, self._layout.pending_dir):
             rec = self._read(d / f"{request_id}.json")
             if rec is not None:
@@ -102,6 +121,8 @@ class EscalationQueue:
         return None
 
     def status(self, request_id: str) -> str:
+        if not valid_request_id(request_id):
+            return "unknown"
         if (self._layout.done_dir / f"{request_id}.json").exists():
             return "done"
         if (self._layout.claimed_dir / f"{request_id}.json").exists():
@@ -113,6 +134,8 @@ class EscalationQueue:
     # --- claiming / finishing -------------------------------------------
     def claim(self, request_id: str, reviewer_id: str) -> dict[str, Any] | None:
         """Atomically move pending -> claimed. None if we lost the race."""
+        if not valid_request_id(request_id):
+            return None
         src = self._layout.pending_dir / f"{request_id}.json"
         dst = self._layout.claimed_dir / f"{request_id}.json"
         try:
@@ -128,6 +151,7 @@ class EscalationQueue:
     def release(self, request_id: str, record: dict[str, Any]) -> None:
         """Put a claimed request back in pending/ (dual control: after the first
         of two approvals), with its updated record."""
+        _require_id(request_id)
         record = {k: v for k, v in record.items() if k not in ("reviewer_id", "claimed_at")}
         self._atomic_write(self._layout.claimed_dir / f"{request_id}.json", record)
         os.replace(self._layout.claimed_dir / f"{request_id}.json", self._layout.pending_dir / f"{request_id}.json")
@@ -140,6 +164,7 @@ class EscalationQueue:
         the approver's identity to the decision (non-repudiation). Best-effort:
         a signing failure must never break the approval loop.
         """
+        _require_id(request_id)
         result.setdefault("request_id", request_id)
         result.setdefault("decided_at", time.time())
         # Secrets in the output are replaced before anything is written, so the
@@ -200,6 +225,8 @@ class EscalationQueue:
         Polling one known filename beats a filesystem watcher here: it is
         immune to missed-event/buffer-overflow edge cases under heavy churn.
         """
+        if not valid_request_id(request_id):
+            return None
         deadline = time.monotonic() + timeout
         done_path = self._layout.done_dir / f"{request_id}.json"
         while time.monotonic() < deadline:

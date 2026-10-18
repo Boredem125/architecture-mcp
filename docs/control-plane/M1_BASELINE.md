@@ -35,6 +35,7 @@ That is 21, equal to the measured Linux skip count (24 JUnit "skipped" at T1b-er
 | `tests/unit/test_oversight.py::test_api_asks_for_a_reason_when_flagged` | T1 | +1 line, same | security |
 | `tests/security/test_m0_routes.py` (`app` fixture), `tests/security/test_api_robustness.py::test_security_headers_on_every_response` | T1 | Fixture/setup only; R5 and SEC-04 byte-unchanged | security |
 | `tests/unit/test_evidence.py::test_pack_layout_and_no_private_keys`, `::test_pinned_exporter_key`; `tests/conftest.py` (one autouse fixture setting only `SANDBOX_KEY_HOME`) | T2 | Point at the key home; line 127 keeps the no-seed-bytes check and adds >= 3 seeds | security (conditions a-d) |
+| T1 landed (signed off: security-engineer): `tests/integration/test_api_connector.py` (`client` fixture), `tests/security/test_api_auth.py` (`client` fixture, because the app is built before the test body; covers R4), `tests/security/test_api_robustness.py` (`client` fixture), `tests/security/test_m0_routes.py` (`app` fixture), `tests/security/test_dual_control.py::test_api_counts_as_one_reviewer`, `tests/unit/test_oversight.py::test_api_asks_for_a_reason_when_flagged` | T1 | Setup lines only: `SANDBOX_CONNECTOR_ROOTS` set to the folder the test uses (connector fixture: `tmp_path` and `tmp_path/empty`). No assertion changed; R5 and SEC-04 byte-unchanged | signed off: security-engineer |
 | `tests/unit/test_tool_governance.py::test_service_down_adds_no_scrutiny` -> `::test_service_down_escalates_and_is_audited`; `::test_no_governance_policy_changes_nothing` -> `::test_no_governance_policy_still_has_the_money_floor` | T0c | They asserted the SEC-23 fail-open bug (an allowlisted stripe refund not denied with the service down / with no governance policy). Now: service down gives deny + 1 pending + a `governance_unevaluated` audit naming the tool and `no_payments` (SEC-23 bug fix); no governance policy gives deny + 1 pending with MONEY_FLOOR, and the non-money LIST call is still not denied (ADR 0008 behaviour change). Renamed (old->new ids above, updated in `M1_BASELINE_NODEIDS.txt`); file re-hashed in `M1_FROZEN_MANIFEST.sha256` and `M0_C_MANIFEST.sha256` (`6bdebb318a42`); no other line of the file changed; landed with the fix | signed off: security-engineer |
 
 Any other frozen test that fails: stop, list it, security decides.
@@ -46,7 +47,7 @@ Each task's new tests are committed as strict xfail (`raises=<named exception>`)
 | Task | File | Tests | RED now (strict xfail) | Guards (pass now) | Committed |
 |---|---|---|---|---|---|
 | T0c SEC-23 | `tests/security/test_sec23_money_floor.py` | 22 | 15 | 7 | `c22d8f4`, `9ba777e` |
-| T1 D1 | to come | | | | |
+| T1 D1 | `tests/security/test_m1_t1_root_allowlist.py` | 21 | 0 (fix landed, markers removed) | 21 | tests first `de660f1`; fix in the T1 commit |
 | T2 D2 | to come | | | | |
 | T3 D3.1 | to come | | | | |
 | T4 D3.2-4, SEC-24 | to come | | | | |

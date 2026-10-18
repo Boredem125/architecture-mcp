@@ -23,9 +23,23 @@ _register_connector(cli)
 @click.option("--port", default=8000, type=int, help="Bind port")
 @click.option("--reload", is_flag=True, help="Enable auto-reload")
 @click.option("--workers", default=1, type=int, help="Number of workers")
-def serve(host: str, port: int, reload: bool, workers: int) -> None:
+@click.option("--root", "roots", multiple=True, type=click.Path(file_okay=False),
+              help="A project folder the connector API may serve (repeatable; or "
+                   "SANDBOX_CONNECTOR_ROOTS). With none, every connector call is refused (403).")
+def serve(host: str, port: int, reload: bool, workers: int, roots: tuple[str, ...]) -> None:
     """Start the sandbox API server."""
+    from sandbox.api.app import ROOTS_ENV
     from sandbox.api.auth import APPROVER_ENV, check_bind, ensure_tokens
+
+    # Through the environment, because uvicorn starts the app by import string
+    # (and workers are separate processes).
+    configured = [r for r in os.environ.get(ROOTS_ENV, "").split(os.pathsep) if r.strip()]
+    configured += [os.path.realpath(r) for r in roots]
+    if configured:
+        os.environ[ROOTS_ENV] = os.pathsep.join(dict.fromkeys(configured))
+    else:
+        click.echo(f"Warning: no project folder is served; every connector call will be refused. "
+                   f"Pass --root PATH or set {ROOTS_ENV}.", err=True)
 
     check_bind(host)
     generated = not os.environ.get(APPROVER_ENV)

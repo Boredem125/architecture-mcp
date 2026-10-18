@@ -7,6 +7,7 @@ routes are mounted.
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,9 +20,11 @@ from sandbox.connector.queue import EscalationQueue
 
 
 @pytest.fixture
-def client():
+def client(tmp_path, monkeypatch):
     from sandbox.api.auth import ensure_tokens
 
+    # D1 (SEC-10): only listed roots are served: tmp_path and its "empty" subfolder.
+    monkeypatch.setenv("SANDBOX_CONNECTOR_ROOTS", os.pathsep.join([str(tmp_path), str(tmp_path / "empty")]))
     app = create_app()
     return TestClient(app, headers={"Authorization": f"Bearer {ensure_tokens()[1]}"})
 

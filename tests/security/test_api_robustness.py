@@ -23,6 +23,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv(auth.AGENT_ENV, "agent-t")
     monkeypatch.setenv(auth.APPROVER_ENV, "approver-t")
+    monkeypatch.setenv("SANDBOX_CONNECTOR_ROOTS", str(tmp_path))  # D1 (SEC-10): the approver's 200 path needs a listed root
     app = create_app()
     return TestClient(app, raise_server_exceptions=False, headers={"Authorization": "Bearer approver-t"})
 

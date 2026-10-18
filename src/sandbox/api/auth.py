@@ -88,7 +88,7 @@ def is_public(path: str) -> bool:
 
 
 def is_agent_route(method: str, path: str) -> bool:
-    return any((m == "*" or m == method) and path.startswith(p) for m, p in AGENT_ROUTES)
+    return any((m == "*" or m == method) and (path == p or path.startswith(p + "/")) for m, p in AGENT_ROUTES)
 
 
 def _bearer(request: Request) -> str | None:

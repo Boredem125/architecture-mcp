@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 # FastAPI application entry point: health plus the connector's REST view.
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -38,6 +39,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("sandbox_shutting_down")
 
 
+ROOTS_ENV = "SANDBOX_CONNECTOR_ROOTS"
+
+
+def connector_roots_from_env() -> dict[str, str]:
+    """Roots the connector routes may serve (SEC-10): normalized request form -> stored root.
+
+    Read once at startup; ``sandbox serve --root`` passes them through the
+    environment so every uvicorn worker sees them. Empty means every connector
+    call is refused.
+    """
+    out: dict[str, str] = {}
+    for raw in os.environ.get(ROOTS_ENV, "").split(os.pathsep):
+        if not raw.strip():
+            continue
+        try:
+            stored = os.path.realpath(raw.strip())
+        except (OSError, ValueError):
+            continue
+        out[os.path.normcase(os.path.normpath(stored))] = stored
+    return out
+
+
 def create_app(config: SandboxConfig | None = None) -> FastAPI:
     global _config
     if config is not None:
@@ -67,6 +90,7 @@ def create_app(config: SandboxConfig | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    app.state.connector_roots = connector_roots_from_env()
     app.include_router(health.router)
     app.include_router(connector.router)
 

@@ -417,6 +417,12 @@ def approve_cmd(request_id: str, path: str, reason: str, remember: str, reviewer
         click.echo("No .sandbox/ found.")
         raise SystemExit(1)
 
+    from sandbox.connector.queue import valid_request_id
+
+    if not valid_request_id(request_id):
+        click.echo("Malformed request id.")
+        raise SystemExit(1)
+
     reviewer = reviewer or default_reviewer()
     rec = EscalationQueue(layout).get(request_id) or {}
     outcome = asyncio.run(approve(layout, request_id, reviewer, reason))
@@ -502,6 +508,12 @@ def deny_cmd(request_id: str, path: str, reason: str) -> None:
     layout = FolderLayout.discover(path)
     if layout is None:
         click.echo("No .sandbox/ found.")
+        raise SystemExit(1)
+
+    from sandbox.connector.queue import valid_request_id
+
+    if not valid_request_id(request_id):
+        click.echo("Malformed request id.")
         raise SystemExit(1)
 
     queue = EscalationQueue(layout)
@@ -890,6 +902,12 @@ def explain_cmd(request_id: str, path: str, as_json: bool) -> None:
     layout = FolderLayout.discover(path)
     if layout is None:
         click.echo("No .sandbox/ found.")
+        raise SystemExit(1)
+
+    from sandbox.connector.queue import valid_request_id
+
+    if not valid_request_id(request_id):
+        click.echo("Malformed request id.")
         raise SystemExit(1)
 
     queue = EscalationQueue(layout)

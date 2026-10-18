@@ -28,7 +28,8 @@ def tokens(monkeypatch):
 
 
 @pytest.fixture
-def client(tokens):
+def client(tokens, tmp_path, monkeypatch):
+    monkeypatch.setenv("SANDBOX_CONNECTOR_ROOTS", str(tmp_path))  # D1 (SEC-10): list the folder the tests use
     return TestClient(create_app())
 
 

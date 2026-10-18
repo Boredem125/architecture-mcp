@@ -21,14 +21,17 @@ without ``.sandbox/`` yields 404.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 logger = structlog.get_logger(__name__)
+
+MAX_ROOT_CHARS = 1024
 
 router = APIRouter(prefix="/api/v1/connector", tags=["connector"])
 
@@ -37,14 +40,25 @@ router = APIRouter(prefix="/api/v1/connector", tags=["connector"])
 # Helpers — resolve the folder fresh on every request
 # ------------------------------------------------------------------
 
-def _layout(root: str):
-    """Resolve a FolderLayout for *root*, or raise 404 if not initialized."""
+def _layout(request: Request, root: str):
+    """Resolve a FolderLayout for *root*: 400 bad string, 403 not listed, 404 not initialized.
+
+    Only roots configured with ``sandbox serve --root`` / SANDBOX_CONNECTOR_ROOTS
+    are served (SEC-10, D1). The request value is compared as a pure string and
+    is never used to touch the filesystem; after a match the *configured* root
+    is used, never the request string.
+    """
     from sandbox.connector.layout import FolderLayout
 
-    # A path the OS can't even stat (too long on Linux, a NUL byte) is a bad
-    # request, not a crash: ZAP's 4,000-character root raised ENAMETOOLONG.
+    if "\x00" in root or len(root) > MAX_ROOT_CHARS or not os.path.isabs(root):
+        raise HTTPException(status_code=400, detail="root must be an absolute path (at most 1024 characters)")
+    allowed: dict[str, str] = getattr(request.app.state, "connector_roots", {})
+    stored = allowed.get(os.path.normcase(os.path.normpath(root)))
+    if stored is None:
+        raise HTTPException(status_code=403, detail="This folder is not served by this API (see sandbox serve --root).")
+    # A configured root the OS can't stat is a bad request, not a crash.
     try:
-        layout = FolderLayout(root)
+        layout = FolderLayout(stored)
         found = layout.exists()
     except (OSError, ValueError):
         raise HTTPException(status_code=400, detail="root is not a usable path")
@@ -54,6 +68,15 @@ def _layout(root: str):
             detail="No .sandbox/ found in that folder. Run `sandbox init` there first.",
         )
     return layout
+
+
+def _request_id(request_id: str) -> str:
+    """400 for an id that is not a well-formed request id (SEC-26)."""
+    from sandbox.connector.queue import valid_request_id
+
+    if not valid_request_id(request_id):
+        raise HTTPException(status_code=400, detail="malformed request id")
+    return request_id
 
 
 def _session_id(layout) -> str:
@@ -78,12 +101,12 @@ class DecisionRequest(BaseModel):
 # ------------------------------------------------------------------
 
 @router.get("/status")
-async def connector_status(root: str = Query(...)) -> dict[str, Any]:
+async def connector_status(request: Request, root: str = Query(...)) -> dict[str, Any]:
     """Policy, triggers, and pending count for a folder."""
     from sandbox.connector.policy import load_policy
     from sandbox.connector.queue import EscalationQueue
 
-    layout = _layout(root)
+    layout = _layout(request, root)
     policy = load_policy(layout.policy_file)
     pending = EscalationQueue(layout).list_pending()
     return {
@@ -97,19 +120,19 @@ async def connector_status(root: str = Query(...)) -> dict[str, Any]:
 
 
 @router.get("/pending")
-async def connector_pending(root: str = Query(...)) -> dict[str, Any]:
+async def connector_pending(request: Request, root: str = Query(...)) -> dict[str, Any]:
     """List pending escalations awaiting a human decision."""
     from sandbox.connector.queue import EscalationQueue
 
-    layout = _layout(root)
+    layout = _layout(request, root)
     pending = EscalationQueue(layout).list_pending()
     return {"root": str(layout.root), "pending": pending}
 
 
 @router.get("/changes")
-async def connector_changes(root: str = Query(...)) -> dict[str, Any]:
+async def connector_changes(request: Request, root: str = Query(...)) -> dict[str, Any]:
     """The file-change timeline (originals/index.jsonl)."""
-    layout = _layout(root)
+    layout = _layout(request, root)
     changes: list[dict[str, Any]] = []
     index_file = layout.originals_dir / "index.jsonl"
     if index_file.exists():
@@ -128,22 +151,22 @@ async def connector_changes(root: str = Query(...)) -> dict[str, Any]:
 
 @router.get("/audit")
 async def connector_audit(
-    root: str = Query(...), limit: int = Query(50, ge=1, le=1000)
+    request: Request, root: str = Query(...), limit: int = Query(50, ge=1, le=1000)
 ) -> dict[str, Any]:
     """The tail of the current session's audit records."""
     from sandbox.connector.audit import FolderAudit
 
-    layout = _layout(root)
+    layout = _layout(request, root)
     audit = FolderAudit(layout.audit_dir, _session_id(layout))
     return {"root": str(layout.root), "records": audit.list_records(limit=limit)}
 
 
 @router.get("/verify")
-async def connector_verify(root: str = Query(...)) -> dict[str, Any]:
+async def connector_verify(request: Request, root: str = Query(...)) -> dict[str, Any]:
     """Verify the audit chain integrity."""
     from sandbox.connector.audit import FolderAudit
 
-    layout = _layout(root)
+    layout = _layout(request, root)
     audit = FolderAudit(layout.audit_dir, _session_id(layout))
     valid, message = audit.verify_chain()
     return {"root": str(layout.root), "valid": valid, "message": message}
@@ -155,7 +178,7 @@ async def connector_verify(root: str = Query(...)) -> dict[str, Any]:
 
 @router.post("/{request_id}/approve")
 async def connector_approve(
-    request_id: str, root: str = Query(...), body: DecisionRequest | None = None
+    request: Request, request_id: str, root: str = Query(...), body: DecisionRequest | None = None
 ) -> dict[str, Any]:
     """Claim, execute, and finish a pending escalation."""
     from sandbox.connector.broker import FolderBroker
@@ -163,7 +186,8 @@ async def connector_approve(
 
     from sandbox.connector.approval import approve
 
-    layout = _layout(root)
+    layout = _layout(request, root)
+    _request_id(request_id)
     # The API acts as one reviewer, "api": a dual-control request approved
     # here still needs a second, different reviewer (e.g. the CLI).
     outcome = await approve(layout, request_id, "api", body.reason if body else "")
@@ -190,13 +214,14 @@ async def connector_approve(
 
 @router.post("/{request_id}/deny")
 async def connector_deny(
-    request_id: str, root: str = Query(...), body: DecisionRequest | None = None
+    request: Request, request_id: str, root: str = Query(...), body: DecisionRequest | None = None
 ) -> dict[str, Any]:
     """Claim and deny a pending escalation."""
     from sandbox.connector.broker import FolderBroker
     from sandbox.connector.queue import EscalationQueue
 
-    layout = _layout(root)
+    layout = _layout(request, root)
+    _request_id(request_id)
     queue = EscalationQueue(layout)
     rec = queue.claim(request_id, "api")
     if rec is None:

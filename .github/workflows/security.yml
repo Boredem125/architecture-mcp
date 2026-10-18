@@ -148,23 +148,48 @@ jobs:
           echo "::add-mask::$approver"
           echo "SANDBOX_AGENT_TOKEN=$agent" >> "$GITHUB_ENV"
           echo "SANDBOX_APPROVER_TOKEN=$approver" >> "$GITHUB_ENV"
+          # A listed root (SEC-10): the API serves only folders named with --root.
+          zap_root="$RUNNER_TEMP/zap-root"
+          mkdir -p "$zap_root"
+          (cd "$zap_root" && sandbox init)
+          echo "ZAP_ROOT=$zap_root" >> "$GITHUB_ENV"
           SANDBOX_AGENT_TOKEN=$agent SANDBOX_APPROVER_TOKEN=$approver \
-            nohup sandbox serve --host 127.0.0.1 --port 8000 > api.log 2>&1 &
+            nohup sandbox serve --host 127.0.0.1 --port 8000 --root "$zap_root" > api.log 2>&1 &
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/health && exit 0; sleep 1; done
           cat api.log; exit 1
       - name: Check auth is enforced before scanning
         run: |
-          test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8000/api/v1/connector/status?root=.')" = 401
-          test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $SANDBOX_AGENT_TOKEN" 'http://127.0.0.1:8000/api/v1/connector/status?root=.')" = 403
+          url="http://127.0.0.1:8000/api/v1/connector/status"
+          # 401 without a token, 403 for the agent token, on a LISTED root
+          # (so the 403 is the role check, not the root allowlist).
+          test "$(curl -s -o /dev/null -w '%{http_code}' -G --data-urlencode "root=$ZAP_ROOT" "$url")" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' -G --data-urlencode "root=$ZAP_ROOT" -H "Authorization: Bearer $SANDBOX_AGENT_TOKEN" "$url")" = 403
+          # Positive control: the approver reaches the listed root (200) and an
+          # unlisted one is refused (403). Without this the checks above would
+          # pass vacuously if every call were refused.
+          test "$(curl -s -o /dev/null -w '%{http_code}' -G --data-urlencode "root=$ZAP_ROOT" -H "Authorization: Bearer $SANDBOX_APPROVER_TOKEN" "$url")" = 200
+          test "$(curl -s -o /dev/null -w '%{http_code}' -G --data-urlencode "root=/tmp" -H "Authorization: Bearer $SANDBOX_APPROVER_TOKEN" "$url")" = 403
       - name: ZAP API scan
         run: |
           mkdir -p zap && chmod 777 zap
+          # Give ZAP the listed root as the `root` example, so it reaches the
+          # handlers instead of the 403 of the allowlist.
+          curl -sf http://127.0.0.1:8000/openapi.json | python -c "
+          import json, os, sys
+          spec = json.load(sys.stdin)
+          for ops in spec['paths'].values():
+              for op in ops.values():
+                  for prm in op.get('parameters', []):
+                      if prm.get('name') == 'root':
+                          prm['example'] = os.environ['ZAP_ROOT']
+          json.dump(spec, open('zap/openapi.json', 'w'))
+          "
           docker run --rm --network host -v "$PWD/zap:/zap/wrk:rw" \
             -e ZAP_AUTH_HEADER=Authorization \
             -e ZAP_AUTH_HEADER_VALUE="Bearer $SANDBOX_APPROVER_TOKEN" \
             -e ZAP_AUTH_HEADER_SITE=127.0.0.1 \
             zaproxy/zap-stable:2.17.0 \
-            zap-api-scan.py -t http://127.0.0.1:8000/openapi.json -f openapi \
+            zap-api-scan.py -t /zap/wrk/openapi.json -O http://127.0.0.1:8000 -f openapi \
               -J zap.json -r zap.html -I \
               -z "-config scanner.maxScanDurationInMins=15 -config scanner.maxRuleDurationInMins=3" || true
           test -s zap/zap.json

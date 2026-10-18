@@ -186,6 +186,10 @@ def build_server(root: Path | None = None) -> Any:
         Use this after run_privileged returns 'pending', or to pick up a
         request the Claude Code hook raised.
         """
+        from sandbox.connector.queue import valid_request_id
+
+        if not valid_request_id(request_id):
+            return {"status": "invalid_request_id"}
         policy = _enforced(layout)
         queue = _queue()
         rec = queue.get(request_id)

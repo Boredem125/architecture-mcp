@@ -83,9 +83,10 @@ LEGACY_PREFIXES = ("/api/v1/launch", "/api/v1/hook", "/api/v1/broker", "/e2b/v1"
 
 
 @pytest.fixture
-def app(monkeypatch):
+def app(monkeypatch, tmp_path):
     monkeypatch.setenv(auth.AGENT_ENV, AGENT)
     monkeypatch.setenv(auth.APPROVER_ENV, APPROVER)
+    monkeypatch.setenv("SANDBOX_CONNECTOR_ROOTS", str(tmp_path))  # D1 (SEC-10): list the folder the tests use
     return create_app()
 
 

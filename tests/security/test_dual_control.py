@@ -152,6 +152,7 @@ def test_api_counts_as_one_reviewer(layout, monkeypatch):
 
     monkeypatch.setenv(auth.AGENT_ENV, "agent-t")
     monkeypatch.setenv(auth.APPROVER_ENV, "approver-t")
+    monkeypatch.setenv("SANDBOX_CONNECTOR_ROOTS", str(layout.root))
     client = TestClient(create_app(), headers={"Authorization": "Bearer approver-t"})
     rid = submit(layout, dual=True)
     url = f"/api/v1/connector/{rid}/approve?root={layout.root}"
