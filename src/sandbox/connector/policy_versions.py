@@ -213,7 +213,7 @@ _UNION_FIELDS = (
 )
 # More entries = less scrutiny: keep only what both contain.
 _INTERSECT_FIELDS = (
-    ("shell", "allow_patterns"), ("read", "allow_prefixes"), ("write", "allow_prefixes"),
+    ("shell", "allow_patterns"), ("shell", "allow_runners"), ("read", "allow_prefixes"), ("write", "allow_prefixes"),
     ("network", "allow_hosts"), ("network", "allow_mcp_servers"),
 )
 _AND_FIELDS = (("auto_allow",), ("network", "allow_search"))           # True only if both say so
@@ -610,6 +610,11 @@ def baseline(layout: FolderLayout, reviewer: str, reason: str) -> list[dict[str,
         # second reviewer; a one-person baseline must not adopt it.
         raise ValueError("policy.json has governance.money_floor: false; baseline with true, "
                          "then `sandbox policy propose` the change for a second reviewer")
+    if disk.get("shell", {}).get("allow_runners"):
+        # ADR 0009: opting in to workspace code runners needs a change approved by a second
+        # reviewer, like money_floor: false; a one-person baseline must not adopt it.
+        raise ValueError("policy.json has shell.allow_runners entries; baseline without them, "
+                         "then `sandbox policy propose` the change for a second reviewer")
     history_dir(layout).mkdir(parents=True, exist_ok=True)
     entries = [_accept(layout, FOLDER, disk, by=reviewer, reason=reason, how="baseline")]
     gov = read_governance(layout, disk.get("semantic", {}).get("governance_policy", ""))
@@ -825,6 +830,20 @@ def approve_change(layout: FolderLayout, change_id: str, reviewer: str, reason: 
         record = {"event": "money_floor_disabled", "change_id": change_id, "version": entry["version"],
                   "proposer": change["proposer"], "reviewer": reviewer, "reason_code": "MONEY_FLOOR",
                   "reason": "governance.money_floor set to false by an approved change"}
+        audit(layout, record)
+        try:
+            from sandbox.connector import alerts
+
+            alerts.emit(layout, _session_id(layout), record)
+        except Exception:  # noqa: BLE001 — alerting never breaks the change
+            pass
+    if kind == FOLDER and "shell.allow_runners" in (change.get("loosens") or []):
+        # ADR 0009: opting in to workspace code runners is always an alert.
+        record = {"event": "runners_allowed", "change_id": change_id, "version": entry["version"],
+                  "proposer": change["proposer"], "reviewer": reviewer, "reason_code": "WORKSPACE_RUNNER",
+                  "runners": list((content.get("shell") or {}).get("allow_runners") or []),
+                  "reason": "shell.allow_runners set by an approved change: these runners run "
+                            "workspace code without a human"}
         audit(layout, record)
         try:
             from sandbox.connector import alerts

@@ -158,20 +158,6 @@ def _format_pending(request_id: str) -> str:
 # shell classification (M1 subset)
 # ---------------------------------------------------------------------------
 
-def _shell_verdict(command: str, policy: FolderPolicy) -> str:
-    """Return one of allow | escalate | deny for a shell command."""
-    from sandbox.connector.classify import command_allowlisted, shell_deny_reason
-
-    if shell_deny_reason(command):  # protected path or approver CLI: non-removable
-        return "deny"
-    for pat in policy.shell.deny_patterns:
-        if re.search(pat, command):
-            return "deny"
-    if command_allowlisted(command, policy.shell.allow_patterns):
-        return "allow"
-    return policy.triggers.shell  # default: escalate
-
-
 # ---------------------------------------------------------------------------
 # hook input validation — malformed input fails closed
 # ---------------------------------------------------------------------------
@@ -274,6 +260,11 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
     # The approved policy version (or, if the file drifted, the stricter of the
     # approved and on-disk versions). _audit stamps policy_version on records.
     policy, policy_info = enforced_policy(layout)
+    # ADR 0009: `shell.allow_runners` is honoured only in the approved version of a versioned
+    # folder (state approved, or drift where meet() already kept the common entries). An
+    # unversioned, unknown or unreadable policy opts nothing in.
+    if policy_info.get("state") not in ("approved", "drift"):
+        policy.shell.allow_runners = []
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {}) or {}
     cwd = payload.get("cwd") or str(layout.root)
@@ -290,6 +281,11 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
     result = classify(
         tool_name, tool_input, policy, layout, cwd=cwd, blocklist=_blocklist(),
     )
+
+    if result.reason_code == "WORKSPACE_RUNNER":
+        files = _written_this_session(layout, session_id)
+        if files:
+            result.reason += "; files written this session: " + ", ".join(files)
 
     # Rate limits: a call over its class limit is denied and not counted.
     if result.verdict != "deny":
@@ -427,7 +423,10 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
     # A remembered decision can upgrade escalate → allow (never the reverse), but
     # never for a critical/dual-control action — those always face a human.
     # Nor for a money-moving call under the floor (ADR 0008).
-    if result.verdict == "escalate" and not result.requires_dual and not money_floor_hit:
+    # A workspace code runner is never upgraded by a remembered decision (ADR 0009): one
+    # approval of the first test run would cover every later run of code the agent wrote.
+    if (result.verdict == "escalate" and not result.requires_dual and not money_floor_hit
+            and result.reason_code != "WORKSPACE_RUNNER"):
         memory = DecisionMemory(layout.remembered, session_id)
         remembered = memory.recall(
             command=result.command,
@@ -442,6 +441,18 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
                 "identity": identity.to_dict(), "risk": result.risk,
             })
             return _allow_or_additive(policy, f"remembered: {remembered.get('scope')}")
+
+    if result.verdict in ("allow", "observe") and result.metadata.get("runner_allowed"):
+        # ADR 0009: an opted-in runner runs agent-written code, so the record is written
+        # BEFORE the allow is returned, and a failed write denies (fail closed).
+        if not _audit_strict(layout, session_id, {
+            "event": "runner_allowed", "tool": tool_name, "trigger": result.trigger,
+            "reason_code": result.reason_code, "runner": ",".join(result.metadata["runner_allowed"]),
+            "command": result.command, "identity": identity.to_dict(), "risk": result.risk,
+        }):
+            return _pre_output("deny", (
+                "SANDBOX DENIED [AUDIT_UNAVAILABLE]: the runner audit record could not be written, "
+                "so the opted-in runner was not allowed."))
 
     if result.verdict == "allow":
         # Every tool call is in the chain, not only the gated ones: what was
@@ -712,6 +723,46 @@ def _allow_or_additive(policy: FolderPolicy, reason: str) -> dict[str, Any]:
     return _pre_output(None, "")
 
 
+def _approver_reason(tool_input: dict[str, Any], result: Any) -> str:
+    """What the approver reads: the agent's own description, and for a command the lexer could not
+    analyse or a workspace code runner, why a human is needed (ADR 0009, D0b)."""
+    base = tool_input.get("description", "") or "Model requested a shell command"
+    if result.reason_code in ("WORKSPACE_RUNNER", "SHELL_UNRESOLVABLE"):
+        return f"{base} | [{result.reason_code}] {result.reason}"
+    return base
+
+
+def _audit_strict(layout: FolderLayout, session_id: str, record: dict[str, Any]) -> bool:
+    """Append *record* to the chain; True only if it was written. No swallowing."""
+    try:
+        from sandbox.connector import scrub
+        from sandbox.connector.audit import FolderAudit
+        from sandbox.connector.policy_versions import current_version
+
+        record.setdefault("ts", time.time())
+        record.setdefault("policy_version", current_version(layout))
+        if scrub.enabled(layout):
+            scrub.scrub_fields(record, scrub.AUDIT_FIELDS)
+        FolderAudit(layout.audit_dir, session_id).append(record)
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def _written_this_session(layout: FolderLayout, session_id: str, limit: int = 8) -> list[str]:
+    """Files the agent's write tools touched in this session, from the audit (best effort)."""
+    try:
+        from sandbox.connector.audit import FolderAudit
+
+        seen: list[str] = []
+        for rec in FolderAudit(layout.audit_dir, session_id).list_records(limit=2000):
+            if rec.get("tool") in _WRITE_TOOLS and rec.get("target") and rec["target"] not in seen:
+                seen.append(rec["target"])
+        return seen[-limit:]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _audit(layout: FolderLayout, session_id: str, record: dict[str, Any]) -> None:
     """Best-effort audit append; never blocks the hook decision.
 
@@ -780,7 +831,7 @@ async def _escalate_shell(
         "kind": "command",
         "command": result.command,
         "exec_cwd": str(layout.root),
-        "reason": tool_input.get("description", "") or "Model requested a shell command",
+        "reason": _approver_reason(tool_input, result),
         "described_as": tool_input.get("description", ""),
         "actual_actions": actual_actions,
         "governance_violations": gov_violations,

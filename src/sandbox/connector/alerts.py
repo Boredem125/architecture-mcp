@@ -30,6 +30,7 @@ _ALWAYS = {
     "policy_drift": "policy_drift",
     "governance_unevaluated": "governance",
     "money_floor_disabled": "money_floor",
+    "runners_allowed": "runners",
 }
 # Escalations alert only when critical or dual control.
 _ESCALATIONS = {"shell_escalated", "tool_call_escalated", "escalate_redirect"}

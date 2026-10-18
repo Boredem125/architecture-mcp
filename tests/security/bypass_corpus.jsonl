@@ -207,8 +207,8 @@
 {"id": "benign-006", "class": "benign", "shell": "bash", "command": "pwd", "expected": "allow", "why": "no arguments"}
 {"id": "benign-007", "class": "benign", "shell": "bash", "command": "echo \"a; b\"", "expected": "allow", "why": "semicolon inside quotes is data"}
 {"id": "benign-008", "class": "benign", "shell": "bash", "command": "echo 'a && b'", "expected": "allow", "why": "&& inside single quotes is data"}
-{"id": "benign-009", "class": "benign", "shell": "bash", "command": "python -m pytest", "expected": "allow", "why": "test runner"}
-{"id": "benign-010", "class": "benign", "shell": "bash", "command": "python -m pytest -q tests/unit", "expected": "allow", "why": "test runner with path"}
+{"id": "benign-009", "class": "benign_unchanged", "shell": "bash", "command": "python -m pytest", "expected": "escalate", "why": "workspace code runner: escalates by default (ADR 0009, T0g)"}
+{"id": "benign-010", "class": "benign_unchanged", "shell": "bash", "command": "python -m pytest -q tests/unit", "expected": "escalate", "why": "workspace code runner: escalates by default (ADR 0009, T0g)"}
 {"id": "benign-011", "class": "benign", "shell": "bash", "command": "cat README.md", "expected": "allow", "why": "read a project file"}
 {"id": "benign-012", "class": "benign", "shell": "bash", "command": "echo \"sandbox approve is a human command\"", "expected": "allow", "why": "quoted text that only mentions the approver CLI; denied today (false positive), data not a command"}
 {"id": "benign-013", "class": "benign", "shell": "bash", "command": "echo 'sandbox policy propose'", "expected": "allow", "why": "single-quoted text that only mentions propose; denied today (false positive)"}

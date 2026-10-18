@@ -99,7 +99,7 @@ async def test_t0a_compound_is_not_allowlisted_hook(layout, command):
 
 
 # Guards: plain allowlisted commands still run silently.
-PLAIN = ["git status", "ls", "python -m pytest", "git diff", "pwd"]
+PLAIN = ["git status", "ls", "git log", "git diff", "pwd"]
 
 
 @pytest.mark.parametrize("command", PLAIN)

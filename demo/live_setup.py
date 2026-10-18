@@ -9,7 +9,9 @@ Usage:
     python demo/live_setup.py [--dir PARENT]
 
 Then, in that project folder: `sandbox watch` in one terminal and `claude`
-in another. Use demo/try.py to send any tool call someone names straight
+in another. Test runs (`python -m pytest`, `npm test`) escalate on purpose: they run code the
+agent can write (ADR 0009). The demo does not opt in to `shell.allow_runners`; that needs a
+two-reviewer policy change. Use demo/try.py to send any tool call someone names straight
 through the gateway.
 """
 from __future__ import annotations
@@ -58,6 +60,7 @@ def main() -> None:
     print("Next, each in its own terminal, inside that folder:")
     print("  sandbox watch --reviewer alice")
     print("  claude")
+    print("Note: if Claude runs the tests, expect an escalation (WORKSPACE_RUNNER). That is the point.")
 
 
 if __name__ == "__main__":

@@ -273,6 +273,23 @@ def _governance_file(layout: FolderLayout, ref: str) -> Path | None:
     return None
 
 
+def _runners_at(layout: FolderLayout, when: float | None) -> list[str] | None:
+    """`shell.allow_runners` of the approved folder version in force at *when* (None if the
+    period has no start, [] if no version existed yet)."""
+    if when is None:
+        return None
+    try:
+        from sandbox.connector import policy_versions as pv
+
+        entries = [e for e in pv.read_log(layout) if e.get("kind") == pv.FOLDER and (e.get("at") or 0) <= when]
+        if not entries:
+            return []
+        content = pv.load_object(layout, entries[-1]["sha256"]) or {}
+        return list((content.get("shell") or {}).get("allow_runners") or [])
+    except Exception:  # noqa: BLE001 — unknown is reported as such, never as "none"
+        return None
+
+
 def build_pack(layout: FolderLayout, since: float | None = None, until: float | None = None) -> dict[str, bytes]:
     """All pack files except the manifest, as {pack path: bytes}."""
     from sandbox.connector.policy import load_policy
@@ -440,6 +457,19 @@ def build_pack(layout: FolderLayout, since: float | None = None, until: float | 
         "aiuc1": {"release": aiuc1_index["release"], "file": AIUC1_INDEX, "note": aiuc1_index["note"],
                   "by_requirement": aiuc1_index["by_requirement"]},
         "alerts": {"file": ALERTS_FILE if ALERTS_FILE in files else None, "count": len(alert_rows)},
+        # ADR 0009: whether workspace code runners could run without a human, and when that changed.
+        "runners": {
+            "allow_runners": list(enforced.shell.allow_runners),
+            "allow_runners_at_since": _runners_at(layout, since),
+            "opt_in_changes": [
+                {"at": _iso(r.get("ts")), "change_id": r.get("change_id"), "runners": r.get("runners"),
+                 "proposer": r.get("proposer"), "reviewer": r.get("reviewer")}
+                for r in audit_records if r.get("event") == "runners_allowed"
+                and (since is None or (r.get("ts") or 0) >= since) and (until is None or (r.get("ts") or 0) <= until)],
+            "runner_allowed_events": sum(
+                1 for r in audit_records if r.get("event") == "runner_allowed"
+                and (since is None or (r.get("ts") or 0) >= since) and (until is None or (r.get("ts") or 0) <= until)),
+        },
         "policies": policies,
         "failed_checks": failed + [{"file": c["file"], "check": "audit_chain", "detail": c["message"]}
                                    for c in chains.values() if not c["ok"]],

@@ -27,12 +27,12 @@ All 427 cases meet their expected outcome. `RED_TODAY` is empty (it held 68 ids 
 | protected_path | 52 | 52 | 0 | 0 | 0 |
 | sec25_residual | 8 | 8 | 0 | 0 | 0 |
 | bounds | 8 | 8 | 0 | 0 | 0 |
-| benign (positive controls) | 51 | 0 | 0 | 51 | 0 |
-| benign_unchanged | 11 | 0 | 11 | 0 | 0 |
+| benign (positive controls) | 49 | 0 | 0 | 49 | 0 |
+| benign_unchanged | 13 | 0 | 13 | 0 | 0 |
 | git_flag_matrix | 136 | 38 | 98 | 0 | 0 |
-| **Total** | **427** | **260** | **116** | **51** | **0** |
+| **Total** | **427** | **260** | **118** | **49** | **0** |
 
-- False escalations on the positive controls: 0 of 51 (all allowed). The 11 `benign_unchanged` commands stay a plain escalation (not an allow, not an approver-CLI deny).
+- False escalations on the positive controls: 0 of 49 (all allowed). The 11 `benign_unchanged` commands stay a plain escalation (not an allow, not an approver-CLI deny).
 - In 8 cases (of the first 242) the corpus accepts "escalate or deny" and the classifier denies, because a deny fragment is visible in text it cannot resolve (for example `eval_exec_source-019`, `trap 'sandbox approve req-1' EXIT`). These count as deny above.
 - Deny and escalate are both blocked: the hook answers an escalation with a human prompt, never an allow.
 
@@ -51,7 +51,7 @@ Known gap: `.git/config` is protected for Write/Edit and for shell redirects onl
 - `git_flag_matrix` (136 cases): each allowlisted git subcommand (`status`, `log`, `diff`, `show`, `branch`) with each write or config flag (`--output`, `-o`, `-O`, `--ext-diff`, `--textconv`, `--no-index`, `-c`, `--git-dir`, `--work-tree`, `-C`, `--exec-path`), `GIT_*=` prefixes, mutating `git branch` and unlisted `git rev-parse` forms (escalate), and writes into `.git/**` (deny). Against the pre-fix source 123 of the 136 fail. The 34 read-only positives (`git status -s`, `git log --oneline -n 5`, `git branch --list`, `git rev-parse --short HEAD`, ...) are in class `benign` and stay allowed.
 - Flags on allowlisted git commands are now an allowlist, not a denylist: only known read-only flags pass; `git branch` allows only list forms (positional arguments create a branch); `git rev-parse` only read flags.
 - All of `.git/**` is write-protected (Write, Edit, NotebookEdit, shell redirects, and every word of `tee`, `cp`, `mv`, `rm`, `ln`, `dd`, `touch`, `install`, `sed`, `tar` and similar writers, with 8.3 aliases and case resolved). Reading stays allowed. `.git/**` is also a non-removable policy default.
-- An allow pattern must be followed by whitespace or the end of the segment, whatever a saved policy.json holds; `sandbox doctor` warns about saved patterns without a boundary (this includes the `npm run` and `python -m pytest` defaults until T0g changes them).
+- An allow pattern must be followed by whitespace or the end of the segment, whatever a saved policy.json holds; `sandbox doctor` warns about saved patterns without a boundary (the `npm run` and `python -m pytest` patterns are gone from the defaults since T0g).
 - Limit: a program that writes `.git/**` by itself (`git config --local`, `git commit`) is a normal escalation; the allowlist concerns what runs without a human.
 
 ## Status wording (SEC-01, SEC-25)
@@ -62,9 +62,17 @@ SEC-01 residual closed. SEC-25 residual reduced (denied when a deny fragment is 
 
 - What a resolved program does when it runs: `make`, git aliases and hooks, an approved interpreter (the D2.7 limit), programs that execute their own arguments and are not on the code-carrying list.
 - Scripts written earlier in the session. A script the agent wrote is escalated like any unlisted command; it is not read. `python script.py` is an ordinary escalation.
-- The default allowlist's `npm run` and `python -m pytest` run workspace code the agent can write. They were left unchanged by T0f (the decision is ADR 0009's, not this lexer's); see that ADR for the current default.
+- Workspace code runners (`npm run`, `python -m pytest`) run code the agent can write. Since T0g (ADR 0009) they are escalated by default and allowed only by an approved two-reviewer `shell.allow_runners` opt-in, which re-opens the two-step bypass for the chosen runners. A team that allowlists `make`, `tox`, `cargo test`, `go test` or `node script.js` makes the same trade by its own approved change (the D2.7 limit).
 - Shell startup files, `BASH_ENV` set outside the command, PATH shims, renamed copies of the CLI (a copy under another name escalates; it is not denied).
 - zsh and fish syntax, and full bash conformance. The only claim is that forms outside the subset are never allowed. Where the lexer disagrees with bash the result is an extra escalation or deny, by construction; this was tested on the corpus, not proved.
 - Windows: `Bash` payloads are lexed as bash on every OS with Windows and MSYS path forms normalised (trailing dots and spaces, `\\?\`, `//?/`, UNC, `/cygdrive/x`, `/e/x`, alternate data streams, 8.3 names). `cmd` with any argument and `pwsh` / `powershell` are unresolvable; `-EncodedCommand` and every abbreviation behind `-`, `/` or a Unicode dash is denied.
 - The `PreToolUse` hook can only fail closed if Claude Code honours `"onFailure": "block"` (2.1.295 and later). On older versions a hook timeout or crash lets the call proceed (SEC-27 and SEC-28 follow-ups; `sandbox init` warns).
 - Numbers describe this corpus only. They are not a coverage or detection rate.
+
+## Workspace runners (T0g, ADR 0009)
+
+`benign-009` and `benign-010` (`python -m pytest`, `python -m pytest -q tests/unit`) moved from `benign` to `benign_unchanged` (expected escalate), so the positive controls are 49 and the plain escalations 13. `tests/security/test_t0g_runners.py` covers 36 runner forms (escalate with `WORKSPACE_RUNNER`), old patterns in saved policies, `auto_allow` and environment rules, remembered decisions, hand-added or drifted `allow_runners`, `baseline` refusal, the two-reviewer opt-in with its alert and pre-allow audit record, `npx`/`dlx`/`bunx` never opt-in, taint, an audit-write failure (denies), and the evidence pack's `runners` section.
+
+### What the runner opt-in trusts (accepted by security, 18 Oct 2026)
+
+With `shell.allow_runners` approved by two reviewers, a pytest run executes agent-written code: `conftest.py`, test modules, `addopts` in `pytest.ini` or `pyproject.toml`, and plugins loaded through `-p`, `-o addopts=...`, `--confcutdir` or `--import-mode`. `npm test -- --require x` does the same through the package manager, and the scripts in `package.json` are agent-writable too. The opt-in only narrows the command line: the first `-m` must be `pytest`; a package manager takes `test` or `run <script>` with no option of its own before `--`; a pytest path argument or `--opt=path` value that resolves outside the governed root loses the opt-in; `ci`, `install`, `exec`, `npx`, `bunx` and `dlx` are never eligible. The numbers above describe the default, where all runners escalate.

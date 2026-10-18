@@ -32,7 +32,10 @@ claude                     # terminal B — or any MCP agent
 
 Then, in the agent:
 
-1. *"Run `git status`."* → runs silently (allowlisted, low risk).
+1. *"Run `git status`."* → runs silently (allowlisted, low risk). *"Now run the tests."* →
+   **escalates** (`WORKSPACE_RUNNER`): a test run executes code the agent can write, so a human
+   decides (ADR 0009). That is deliberate. Do not opt the demo folder in; the opt-in is a
+   two-reviewer policy change (`shell.allow_runners`), shown separately if asked.
 2. *"Run `pip install requests`."* → escalates. Terminal A shows **identity + risk band +
    itemized factors**. Press `a`. The output returns; the agent continues.
    Run `sandbox explain <id>` → the full signed decision record.

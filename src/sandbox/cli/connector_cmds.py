@@ -355,6 +355,9 @@ def init_cmd(path: str, claude: bool, mcp: bool, codex: bool, auto_allow: bool, 
     if result["codex_snippet"]:
         click.echo("\nAdd this to ~/.codex/config.toml:\n")
         click.echo(result["codex_snippet"])
+    click.echo("\nNote: test and script runs (`python -m pytest`, `npm run`, `npm test`, ...) escalate by "
+               "default, because they run code the agent can write. A team can opt in with an approved "
+               "two-reviewer change to `shell.allow_runners` (ADR 0009).")
     click.echo("\nRun `sandbox watch` in another terminal to approve escalations.")
 
 
@@ -372,19 +375,29 @@ def doctor_cmd(path: str) -> None:
     problems = diagnose_layout(layout.root)
     for p in problems:
         click.echo(p)
-    if problems:
-        raise SystemExit(1)
-    click.echo("OK: connector installed outside the governed folder; hook is isolated and fail-closed.")
-    try:  # saved allow patterns without a word boundary (T0f): listed, never fatal
+    notes: list[str] = []
+    try:  # saved patterns that are inert or boundary-less (T0f, T0g): listed, never fatal
         from sandbox.connector.classify import allow_pattern_gaps
         from sandbox.connector.policy_versions import enforced_policy
+        from sandbox.connector.runners import stale_patterns
 
-        gaps = allow_pattern_gaps(enforced_policy(layout)[0].shell.allow_patterns)
-    except Exception:  # noqa: BLE001 — the warning must not break the layout check
-        gaps = []
-    for g in gaps:
-        click.echo(f"WARNING: allow pattern {g!r} has no (\\s|$) boundary or end anchor; the hook now "
-                   "requires whitespace after the match, so e.g. `ls/x.sh` escalates. Add the boundary.")
+        patterns = enforced_policy(layout)[0].shell.allow_patterns
+        for pat, sample in stale_patterns(patterns):
+            notes.append(f"WARNING: allow pattern {pat!r} lists a workspace code runner ({sample}); since "
+                         "ADR 0009 it is inert: runners escalate unless shell.allow_runners is approved "
+                         "by two reviewers. policy.json was not changed.")
+        for g in allow_pattern_gaps(patterns):
+            notes.append(f"WARNING: allow pattern {g!r} has no (\s|$) boundary or end anchor; the hook now "
+                         "requires whitespace after the match, so e.g. `ls/x.sh` escalates. Add the boundary.")
+    except Exception:  # noqa: BLE001 — the warnings must not break the layout check
+        pass
+    if problems:
+        for n in notes:
+            click.echo(n)
+        raise SystemExit(1)
+    click.echo("OK: connector installed outside the governed folder; hook is isolated and fail-closed.")
+    for n in notes:
+        click.echo(n)
 
 
 @click.command("status")
@@ -415,6 +428,7 @@ def status_cmd(path: str, as_json: bool) -> None:
             "root": str(layout.root),
             "triggers": policy.triggers.model_dump(),
             "policy_version": version,
+            "allow_runners": _enforced_runners(layout),
             "pending": pending,
         }, indent=2))
         return
@@ -422,10 +436,29 @@ def status_cmd(path: str, as_json: bool) -> None:
     click.echo(f"Root:     {layout.root}")
     click.echo(f"Policy:   {_describe_version(version)}")
     click.echo(f"Triggers: {policy.triggers.model_dump()}")
+    click.echo(f"Runners:  {_describe_runners(layout)}")
     click.echo(f"Pending:  {len(pending)}")
     for rec in pending:
         dual = f"  [dual control {len(rec.get('approvals') or [])}/2]" if rec.get("requires_dual") else ""
         click.echo(f"  [{rec['request_id']}] {rec.get('command', '')}{dual}")
+
+
+def _enforced_runners(layout) -> list[str]:
+    """The `shell.allow_runners` entries in force (the approved version's), else []."""
+    try:
+        from sandbox.connector.policy_versions import enforced_policy
+
+        policy, info = enforced_policy(layout)
+        return list(policy.shell.allow_runners) if info.get("state") in ("approved", "drift") else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _describe_runners(layout) -> str:
+    runners = _enforced_runners(layout)
+    if not runners:
+        return "none opted in (pytest, npm run/test and similar escalate)"
+    return "opted in (approved): " + ", ".join(runners) + " run without a human"
 
 
 @click.command("approve")
@@ -483,7 +516,10 @@ def approve_cmd(request_id: str, path: str, reason: str, remember: str, reviewer
         click.echo(f"Approval 1 of 2 recorded for {request_id} by {reviewer} (dual control{why}). "
                    "Nothing has run; a different reviewer must approve it too.")
         return
-    if not rec.get("requires_dual") and not oversight:
+    if rec.get("reason_code") == "WORKSPACE_RUNNER" and remember != "once":
+        click.echo("Note: --remember does not apply to workspace code runners (ADR 0009); "
+                   "this approval covers this one call only.")
+    elif not rec.get("requires_dual") and not oversight:
         _remember_decision(layout, rec, remember)
     result = outcome["result"]
     if rec.get("kind") == "tool_call":

@@ -111,8 +111,6 @@ versa (`check_request`).
   "shell": {
     "allow_patterns": [
       "^git (status|diff|log|show|branch|rev-parse)(\\s|$)",
-      "^(npm|pnpm|yarn) (run|test|ci)\\b",
-      "^python -m pytest\\b",
       "^(ls|dir|pwd|cd|cat|type|echo|which|where)(\\s|$)"
     ]
   },
@@ -186,7 +184,7 @@ for the rest of the session:
 
 ```bash
 sandbox approve <id> --remember command   # exact command
-sandbox approve <id> --remember prefix     # first two tokens (e.g. "npm run")
+sandbox approve <id> --remember prefix     # first two tokens (e.g. "git log"; not for test runners, see below)
 sandbox approve <id> --remember host       # a network host
 sandbox approve <id> --remember dir        # a directory subtree
 ```
@@ -321,3 +319,11 @@ are not safe until you do the following:
 ## Allow patterns need a word boundary (T0f)
 
 Default `shell.allow_patterns` end in `(\s|$)`. Whatever a saved policy holds, the hook only treats a pattern as matching when whitespace or the end of the segment follows the match, so `^ls` no longer allows `ls/x.sh`. Allowlisted `git` commands also accept only known read-only flags, and `.git/**` is never writable by the agent. `sandbox doctor` lists saved patterns without a boundary.
+
+## Test and script runs escalate by default (ADR 0009, T0g)
+
+`python -m pytest`, `pytest`, `py.test`, `npm|pnpm|yarn|bun run|test|ci|install|exec` and bare `yarn` run code the agent can write (a `conftest.py`, a `package.json` script, a lifecycle hook). They are no longer in the default allowlist, and a code-side gate escalates them even if an older `policy.json` still lists the patterns (`sandbox doctor` flags those as inert and never rewrites the file). The approver sees `WORKSPACE_RUNNER`, "runs code in this folder that the agent can change; check `git diff` first", and the files written this session.
+
+- `--remember` does not apply to runners: one approval covers one call.
+- `npx`, `bunx`, `pnpm dlx`, `yarn dlx` and `bun` always escalate and cannot be opted in.
+- Opt in per team with `shell.allow_runners` (`pytest`, `npm`, `pnpm`, `yarn`): a `sandbox policy propose` and `approve-change` by two distinct reviewers. It is honoured only in the approved version of a versioned folder, `sandbox policy baseline` refuses it, it raises a `runners_allowed` alert, and every run it allows is audited `runner_allowed` before it starts. It allows `<python> -m pytest ...` (first `-m` is pytest, paths inside the governed folder) and `<pm> test` / `<pm> run <script>` (no package-manager option before `--`; `ci` is never eligible) as one static command; a compound command, or a tainted session, still escalates. Opting in re-opens the two-step bypass for the chosen runners: the agent can write the test code the runner executes.

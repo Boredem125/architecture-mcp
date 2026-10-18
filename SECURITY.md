@@ -128,3 +128,7 @@ are not safe until you do the following:
 ## Release note: shell analysis (T0f, existing users)
 
 Shell commands are now lexed against a static subset; anything outside it (expansions, globs in command words, `eval`, interpreters given code, encoded PowerShell, code-carrying tools) is never allowed silently: it is denied when a deny fragment is visible and escalated otherwise. Allowlisted git commands accept only known read-only flags; all of `.git/**` is write-protected. Saved `allow_patterns` such as `^ls` no longer match `ls/x.sh` or `cat.sh`: the hook requires whitespace or the end of the command after the match, so those commands escalate. Run `sandbox doctor <folder>` to list saved patterns that lack a `(\s|$)` boundary and fix them. Details and measured numbers: `docs/BYPASS_SUITE.md`.
+
+## Release note: test and script runs escalate (T0g, ADR 0009, existing users)
+
+`python -m pytest`, `pytest`, `npm|pnpm|yarn|bun run|test|ci|install|exec` and similar now escalate in every folder, new or existing, including folders whose `policy.json` still lists the old allow patterns. They run code the agent can write, so a silent allow let it run anything (keys, the approver CLI, deploys) in two calls. Every test run now needs a human until a team opts in with an approved, two-reviewer change to `shell.allow_runners`. `--remember` does not cover runners. `sandbox doctor` lists the now-inert patterns and does not change `policy.json`. See `docs/CONNECTOR.md`.

@@ -37,7 +37,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from sandbox.connector.layout import FolderLayout
-from sandbox.connector import shellwords
+from sandbox.connector import runners, shellwords
 from sandbox.connector.policy import _PROTECT_SHELL_PATTERNS, FolderPolicy
 from sandbox.fs.containment import is_contained
 
@@ -156,7 +156,8 @@ def classify(
 
     if tool_name in _SHELL_TOOLS:
         return _classify_shell(tool_input, policy, blocklist,
-                               "pwsh" if tool_name == "PowerShell" else "bash")
+                               "pwsh" if tool_name == "PowerShell" else "bash",
+                               root=str(layout.root), cwd=base)
 
     if tool_name in _WRITE_TOOLS:
         return _classify_write(tool_name, tool_input, policy, layout, base)
@@ -185,7 +186,8 @@ def classify(
 
 
 def _classify_shell(
-    tool_input: dict[str, Any], policy: FolderPolicy, blocklist: Any, shell: str = "bash"
+    tool_input: dict[str, Any], policy: FolderPolicy, blocklist: Any, shell: str = "bash",
+    root: str = "", cwd: str = "",
 ) -> Classification:
     command = _shell_target_path(tool_input)
 
@@ -232,7 +234,33 @@ def _classify_shell(
                 reason_code="SANDBOX_PROTECT", command=command,
             )
 
-    # 2d. Unresolvable: always a human, whatever triggers.shell says. The reason
+    # 2d. Workspace code runners (ADR 0009): `python -m pytest`, `npm run` ... run code the
+    # agent can write. Never allowed by allow_patterns, whatever a saved policy holds; the
+    # only way through is an approved `shell.allow_runners` entry (the hook passes it empty
+    # unless the folder's approved version carries it) and a single static segment.
+    if analysis.runners:
+        hits = runners.blocked(analysis.runners, getattr(policy.shell, "allow_runners", []))
+        try:  # an opted-in pytest run whose paths leave the governed root loses the opt-in
+            if not hits and root and any(h.name == "pytest" and runners.paths_outside(h, root, cwd or root)
+                                         for h in analysis.runners):
+                hits = [h for h in analysis.runners if h.name == "pytest"]
+        except Exception:  # noqa: BLE001 — fail closed
+            hits = list(analysis.runners)
+        names = sorted({h.name for h in analysis.runners})
+        if hits or analysis.unresolvable or analysis.segments != 1 or _scan(command, strip_benign=True)[1]:
+            return Classification(
+                "deny" if policy.triggers.shell == "deny" else "escalate", "shell",
+                reason=(f"runs code in this folder that the agent can change ({', '.join(names)}); "
+                        "check `git diff` first"),
+                reason_code="WORKSPACE_RUNNER", command=command,
+                metadata={"runners": names},
+            )
+        return Classification(
+            "allow", "shell", reason=f"workspace runner allowed by an approved opt-in ({', '.join(names)})",
+            reason_code="RUNNER_ALLOWED", command=command, metadata={"runner_allowed": names},
+        )
+
+    # 2e. Unresolvable: always a human, whatever triggers.shell says. The reason
     # code and text tell the approver the command could not be analysed.
     if analysis.unresolvable:
         why = ", ".join(analysis.unresolvable)
@@ -931,6 +959,8 @@ _MAX_RECURSE = 3
 class ShellAnalysis:
     deny: tuple[str, str] | None = None  # (reason_code, reason)
     unresolvable: list[str] = field(default_factory=list)
+    runners: list[runners.RunnerHit] = field(default_factory=list)  # workspace code runners (ADR 0009)
+    segments: int = 0
 
 
 def _command_bound(command: str) -> tuple[str, str] | None:
@@ -948,11 +978,17 @@ def _writes_file(seg: shellwords.Segment) -> bool:
             or bool(seg.words and "tee" in shellwords.bases(seg.words[0].raw)))
 
 
-def _analyse(command: str, shell: str, deadline: float, depth: int, dot_rule: bool = True
-             ) -> tuple[tuple[str, str] | None, set[str]]:
+def _analyse(command: str, shell: str, deadline: float, depth: int, dot_rule: bool = True,
+             info: dict[str, Any] | None = None) -> tuple[tuple[str, str] | None, set[str]]:
     lexed = shellwords.lex(command, shell, deadline)
     reasons = set(lexed.reasons)
     segs = lexed.segments
+    if info is not None:  # top level only: the runner gate (ADR 0009) reads the resolved words
+        info["segments"] = len(segs)
+        try:
+            info["runners"] = runners.runner_hits(segs)
+        except Exception:  # noqa: BLE001 — fail closed: an unrecognisable runner never opts in
+            info["runners"] = [runners.RunnerHit("unresolved", None)]
     seg_reasons: list[list[str]] = []
     for seg in segs:
         shellwords.check_deadline(deadline)
@@ -1004,9 +1040,10 @@ def analyse_shell(command: str, shell: str = "bash") -> ShellAnalysis:
     bound = _command_bound(command)
     if bound:
         return ShellAnalysis(deny=bound)
+    info: dict[str, Any] = {}
     try:
         deny, reasons = _analyse(command, shell, time.monotonic() + shellwords.DEADLINE_SECONDS, 0,
-                                 dot_rule=shell != "pwsh")
+                                 dot_rule=shell != "pwsh", info=info)
     except shellwords.Bound as exc:
         return ShellAnalysis(deny=(exc.code, f"SANDBOX DENIED: {exc}"))
     except shellwords.LexError as exc:
@@ -1024,7 +1061,8 @@ def analyse_shell(command: str, shell: str = "bash") -> ShellAnalysis:
         if frag:
             deny = ("SHELL_UNRESOLVABLE", "the command could not be analysed statically "
                     f"({', '.join(names)}) and contains {frag!r}")
-    return ShellAnalysis(deny=deny, unresolvable=names)
+    return ShellAnalysis(deny=deny, unresolvable=names, runners=info.get("runners", []),
+                         segments=info.get("segments", 0))
 
 
 def shell_deny_reason(command: str, shell: str = "bash") -> tuple[str, str] | None:

@@ -28,14 +28,28 @@ class ShellPolicy(BaseModel):
     allow_patterns: list[str] = Field(
         default_factory=lambda: [
             r"^git (status|diff|log|show|branch|rev-parse)(\s|$)",
-            r"^(npm|pnpm|yarn) (run|test|ci)\b",
-            r"^python -m pytest\b",
             r"^(ls|dir|pwd|cd|cat|type|echo|which|where)(\s|$)",
         ]
     )
     deny_patterns: list[str] = Field(default_factory=list)
+    # ADR 0009: workspace code runners (pytest, npm/pnpm/yarn run|test|ci) escalate unless
+    # named here. Honoured only in the approved version of a versioned folder (hook_eval),
+    # kept to the common entries on drift (policy_versions.meet) and refused by `baseline`.
+    allow_runners: list[str] = Field(default_factory=list)
     blocklist_action: str = "deny"
     exec_timeout_seconds: int = 120
+
+    @field_validator("allow_runners", mode="before")
+    @classmethod
+    def _runners(cls, v: object) -> list[str]:
+        from sandbox.connector.runners import OPT_IN_NAMES
+
+        out: list[str] = []
+        for x in v if isinstance(v, (list, tuple)) else []:
+            name = str(x).strip().lower()
+            if name in OPT_IN_NAMES and name not in out:
+                out.append(name)
+        return out
 
 
 class ReadPolicy(BaseModel):
