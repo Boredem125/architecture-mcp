@@ -1,10 +1,10 @@
 # ADR 0007: Reviewer key custody, pinned keys and domain-tagged signatures (standalone mode)
 
-Status: Proposed (18 Oct 2026, lead-architect). Needs security-engineer's written approval before any M1 Phase A code (M1 T0b). Implements `M1_PLAN.md` D2 and D3; settles SEC-05 (standalone half), SEC-24 and the T0-hotfix key residual.
+Status: Accepted (18 Oct 2026). Approved by security-engineer on two conditions, both recorded below (Decision 1.6 and 2.7). M1 T0b. Implements `M1_PLAN.md` D2 and D3; settles SEC-05 (standalone half), SEC-24 and the T0-hotfix key residual.
 
 ## Next action
 
-Security-engineer: approve or object in writing (a line in `REVIEW_M1.md` is enough).
+Backend-engineer: build T2-T4 against this ADR, tests first (qa-engineer).
 
 ## Context
 
@@ -33,6 +33,7 @@ Security-engineer: approve or object in writing (a line in `REVIEW_M1.md` is eno
 3. **Fail closed.** If the key home cannot be resolved or written, there is no signing and every approval is invalid. Never fall back to `.sandbox/state/keys`, the cwd or a relative path.
 4. **Non-removable deny for read, write, delete and rename** on the key home, for Read, Grep, Glob, Write, Edit and shell, re-injected like `_PROTECT_WRITE_GLOBS`. It does not use the configurable `read_outside` / `write_outside` triggers. Shell path arguments are resolved like Read's, so `$LOCALAPPDATA`, `%LOCALAPPDATA%`, `$env:LOCALAPPDATA`, `~`, 8.3 short names, case variants and in-tree symlinks or junctions all end in deny or escalate, never allow.
 5. **Rotate, never migrate.** On first use after upgrade, a new key is generated in the key home and pinned. The old public key is recorded with `retired_at`, and `key_rotated` is audited. In-tree seeds are never copied, moved or deleted: they stay in place, retired and inert, under the existing in-tree deny.
+6. **Retired seeds cannot backdate history (security condition a).** A retired in-tree seed stays readable to a rootless Grep, so anyone holding it could forge backdated legacy records. Legacy (untagged) records therefore verify **only if they are covered by the audit-chain head recorded in the `key_rotated` event**; anything else is reported as `unverifiable`, never `legacy`. A human-run `sandbox keys purge-legacy` (approver CLI, so T0e-denied to the agent, audited) deletes retired in-tree seeds when the operator chooses.
 
 ### 2. Pins
 1. `pins.json` records `reviewer_id`, public key, workspace root, `pinned_at` and `retired_at`. Entries are never overwritten in place; rotation is explicit.
@@ -41,6 +42,7 @@ Security-engineer: approve or object in writing (a line in `REVIEW_M1.md` is eno
 4. Policy flag `keys.enrol: explicit` refuses unenrolled ids. It is tighten-only; turning it off is a loosening change under change control.
 5. Approvals, dual control (`_valid_for`, `distinct_approvals`), tool grants and `policy approve-change` verify against the pin valid at the approval's `approved_at`, not the embedded key. A workspace-root mismatch is refused. Unpinned or mismatched means invalid, plus an alert.
 6. `sandbox verify` and the evidence pack flag any dual-control decision whose pin was created after the request was queued as **"new-key approval"**.
+7. **The approver-token API signs and pins only its fixed reviewer id**, never an id the client supplies (security condition b).
 
 ### 3. Domain-tagged signatures
 1. Signed bytes = `tag || 0x00 || canonical JSON`. Tags live in `src/sandbox/protocol/domains.py` (MIT):
@@ -52,7 +54,7 @@ Security-engineer: approve or object in writing (a line in `REVIEW_M1.md` is eno
 
 ## Consequences
 
-1. A grep for key bytes inside a workspace finds nothing, because the keys are not there.
+1. A grep for **live** key bytes inside a workspace finds nothing: current keys are not there. Until `sandbox keys purge-legacy` runs, retired pre-M1 seeds stay in `.sandbox/state/keys/`. They are useless for new decisions and cannot forge history past the `key_rotated` head (Decision 1.6).
 2. Upgrading rotates every reviewer key. A dual approval that is half done at upgrade time must be re-approved. Old records show as `legacy`. Both go in the release note.
 3. Tests set `SANDBOX_KEY_HOME` per test (one conftest autouse fixture, signed off by security), so no test writes the real user directory on C:. CI points `LOCALAPPDATA`/`HOME` at an empty temp dir and asserts it is still empty after the run.
 4. M3's registry verification (ADR 0003) reuses the same tags and the "field set from context" rule.
