@@ -20,6 +20,8 @@ documents the project's own attack surface, not just the security it provides.
 
 ## Fixed: unauthenticated HTTP API (1 Oct 2026)
 
+> History. The legacy routes named in this section and the next (broker, `hook`, `runtime`, `e2b`, `hitl`, `security`, the launcher and its jail) were removed in M0 (Oct 2026). The API now serves only `/health`, `/ready` and `/api/v1/connector/*`; see [docs/CONNECTOR.md](docs/CONNECTOR.md).
+
 The optional HTTP API (`sandbox serve`) had no authentication and bound
 `0.0.0.0` by default. Anyone who could reach it, including a jailed agent,
 could submit a command to the privilege broker, approve it with a made-up

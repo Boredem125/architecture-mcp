@@ -4,6 +4,10 @@ The shipped system (Stage 1) proves the thesis — *capability ≠ authority* �
 tested slice. This roadmap shows the rest of the board. Items are sequenced by leverage, not
 difficulty; each is intentionally *not* built yet so the core stays tight and demonstrable.
 
+## Now: the control plane (M0-M6)
+
+The legacy 9-agent pipeline, launcher, e2b and runtime routes were removed in M0 (Oct 2026); the connector is the product core. The self-hosted control plane is planned milestone by milestone in [control-plane/M0_PLAN.md](control-plane/M0_PLAN.md) (roadmap section) and [control-plane/M1_PLAN.md](control-plane/M1_PLAN.md).
+
 ## Shipped (Stage 1)
 
 - Model-agnostic control plane (Claude Code hooks + MCP), one folder queue, one audit chain

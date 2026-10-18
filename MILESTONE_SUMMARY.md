@@ -1,5 +1,7 @@
 # Enterprise AI Agent Sandbox — Milestones 0-3 Summary
 
+> History (older milestone numbering). The launcher, `sandbox_hook`, `/api/v1/launch` and `/api/v1/hook/*` mentioned below were removed in the control-plane M0 (Oct 2026). Current plan: [docs/control-plane/M0_PLAN.md](docs/control-plane/M0_PLAN.md).
+
 ## The Problem
 
 AI agents (Claude Code, Codex, Cursor) running in your project folder have full access to your machine. When they need elevated privileges (install packages, run scripts, access system resources), they either:

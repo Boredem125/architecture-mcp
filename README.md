@@ -1,6 +1,6 @@
 # Agent Governance Gateway
 
-**Authorization and runtime governance for AI coding agents.** Every tool call an agent makes (Claude Code, Codex, Cursor, Windsurf) is intercepted, classified and recorded. Risky actions go to a named human, who runs them outside the agent. Everything is signed and audited.
+**Authorization and runtime governance for AI coding agents.** Every Claude Code tool call is intercepted, classified and recorded. Codex, Cursor and Windsurf are governed only through the gateway's MCP tools; their built-in shell and file tools are not intercepted. Risky actions go to a named human, who runs them outside the agent. Everything is signed and audited.
 
 > An AI agent having a *capability* is not the same as it having *authority*.
 
@@ -37,7 +37,7 @@ CI runs Semgrep, Gitleaks, Trivy and a ZAP API scan on every push, with SARIF up
 
 ## Tech
 
-Python 3.12 · FastAPI · MCP · Claude Code hooks · ONNX Runtime · Pydantic · PyNaCl (Ed25519) · pytest (540 tests)
+Python 3.12 · FastAPI · MCP · Claude Code hooks · ONNX Runtime · Pydantic · PyNaCl (Ed25519) · pytest (679 tests collected, 18 Oct 2026)
 
 ## Quick start
 

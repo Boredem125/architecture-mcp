@@ -19,7 +19,7 @@ sandbox init .                 # writes .sandbox/, hooks, .mcp.json, settings
 sandbox watch .
 
 # 4. In another, run your agent as normal — it's now mediated
-claude                         # or codex, cursor, windsurf
+claude                         # codex/cursor/windsurf: MCP tools only, see below
 ```
 
 Ask the agent to run something privileged (`whoami /priv`, `npm install -g x`).
@@ -31,7 +31,7 @@ the output and continues.
 ## Architecture in one picture
 
 ```
-Agent (Claude Code / Codex / Cursor / Windsurf)
+Agent (Claude Code; Codex / Cursor / Windsurf via MCP only)
   │  tool call
   ├─► PreToolUse hook  ──►  classify (policy)
   │        │                 allow → silent
@@ -228,14 +228,14 @@ OpenAPI docs needs a bearer token. There are two, with different powers:
 
 | token | env var | can |
 |---|---|---|
-| agent | `SANDBOX_AGENT_TOKEN` | submit broker requests, have hook calls evaluated, use `/e2b/v1` |
-| approver | `SANDBOX_APPROVER_TOKEN` | everything, including approve/deny, launch, policies, the dashboard and `/ws/events` |
+| agent | `SANDBOX_AGENT_TOKEN` | nothing today: `AGENT_ROUTES` is empty, so it gets 403 on every route (kept so it is never mistaken for "no token") |
+| approver | `SANDBOX_APPROVER_TOKEN` | every non-public route: the connector view below, including approve and deny |
 
 `sandbox serve` binds `127.0.0.1` and, if the tokens are unset, generates
 them for that run and prints the dashboard URL with the approver token once.
-It refuses a non-loopback `--host` unless both are set. The launcher gives
-jailed agents the agent token only, so an agent can ask for a privileged
-command but can't approve it.
+It refuses a non-loopback `--host` unless both are set. Never give an agent
+the approver token. WebSocket connections are closed before accept with code
+1008: there are no WebSocket routes.
 
 When the API server is running (`sandbox serve` / uvicorn), a thin, read-through
 view over any folder's `.sandbox/` is mounted at `/api/v1/connector`. It holds
@@ -294,6 +294,5 @@ sandbox uninstall .            # removes hooks from settings + .sandbox/ data
 sandbox uninstall . --keep-data # only removes the settings hooks
 ```
 
-Unrelated hooks in your Claude Code settings (including the M1 launcher's
-`sandbox_hook`) are preserved — only the connector's marker-tagged entries are
+Unrelated hooks in your Claude Code settings (from other tools) are preserved — only the connector's marker-tagged entries are
 removed.
