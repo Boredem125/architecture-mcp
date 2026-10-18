@@ -167,11 +167,14 @@ Security sign-off (security-engineer, 18 Oct 2026) for the twin file at sha256 `
 
 ## 8. CI counts measured by T2 (`tests.yml`, Python 3.12)
 
-Source: the `junit_gate.py` notice annotations. JUnit "skipped" includes xfail. "Run" excludes deselected tests. Every job deselects the e2b crasher (until T4). Linux also deselects the 5 named tests in section 7.
+Source: the `junit_gate.py` notice annotations. JUnit "skipped" includes xfail. "Run" excludes deselected tests. Runs before T4 deselect the e2b crasher in every job; from T4 on nothing is deselected on Windows. Linux also deselects the 5 named tests in section 7.
 
 | Run (commit) | pytest Linux | pytest Windows | connector Linux | connector Windows |
 |---|---|---|---|---|
 | tests 6 (`9731124`), [39064037272](https://github.com/Boredem125/architecture-mcp/actions/runs/39064037272) | 701 run: 677 passed, 24 skipped | 706 run: 703 passed, 3 skipped | 644 run: 620 passed, 24 skipped | 649 run: 646 passed, 3 skipped |
 | tests 7 (`79f94e4`, + T12 twins), [39064316243](https://github.com/Boredem125/architecture-mcp/actions/runs/39064316243) | 706 run: 682 passed, 24 skipped | 711 run: 708 passed, 3 skipped | 649 run: 625 passed, 24 skipped | 654 run: 651 passed, 3 skipped |
+| tests 18 (`b87703e`, post-M0: T4, T5, T6 done, no crasher deselect), [39085316526](https://github.com/Boredem125/architecture-mcp/actions/runs/39085316526) | 674 run: 653 passed, 21 skipped | 679 run: 679 passed, 0 skipped | 650 run: 629 passed, 21 skipped | 655 run: 655 passed, 0 skipped |
 
 All runs had 0 failed and 0 errors, and the stray-file check passed on every job. Linux skips 21 more than Windows (24 vs 3, xfail included). I measured that figure; I did not break it down by test, because job logs and JUnit artifacts need a GitHub token. The skip reasons are in the uploaded `junit-pytest-Linux` artifact. The C manifest check (`sha256sum -c`, Linux) passed.
+
+Post-M0 (tests 18): Windows CI ran all 679 with 0 skipped, because the symlink test runs on the hosted runner. On this dev box it is 678 passed and 1 skipped (fresh venv, T6b). Linux runs 674, which is the 679 minus the 5 named T12 deselects.
