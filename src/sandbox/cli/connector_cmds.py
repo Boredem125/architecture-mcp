@@ -325,7 +325,14 @@ def init_cmd(path: str, claude: bool, mcp: bool, codex: bool, auto_allow: bool, 
     """Initialize the sandbox connector in a folder."""
     from sandbox.connector.install import init
 
-    result = init(path, claude=claude, mcp=mcp, codex=codex, auto_allow=auto_allow)
+    from sandbox.connector.install import InstallLayoutError
+
+    try:
+        result = init(path, claude=claude, mcp=mcp, codex=codex, auto_allow=auto_allow)
+    except InstallLayoutError as exc:
+        raise click.ClickException(str(exc)) from exc
+    for warning in result.get("warnings", []):
+        click.echo(f"WARNING: {warning}", err=True)
     click.echo(f"Sandbox connector initialized in {result['root']}")
     click.echo(f"  session:  {result['session_id']}")
     click.echo(f"  policy:   {result['policy']}")

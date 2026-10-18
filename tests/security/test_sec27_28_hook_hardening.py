@@ -104,7 +104,7 @@ def test_sec27_fallback_launch_is_isolated():
     from sandbox.connector.hook_templates import POSTTOOLUSE_STUB, PRETOOLUSE_STUB
 
     for stub in (PRETOOLUSE_STUB, POSTTOOLUSE_STUB):
-        assert '"-P"' in stub or "'-P'" in stub
+        assert '"-I"' in stub
         assert "realpath" in stub  # origin of the imported package is verified
 
 
@@ -162,8 +162,8 @@ def test_mcp_json_uses_isolated_launch(tmp_path):
     init(tmp_path, claude=False, mcp=True)
     srv = json.loads((tmp_path / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["sandbox"]
     assert srv["command"] == sys.executable
-    assert srv["args"][0] == "-P"
-    assert srv["args"].index("-P") < srv["args"].index("-m")
+    assert srv["args"][0] == "-I"
+    assert srv["args"].index("-I") < srv["args"].index("-m")
 
 
 def test_init_warns_on_old_claude_code(tmp_path, monkeypatch):

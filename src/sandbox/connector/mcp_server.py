@@ -238,7 +238,23 @@ def _version(layout: FolderLayout) -> dict[str, Any]:
     return current_version(layout)
 
 
+def _verify_origin() -> None:
+    """SEC-27: the imported package must come from the recorded package_src."""
+    import os
+
+    want = os.environ.get("SANDBOX_PACKAGE_SRC")
+    if not want:
+        return
+    import sandbox
+
+    src = os.path.normcase(os.path.realpath(want)) + os.sep
+    if not os.path.normcase(os.path.realpath(sandbox.__file__)).startswith(src):
+        sys.stderr.write("SANDBOX: package origin mismatch (fail-closed)")
+        raise SystemExit(2)
+
+
 def main() -> int:
+    _verify_origin()
     root = None
     argv = sys.argv[1:]
     if "--root" in argv:

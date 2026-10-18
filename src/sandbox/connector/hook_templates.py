@@ -107,7 +107,7 @@ def main():
     except Exception:
         pass
 
-    # 2) subprocess fallback: isolated launch (-P: no cwd/script dir on sys.path),
+    # 2) subprocess fallback: isolated launch (-I: no cwd/script dir on sys.path),
     #    the package must come from package_src, and only rc 0 + a well-formed
     #    PreToolUse JSON (or rc 2) is passed on. Everything else is exit 2.
     if not package_src or not os.path.isabs(python):
@@ -116,7 +116,7 @@ def main():
         env = dict(os.environ)
         env["PYTHONPATH"] = package_src
         proc = subprocess.run(
-            [python, "-P", "-c", _BOOT, package_src, "sandbox.connector.hook_eval"],
+            [python, "-I", "-c", _BOOT, package_src, "sandbox.connector.hook_eval"],
             input=raw, capture_output=True, text=True, env=env, timeout=120,
         )
     except Exception as exc:
@@ -242,7 +242,7 @@ def main():
         env = dict(os.environ)
         env["PYTHONPATH"] = package_src
         proc = subprocess.run(
-            [python, "-P", "-c", _BOOT, package_src, "sandbox.connector.hook_eval", "--post"],
+            [python, "-I", "-c", _BOOT, package_src, "sandbox.connector.hook_eval", "--post"],
             input=raw, capture_output=True, text=True, env=env, timeout=120,
         )
         if proc.stdout:

@@ -35,6 +35,37 @@ def _package_src() -> str:
     return str(Path(sandbox.__file__).resolve().parent.parent)
 
 
+class InstallLayoutError(ValueError):
+    """The connector's code would live inside the governed (agent-writable) root."""
+
+
+def _interpreter_dirs() -> list[str]:
+    import site
+
+    dirs = [sys.prefix, *site.getsitepackages()]
+    try:
+        dirs.append(site.getusersitepackages())
+    except Exception:  # noqa: BLE001
+        pass
+    return dirs
+
+
+def _refuse_in_root(root: Path) -> None:
+    """SEC-27: a .pth file, sitecustomize or package inside the project would run
+    in (or replace) the hook, so the connector must be installed outside it."""
+    import os
+
+    base = os.path.normcase(os.path.realpath(root))
+    for d in [*_interpreter_dirs(), _package_src()]:
+        real = os.path.normcase(os.path.realpath(d))
+        if real == base or real.startswith(base + os.sep):
+            raise InstallLayoutError(
+                f"refusing to install: {d} is inside the governed folder {root}. The agent "
+                "can write there and take over the hook. Install the connector outside the "
+                "project (for example pipx, or a virtualenv in another directory) and re-run."
+            )
+
+
 def _new_session_id() -> str:
     return "s-" + time.strftime("%Y-%m-%d-") + uuid.uuid4().hex[:6]
 
@@ -45,9 +76,9 @@ def _mcp_command() -> tuple[str, list[str]]:
     Uses the absolute interpreter so a Store-shim `python` on PATH can't break
     stdio launch; `--root` is filled in per-folder by the caller.
     """
-    # -P: the launch directory (project root, agent-writable) never goes on
-    # sys.path, so files there cannot shadow the package (SEC-27).
-    return sys.executable, ["-P", "-m", "sandbox.connector.mcp_server", "--root"]
+    # -I (isolated): no cwd/script dir on sys.path, PYTHON* env and user site
+    # ignored, so files in the agent-writable project cannot shadow the package.
+    return sys.executable, ["-I", "-m", "sandbox.connector.mcp_server", "--root"]
 
 
 _MIN_CLAUDE = (2, 1, 295)  # first release with hook "onFailure": "block"
@@ -90,7 +121,7 @@ def write_mcp_json(layout: FolderLayout) -> Path:
         "type": "stdio",
         "command": cmd,
         "args": [*args, str(layout.root)],
-        "env": {"PYTHONPATH": _package_src()},
+        "env": {"PYTHONPATH": _package_src(), "SANDBOX_PACKAGE_SRC": _package_src()},
     }
     path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
     return path
@@ -106,10 +137,12 @@ def codex_config_snippet(layout: FolderLayout) -> str:
     full_args = [*args, str(layout.root)]
     args_toml = ", ".join(f'"{a.replace(chr(92), "/")}"' for a in full_args)
     cmd_toml = cmd.replace("\\", "/")
+    _src_toml = _package_src().replace("\\", "/")
     return (
         "[mcp_servers.sandbox]\n"
         f'command = "{cmd_toml}"\n'
         f"args = [{args_toml}]\n"
+        f'env = {{ PYTHONPATH = "{_src_toml}", SANDBOX_PACKAGE_SRC = "{_src_toml}" }}\n'
     )
 
 
@@ -123,6 +156,7 @@ def init(
 ) -> dict[str, Any]:
     """Initialize `.sandbox/` in *root*. Returns a summary dict."""
     layout = FolderLayout(root)
+    _refuse_in_root(layout.root)
     layout.ensure_dirs()
 
     # policy.json (only write if absent, so re-init preserves tuning)
@@ -200,7 +234,7 @@ def _merge_settings(layout: FolderLayout, stub_path: Path, python: str | None = 
     py = python or sys.executable  # absolute interpreter recorded in session.json
 
     def _cmd(stub: Path) -> str:
-        return f'"{py}" -P "{stub}"'
+        return f'"{py}" -I "{stub}"'
 
     # PreToolUse hook
     pre = hooks.setdefault("PreToolUse", [])

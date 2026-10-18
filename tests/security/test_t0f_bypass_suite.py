@@ -67,7 +67,6 @@ RED_TODAY = frozenset({
     "benign_unchanged-004",
     "benign_unchanged-005",
     "bounds-001",
-    "bounds-002",
     "bounds-004",
     "bounds-005",
     "bounds-006",
