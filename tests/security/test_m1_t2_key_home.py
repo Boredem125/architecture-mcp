@@ -294,9 +294,11 @@ def _tool_case(case: str, lay, kh: Path, w: Path):
 
 
 RED_CASES = ["read", "read_via_link", "grep", "glob", "write_pins", "edit_pins", "cat_abs",
-             "type_percent_var", "cat_tilde", "cat_case_variant", "cat_short_name", "cat_via_link"]
+             "cat_case_variant", "cat_short_name", "cat_via_link"]
 # Any $VAR already makes a shell command unsafe (escalate) since T0a: guards, not RED.
-GUARD_CASES = ["cat_dollar_var", "cat_ps_env"]
+# T0f: `%VAR%` and a leading `~` are outside the static subset, so they escalate too
+# (moved here from RED_CASES, same assertion; T2 still has to deny them outright).
+GUARD_CASES = ["cat_dollar_var", "cat_ps_env", "type_percent_var", "cat_tilde"]
 
 
 @RED_T2

@@ -58,5 +58,12 @@ Each task's new tests are committed as strict xfail (`raises=<named exception>`)
 
 **N** (the Phase A count in the M1 gate) = the sum of this table's "Tests" column once T1-T4 are written; written here before any fix runs.
 
-### T0f corpus (frozen before any fix; D0b as amended in `1f32e6b`)
+### T0f: N as it stands at the T0f commit (honest accounting)
+
+- **Frozen tests-first (`84d515b`, before any fix ran):** the corpus of 242 cases plus 4 integrity guards = 246 tests in `tests/security/test_t0f_bypass_suite.py`, 75 strict xfail.
+- **Added during security's review, each written failing first against the then-current source, but after the implementation existed:** 15 cases (12 `protected_path`, 3 `benign_unchanged`), then 168 cases (136 `git_flag_matrix`, 32 read-only git positives under `benign`), then 2 more positives (`--no-ext-diff`, `--no-textconv`). The corpus is now 427 cases and the suite file has 431 tests; `RED_TODAY` is empty.
+- **`tests/security/test_t0f_lexer.py`: written alongside the implementation, so NOT frozen before the run.** It holds the 12 worst-case 32 KiB timing cases, the review items one by one, and the stale-pattern and `.git/**` tests.
+- **Measured at the T0f commit:** full suite 1402 passed, 1 skipped, 16 xfailed; frozen-manifest tests are unchanged; the only edited existing test is `test_m1_t2_key_home.py` (founder-approved move). Per-class numbers: `docs/BYPASS_SUITE.md`.
+
+### T0f corpus as frozen in `84d515b` (D0b as amended in `1f32e6b`)
 Corpus size per class: glob_command_word 10, substitution 17, variable_command 12, eval_exec_source 24, interpreter_c 56, newline_continuation 12, quoting_split 20, alias_function 10, protected_path 40, sec25_residual 8, bounds 8, benign 17, benign_unchanged 8 = 242. Expected: 202 deny, 23 escalate (8 of them benign_unchanged), 17 allow. Rule: an unresolvable form with a deny fragment denies, otherwise escalates; the written-then-run / trap / renamed-copy forms escalate. RED today by class: alias_function 4, benign 3 (quoted mentions denied today, a false positive), benign_unchanged 2, bounds 7, glob_command_word 10, interpreter_c 19, newline_continuation 5, protected_path 3, quoting_split 5, sec25_residual 6, substitution 2, variable_command 9 = 75. The two 33 KiB cases run the hook in a child process with a 5 s limit because today's hook does not return within 60 s on them (the D0b.5 DoS). Full suite at this commit, local Windows: 926 passed, 1 skipped, 93 xfailed. Corpus file is `.jsonl` as in the plan; the test file name follows the QA brief (`test_t0f_bypass_suite.py`, not `test_bypass_suite.py`).

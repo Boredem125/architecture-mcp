@@ -240,3 +240,188 @@
 {"id": "interpreter_c-056", "class": "interpreter_c", "shell": "cmd", "command": "cmd /c powershell -enc AAAA", "expected": "deny", "why": "EncodedCommand inside cmd /c: always denied"}
 {"id": "protected_path-039", "class": "protected_path", "shell": "bash", "command": "cat .sandbox\\policy.json", "expected": "deny", "why": "backslash separator under Git Bash path normalisation; could reach a protected path"}
 {"id": "protected_path-040", "class": "protected_path", "shell": "bash", "command": "cat /e/../e/.SANDBOX/policy.json", "expected": "deny", "why": "MSYS-style path with dot-dot and case folding; could reach a protected path"}
+{"id": "protected_path-041", "class": "protected_path", "shell": "bash", "command": "cat .{r..t}andbox/state/keys/a.seed", "expected": "deny", "why": "brace range spells .sandbox"}
+{"id": "protected_path-042", "class": "protected_path", "shell": "bash", "command": "git log -p --output=.sand{a..b}ox/x", "expected": "deny", "why": "brace range inside an option value"}
+{"id": "protected_path-043", "class": "protected_path", "shell": "bash", "command": "cat .s{a..a}ndbox", "expected": "deny", "why": "single-element range spells .sandbox"}
+{"id": "protected_path-044", "class": "protected_path", "shell": "bash", "command": "cat .sand[[:alpha:]]ox/state/keys/a.seed", "expected": "deny", "why": "POSIX class in a bracket glob"}
+{"id": "protected_path-045", "class": "protected_path", "shell": "bash", "command": "cat .sandbo[^y]/state/keys/a.seed", "expected": "deny", "why": "^ negation in a bracket glob"}
+{"id": "protected_path-046", "class": "protected_path", "shell": "pwsh", "command": "cat ?sandbox\\policy.json", "expected": "deny", "why": "PowerShell wildcards have no leading-dot rule"}
+{"id": "protected_path-047", "class": "protected_path", "shell": "pwsh", "command": "cat *andbox\\policy.json", "expected": "deny", "why": "PowerShell wildcard without the dot"}
+{"id": "protected_path-048", "class": "protected_path", "shell": "pwsh", "command": "ls ?sandbox", "expected": "deny", "why": "PowerShell wildcard listing"}
+{"id": "protected_path-049", "class": "protected_path", "shell": "bash", "command": "tar -xf.sandbox/x.tar", "expected": "deny", "why": "attached option value after a letter cluster"}
+{"id": "protected_path-050", "class": "protected_path", "shell": "bash", "command": "tar -pO.sandbox/x", "expected": "deny", "why": "attached option value after a letter cluster"}
+{"id": "protected_path-051", "class": "protected_path", "shell": "bash", "command": "echo x > .git/config", "expected": "deny", "why": "redirect write to .git/config (core.fsmonitor)"}
+{"id": "protected_path-052", "class": "protected_path", "shell": "bash", "command": "echo x > GIT~1/hooks/pre-commit", "expected": "deny", "why": "8.3 alias of .git"}
+{"id": "benign_unchanged-009", "class": "benign_unchanged", "shell": "bash", "command": "ls/x.sh", "expected": "escalate", "why": "allow regex must not match a path that starts with ls"}
+{"id": "benign_unchanged-010", "class": "benign_unchanged", "shell": "bash", "command": "cat.sh", "expected": "escalate", "why": "allow regex must not match cat.sh"}
+{"id": "benign_unchanged-011", "class": "benign_unchanged", "shell": "bash", "command": "dir/x.cmd", "expected": "escalate", "why": "allow regex must not match dir/x.cmd"}
+{"id": "git_flag_matrix-001", "class": "git_flag_matrix", "shell": "bash", "command": "git status --output=out.txt", "expected": "escalate", "why": "git status with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-002", "class": "git_flag_matrix", "shell": "bash", "command": "git status --output out.txt", "expected": "escalate", "why": "git status with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-003", "class": "git_flag_matrix", "shell": "bash", "command": "git status -o out.txt", "expected": "escalate", "why": "git status with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-004", "class": "git_flag_matrix", "shell": "bash", "command": "git status -O orderfile", "expected": "escalate", "why": "git status with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-005", "class": "git_flag_matrix", "shell": "bash", "command": "git status -Oorderfile", "expected": "escalate", "why": "git status with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-006", "class": "git_flag_matrix", "shell": "bash", "command": "git status --ext-diff", "expected": "escalate", "why": "git status with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-007", "class": "git_flag_matrix", "shell": "bash", "command": "git status --textconv", "expected": "escalate", "why": "git status with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-008", "class": "git_flag_matrix", "shell": "bash", "command": "git status --no-index a b", "expected": "escalate", "why": "git status with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-009", "class": "git_flag_matrix", "shell": "bash", "command": "git status -c core.fsmonitor=x", "expected": "escalate", "why": "git status with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-010", "class": "git_flag_matrix", "shell": "bash", "command": "git status --git-dir=x", "expected": "escalate", "why": "git status with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-011", "class": "git_flag_matrix", "shell": "bash", "command": "git status --work-tree=x", "expected": "escalate", "why": "git status with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-012", "class": "git_flag_matrix", "shell": "bash", "command": "git status -C x", "expected": "escalate", "why": "git status with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-013", "class": "git_flag_matrix", "shell": "bash", "command": "git status --exec-path=x", "expected": "escalate", "why": "git status with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-014", "class": "git_flag_matrix", "shell": "bash", "command": "git status --config-env=a=B", "expected": "escalate", "why": "git status with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-015", "class": "git_flag_matrix", "shell": "bash", "command": "git status --output=.git/config", "expected": "deny", "why": "git status writing into .git/**"}
+{"id": "git_flag_matrix-016", "class": "git_flag_matrix", "shell": "bash", "command": "git status --output=.git/hooks/pre-commit", "expected": "deny", "why": "git status writing into .git/**"}
+{"id": "git_flag_matrix-017", "class": "git_flag_matrix", "shell": "bash", "command": "git status --output=GIT~1/config", "expected": "deny", "why": "git status writing into .git/**"}
+{"id": "git_flag_matrix-018", "class": "git_flag_matrix", "shell": "bash", "command": "git status --output .git/info/attributes", "expected": "deny", "why": "git status writing into .git/**"}
+{"id": "git_flag_matrix-019", "class": "git_flag_matrix", "shell": "bash", "command": "git status --output=.git/modules/m/config", "expected": "deny", "why": "git status writing into .git/**"}
+{"id": "git_flag_matrix-020", "class": "git_flag_matrix", "shell": "bash", "command": "git log --output=out.txt", "expected": "escalate", "why": "git log with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-021", "class": "git_flag_matrix", "shell": "bash", "command": "git log --output out.txt", "expected": "escalate", "why": "git log with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-022", "class": "git_flag_matrix", "shell": "bash", "command": "git log -o out.txt", "expected": "escalate", "why": "git log with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-023", "class": "git_flag_matrix", "shell": "bash", "command": "git log -O orderfile", "expected": "escalate", "why": "git log with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-024", "class": "git_flag_matrix", "shell": "bash", "command": "git log -Oorderfile", "expected": "escalate", "why": "git log with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-025", "class": "git_flag_matrix", "shell": "bash", "command": "git log --ext-diff", "expected": "escalate", "why": "git log with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-026", "class": "git_flag_matrix", "shell": "bash", "command": "git log --textconv", "expected": "escalate", "why": "git log with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-027", "class": "git_flag_matrix", "shell": "bash", "command": "git log --no-index a b", "expected": "escalate", "why": "git log with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-028", "class": "git_flag_matrix", "shell": "bash", "command": "git log -c core.fsmonitor=x", "expected": "escalate", "why": "git log with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-029", "class": "git_flag_matrix", "shell": "bash", "command": "git log --git-dir=x", "expected": "escalate", "why": "git log with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-030", "class": "git_flag_matrix", "shell": "bash", "command": "git log --work-tree=x", "expected": "escalate", "why": "git log with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-031", "class": "git_flag_matrix", "shell": "bash", "command": "git log -C x", "expected": "escalate", "why": "git log with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-032", "class": "git_flag_matrix", "shell": "bash", "command": "git log --exec-path=x", "expected": "escalate", "why": "git log with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-033", "class": "git_flag_matrix", "shell": "bash", "command": "git log --config-env=a=B", "expected": "escalate", "why": "git log with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-034", "class": "git_flag_matrix", "shell": "bash", "command": "git log --output=.git/config", "expected": "deny", "why": "git log writing into .git/**"}
+{"id": "git_flag_matrix-035", "class": "git_flag_matrix", "shell": "bash", "command": "git log --output=.git/hooks/pre-commit", "expected": "deny", "why": "git log writing into .git/**"}
+{"id": "git_flag_matrix-036", "class": "git_flag_matrix", "shell": "bash", "command": "git log --output=GIT~1/config", "expected": "deny", "why": "git log writing into .git/**"}
+{"id": "git_flag_matrix-037", "class": "git_flag_matrix", "shell": "bash", "command": "git log --output .git/info/attributes", "expected": "deny", "why": "git log writing into .git/**"}
+{"id": "git_flag_matrix-038", "class": "git_flag_matrix", "shell": "bash", "command": "git log --output=.git/modules/m/config", "expected": "deny", "why": "git log writing into .git/**"}
+{"id": "git_flag_matrix-039", "class": "git_flag_matrix", "shell": "bash", "command": "git diff --output=out.txt", "expected": "escalate", "why": "git diff with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-040", "class": "git_flag_matrix", "shell": "bash", "command": "git diff --output out.txt", "expected": "escalate", "why": "git diff with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-041", "class": "git_flag_matrix", "shell": "bash", "command": "git diff -o out.txt", "expected": "escalate", "why": "git diff with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-042", "class": "git_flag_matrix", "shell": "bash", "command": "git diff -O orderfile", "expected": "escalate", "why": "git diff with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-043", "class": "git_flag_matrix", "shell": "bash", "command": "git diff -Oorderfile", "expected": "escalate", "why": "git diff with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-044", "class": "git_flag_matrix", "shell": "bash", "command": "git diff --ext-diff", "expected": "escalate", "why": "git diff with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-045", "class": "git_flag_matrix", "shell": "bash", "command": "git diff --textconv", "expected": "escalate", "why": "git diff with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-046", "class": "git_flag_matrix", "shell": "bash", "command": "git diff --no-index a b", "expected": "escalate", "why": "git diff with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-047", "class": "git_flag_matrix", "shell": "bash", "command": "git diff -c core.fsmonitor=x", "expected": "escalate", "why": "git diff with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-048", "class": "git_flag_matrix", "shell": "bash", "command": "git diff --git-dir=x", "expected": "escalate", "why": "git diff with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-049", "class": "git_flag_matrix", "shell": "bash", "command": "git diff --work-tree=x", "expected": "escalate", "why": "git diff with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-050", "class": "git_flag_matrix", "shell": "bash", "command": "git diff -C x", "expected": "escalate", "why": "git diff with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-051", "class": "git_flag_matrix", "shell": "bash", "command": "git diff --exec-path=x", "expected": "escalate", "why": "git diff with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-052", "class": "git_flag_matrix", "shell": "bash", "command": "git diff --config-env=a=B", "expected": "escalate", "why": "git diff with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-053", "class": "git_flag_matrix", "shell": "bash", "command": "git diff --output=.git/config", "expected": "deny", "why": "git diff writing into .git/**"}
+{"id": "git_flag_matrix-054", "class": "git_flag_matrix", "shell": "bash", "command": "git diff --output=.git/hooks/pre-commit", "expected": "deny", "why": "git diff writing into .git/**"}
+{"id": "git_flag_matrix-055", "class": "git_flag_matrix", "shell": "bash", "command": "git diff --output=GIT~1/config", "expected": "deny", "why": "git diff writing into .git/**"}
+{"id": "git_flag_matrix-056", "class": "git_flag_matrix", "shell": "bash", "command": "git diff --output .git/info/attributes", "expected": "deny", "why": "git diff writing into .git/**"}
+{"id": "git_flag_matrix-057", "class": "git_flag_matrix", "shell": "bash", "command": "git diff --output=.git/modules/m/config", "expected": "deny", "why": "git diff writing into .git/**"}
+{"id": "git_flag_matrix-058", "class": "git_flag_matrix", "shell": "bash", "command": "git show --output=out.txt", "expected": "escalate", "why": "git show with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-059", "class": "git_flag_matrix", "shell": "bash", "command": "git show --output out.txt", "expected": "escalate", "why": "git show with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-060", "class": "git_flag_matrix", "shell": "bash", "command": "git show -o out.txt", "expected": "escalate", "why": "git show with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-061", "class": "git_flag_matrix", "shell": "bash", "command": "git show -O orderfile", "expected": "escalate", "why": "git show with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-062", "class": "git_flag_matrix", "shell": "bash", "command": "git show -Oorderfile", "expected": "escalate", "why": "git show with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-063", "class": "git_flag_matrix", "shell": "bash", "command": "git show --ext-diff", "expected": "escalate", "why": "git show with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-064", "class": "git_flag_matrix", "shell": "bash", "command": "git show --textconv", "expected": "escalate", "why": "git show with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-065", "class": "git_flag_matrix", "shell": "bash", "command": "git show --no-index a b", "expected": "escalate", "why": "git show with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-066", "class": "git_flag_matrix", "shell": "bash", "command": "git show -c core.fsmonitor=x", "expected": "escalate", "why": "git show with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-067", "class": "git_flag_matrix", "shell": "bash", "command": "git show --git-dir=x", "expected": "escalate", "why": "git show with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-068", "class": "git_flag_matrix", "shell": "bash", "command": "git show --work-tree=x", "expected": "escalate", "why": "git show with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-069", "class": "git_flag_matrix", "shell": "bash", "command": "git show -C x", "expected": "escalate", "why": "git show with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-070", "class": "git_flag_matrix", "shell": "bash", "command": "git show --exec-path=x", "expected": "escalate", "why": "git show with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-071", "class": "git_flag_matrix", "shell": "bash", "command": "git show --config-env=a=B", "expected": "escalate", "why": "git show with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-072", "class": "git_flag_matrix", "shell": "bash", "command": "git show --output=.git/config", "expected": "deny", "why": "git show writing into .git/**"}
+{"id": "git_flag_matrix-073", "class": "git_flag_matrix", "shell": "bash", "command": "git show --output=.git/hooks/pre-commit", "expected": "deny", "why": "git show writing into .git/**"}
+{"id": "git_flag_matrix-074", "class": "git_flag_matrix", "shell": "bash", "command": "git show --output=GIT~1/config", "expected": "deny", "why": "git show writing into .git/**"}
+{"id": "git_flag_matrix-075", "class": "git_flag_matrix", "shell": "bash", "command": "git show --output .git/info/attributes", "expected": "deny", "why": "git show writing into .git/**"}
+{"id": "git_flag_matrix-076", "class": "git_flag_matrix", "shell": "bash", "command": "git show --output=.git/modules/m/config", "expected": "deny", "why": "git show writing into .git/**"}
+{"id": "git_flag_matrix-077", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --output=out.txt", "expected": "escalate", "why": "git branch with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-078", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --output out.txt", "expected": "escalate", "why": "git branch with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-079", "class": "git_flag_matrix", "shell": "bash", "command": "git branch -o out.txt", "expected": "escalate", "why": "git branch with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-080", "class": "git_flag_matrix", "shell": "bash", "command": "git branch -O orderfile", "expected": "escalate", "why": "git branch with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-081", "class": "git_flag_matrix", "shell": "bash", "command": "git branch -Oorderfile", "expected": "escalate", "why": "git branch with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-082", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --ext-diff", "expected": "escalate", "why": "git branch with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-083", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --textconv", "expected": "escalate", "why": "git branch with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-084", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --no-index a b", "expected": "escalate", "why": "git branch with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-085", "class": "git_flag_matrix", "shell": "bash", "command": "git branch -c core.fsmonitor=x", "expected": "escalate", "why": "git branch with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-086", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --git-dir=x", "expected": "escalate", "why": "git branch with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-087", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --work-tree=x", "expected": "escalate", "why": "git branch with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-088", "class": "git_flag_matrix", "shell": "bash", "command": "git branch -C x", "expected": "escalate", "why": "git branch with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-089", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --exec-path=x", "expected": "escalate", "why": "git branch with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-090", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --config-env=a=B", "expected": "escalate", "why": "git branch with a write/config flag is not on the read-only flag allowlist"}
+{"id": "git_flag_matrix-091", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --output=.git/config", "expected": "deny", "why": "git branch writing into .git/**"}
+{"id": "git_flag_matrix-092", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --output=.git/hooks/pre-commit", "expected": "deny", "why": "git branch writing into .git/**"}
+{"id": "git_flag_matrix-093", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --output=GIT~1/config", "expected": "deny", "why": "git branch writing into .git/**"}
+{"id": "git_flag_matrix-094", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --output .git/info/attributes", "expected": "deny", "why": "git branch writing into .git/**"}
+{"id": "git_flag_matrix-095", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --output=.git/modules/m/config", "expected": "deny", "why": "git branch writing into .git/**"}
+{"id": "git_flag_matrix-096", "class": "git_flag_matrix", "shell": "bash", "command": "git log --format='[core]%nfsmonitor = X' --output=.git/config", "expected": "deny", "why": "fsmonitor chain: writes .git/config"}
+{"id": "git_flag_matrix-097", "class": "git_flag_matrix", "shell": "bash", "command": "git log --format=%B --output=cfg", "expected": "escalate", "why": "writes an arbitrary file"}
+{"id": "git_flag_matrix-098", "class": "git_flag_matrix", "shell": "bash", "command": "git show --output=a", "expected": "escalate", "why": "writes an arbitrary file"}
+{"id": "git_flag_matrix-099", "class": "git_flag_matrix", "shell": "bash", "command": "git diff --output=GIT~1/config", "expected": "deny", "why": "8.3 alias of .git/config"}
+{"id": "git_flag_matrix-100", "class": "git_flag_matrix", "shell": "bash", "command": "GIT_EXTERNAL_DIFF=x git diff", "expected": "escalate", "why": "GIT_* environment prefix"}
+{"id": "git_flag_matrix-101", "class": "git_flag_matrix", "shell": "bash", "command": "GIT_DIR=x git diff", "expected": "escalate", "why": "GIT_* environment prefix"}
+{"id": "git_flag_matrix-102", "class": "git_flag_matrix", "shell": "bash", "command": "GIT_CONFIG_COUNT=1 git diff", "expected": "escalate", "why": "GIT_* environment prefix"}
+{"id": "git_flag_matrix-103", "class": "git_flag_matrix", "shell": "bash", "command": "GIT_SSH_COMMAND=x git diff", "expected": "escalate", "why": "GIT_* environment prefix"}
+{"id": "git_flag_matrix-104", "class": "git_flag_matrix", "shell": "bash", "command": "git -c core.fsmonitor=x status", "expected": "escalate", "why": "config override before the subcommand"}
+{"id": "git_flag_matrix-105", "class": "git_flag_matrix", "shell": "bash", "command": "git -C .. status", "expected": "escalate", "why": "directory switch"}
+{"id": "git_flag_matrix-106", "class": "git_flag_matrix", "shell": "bash", "command": "git branch newbranch", "expected": "escalate", "why": "git branch creates or mutates a ref"}
+{"id": "git_flag_matrix-107", "class": "git_flag_matrix", "shell": "bash", "command": "git branch -d old", "expected": "escalate", "why": "git branch creates or mutates a ref"}
+{"id": "git_flag_matrix-108", "class": "git_flag_matrix", "shell": "bash", "command": "git branch -D old", "expected": "escalate", "why": "git branch creates or mutates a ref"}
+{"id": "git_flag_matrix-109", "class": "git_flag_matrix", "shell": "bash", "command": "git branch -m a b", "expected": "escalate", "why": "git branch creates or mutates a ref"}
+{"id": "git_flag_matrix-110", "class": "git_flag_matrix", "shell": "bash", "command": "git branch -M a b", "expected": "escalate", "why": "git branch creates or mutates a ref"}
+{"id": "git_flag_matrix-111", "class": "git_flag_matrix", "shell": "bash", "command": "git branch -c a b", "expected": "escalate", "why": "git branch creates or mutates a ref"}
+{"id": "git_flag_matrix-112", "class": "git_flag_matrix", "shell": "bash", "command": "git branch -C a b", "expected": "escalate", "why": "git branch creates or mutates a ref"}
+{"id": "git_flag_matrix-113", "class": "git_flag_matrix", "shell": "bash", "command": "git branch -f x", "expected": "escalate", "why": "git branch creates or mutates a ref"}
+{"id": "git_flag_matrix-114", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --set-upstream-to=origin/main", "expected": "escalate", "why": "git branch creates or mutates a ref"}
+{"id": "git_flag_matrix-115", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --edit-description", "expected": "escalate", "why": "git branch creates or mutates a ref"}
+{"id": "git_flag_matrix-116", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --delete old", "expected": "escalate", "why": "git branch creates or mutates a ref"}
+{"id": "git_flag_matrix-117", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --move a b", "expected": "escalate", "why": "git branch creates or mutates a ref"}
+{"id": "git_flag_matrix-118", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --copy a b", "expected": "escalate", "why": "git branch creates or mutates a ref"}
+{"id": "git_flag_matrix-119", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --force x", "expected": "escalate", "why": "git branch creates or mutates a ref"}
+{"id": "git_flag_matrix-120", "class": "git_flag_matrix", "shell": "bash", "command": "git branch -u origin/main", "expected": "escalate", "why": "git branch creates or mutates a ref"}
+{"id": "git_flag_matrix-121", "class": "git_flag_matrix", "shell": "bash", "command": "git branch --unset-upstream", "expected": "escalate", "why": "git branch creates or mutates a ref"}
+{"id": "git_flag_matrix-122", "class": "git_flag_matrix", "shell": "bash", "command": "git rev-parse --parseopt", "expected": "escalate", "why": "not on the rev-parse read-only list"}
+{"id": "git_flag_matrix-123", "class": "git_flag_matrix", "shell": "bash", "command": "git rev-parse --sq-quote x", "expected": "escalate", "why": "not on the rev-parse read-only list"}
+{"id": "git_flag_matrix-124", "class": "git_flag_matrix", "shell": "bash", "command": "git rev-parse --git-path x", "expected": "escalate", "why": "not on the rev-parse read-only list"}
+{"id": "git_flag_matrix-125", "class": "git_flag_matrix", "shell": "pwsh", "command": "git log --output=x", "expected": "escalate", "why": "PowerShell tool, same allowlist"}
+{"id": "git_flag_matrix-126", "class": "git_flag_matrix", "shell": "pwsh", "command": "git diff --output=.git/config", "expected": "deny", "why": "PowerShell tool, .git write"}
+{"id": "git_flag_matrix-127", "class": "git_flag_matrix", "shell": "bash", "command": "echo x | tee .git/config", "expected": "deny", "why": "write into .git/**"}
+{"id": "git_flag_matrix-128", "class": "git_flag_matrix", "shell": "bash", "command": "cp x .git/hooks/pre-commit", "expected": "deny", "why": "write into .git/**"}
+{"id": "git_flag_matrix-129", "class": "git_flag_matrix", "shell": "bash", "command": "mv x .git/info/attributes", "expected": "deny", "why": "write into .git/**"}
+{"id": "git_flag_matrix-130", "class": "git_flag_matrix", "shell": "bash", "command": "rm .git/index", "expected": "deny", "why": "write into .git/**"}
+{"id": "git_flag_matrix-131", "class": "git_flag_matrix", "shell": "bash", "command": "echo x > .git/HEAD", "expected": "deny", "why": "write into .git/**"}
+{"id": "git_flag_matrix-132", "class": "git_flag_matrix", "shell": "bash", "command": "touch .git/refs/heads/x", "expected": "deny", "why": "write into .git/**"}
+{"id": "git_flag_matrix-133", "class": "git_flag_matrix", "shell": "bash", "command": "ln -s a .git/config", "expected": "deny", "why": "write into .git/**"}
+{"id": "git_flag_matrix-134", "class": "git_flag_matrix", "shell": "bash", "command": "echo x >> .git/modules/a/config", "expected": "deny", "why": "write into .git/**"}
+{"id": "git_flag_matrix-135", "class": "git_flag_matrix", "shell": "bash", "command": "dd of=.git/config", "expected": "deny", "why": "write into .git/**"}
+{"id": "git_flag_matrix-136", "class": "git_flag_matrix", "shell": "bash", "command": "install x .git/hooks/y", "expected": "deny", "why": "write into .git/**"}
+{"id": "benign-018", "class": "benign", "shell": "bash", "command": "git status -s", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-019", "class": "benign", "shell": "bash", "command": "git status --porcelain=v2 -b", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-020", "class": "benign", "shell": "bash", "command": "git status -sb -uno", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-021", "class": "benign", "shell": "bash", "command": "git log --oneline -n 5", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-022", "class": "benign", "shell": "bash", "command": "git log --oneline -5", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-023", "class": "benign", "shell": "bash", "command": "git log --since=2.weeks --author=bob", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-024", "class": "benign", "shell": "bash", "command": "git log --format=%H -3", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-025", "class": "benign", "shell": "bash", "command": "git log --pretty=oneline", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-026", "class": "benign", "shell": "bash", "command": "git log -p -- README.md", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-027", "class": "benign", "shell": "bash", "command": "git diff --stat --name-only", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-028", "class": "benign", "shell": "bash", "command": "git diff --cached", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-029", "class": "benign", "shell": "bash", "command": "git diff -- src", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-030", "class": "benign", "shell": "bash", "command": "git diff -U5 HEAD~1", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-031", "class": "benign", "shell": "bash", "command": "git show --stat HEAD", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-032", "class": "benign", "shell": "bash", "command": "git show HEAD --name-only", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-033", "class": "benign", "shell": "bash", "command": "git branch", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-034", "class": "benign", "shell": "bash", "command": "git branch -a", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-035", "class": "benign", "shell": "bash", "command": "git branch -r", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-036", "class": "benign", "shell": "bash", "command": "git branch -vv", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-037", "class": "benign", "shell": "bash", "command": "git branch --list", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-038", "class": "benign", "shell": "bash", "command": "git branch --list 'feat*'", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-039", "class": "benign", "shell": "bash", "command": "git branch --show-current", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-040", "class": "benign", "shell": "bash", "command": "git branch --contains HEAD", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-041", "class": "benign", "shell": "bash", "command": "git branch --merged main", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-042", "class": "benign", "shell": "bash", "command": "git rev-parse HEAD", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-043", "class": "benign", "shell": "bash", "command": "git rev-parse --short HEAD", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-044", "class": "benign", "shell": "bash", "command": "git rev-parse --abbrev-ref HEAD", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-045", "class": "benign", "shell": "bash", "command": "git rev-parse --show-toplevel", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-046", "class": "benign", "shell": "bash", "command": "git rev-parse --git-dir", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-047", "class": "benign", "shell": "bash", "command": "git rev-parse --verify HEAD", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-048", "class": "benign", "shell": "bash", "command": "git log --grep fix --max-count 3", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-049", "class": "benign", "shell": "bash", "command": "git log --since '2 days ago'", "expected": "allow", "why": "read-only git form stays allowed"}
+{"id": "benign-050", "class": "benign", "shell": "bash", "command": "git diff --no-ext-diff", "expected": "allow", "why": "flags that disable external tools stay allowed"}
+{"id": "benign-051", "class": "benign", "shell": "bash", "command": "git log -p --no-textconv --no-ext-diff", "expected": "allow", "why": "flags that disable external tools stay allowed"}

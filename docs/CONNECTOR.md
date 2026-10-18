@@ -110,10 +110,10 @@ versa (`check_request`).
   },
   "shell": {
     "allow_patterns": [
-      "^git (status|diff|log|show|branch|rev-parse)\\b",
+      "^git (status|diff|log|show|branch|rev-parse)(\\s|$)",
       "^(npm|pnpm|yarn) (run|test|ci)\\b",
       "^python -m pytest\\b",
-      "^(ls|dir|pwd|cd|cat|type|echo|which|where)\\b"
+      "^(ls|dir|pwd|cd|cat|type|echo|which|where)(\\s|$)"
     ]
   },
   "network": { "allow_hosts": ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"] }
@@ -317,3 +317,7 @@ are not safe until you do the following:
 3. **Check it:** `sandbox doctor <folder>` prints `OK` or `UNSAFE LAYOUT` (exit 1). The
    hook entry in `.claude/settings.local.json` should show an absolute interpreter path,
    `-I`, and `onFailure: block`. Shell commands over 32 KiB are now denied unanalysed.
+
+## Allow patterns need a word boundary (T0f)
+
+Default `shell.allow_patterns` end in `(\s|$)`. Whatever a saved policy holds, the hook only treats a pattern as matching when whitespace or the end of the segment follows the match, so `^ls` no longer allows `ls/x.sh`. Allowlisted `git` commands also accept only known read-only flags, and `.git/**` is never writable by the agent. `sandbox doctor` lists saved patterns without a boundary.

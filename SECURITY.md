@@ -124,3 +124,7 @@ are not safe until you do the following:
 3. **Check it:** `sandbox doctor <folder>` prints `OK` or `UNSAFE LAYOUT` (exit 1). The
    hook entry in `.claude/settings.local.json` should show an absolute interpreter path,
    `-I`, and `onFailure: block`. Shell commands over 32 KiB are now denied unanalysed.
+
+## Release note: shell analysis (T0f, existing users)
+
+Shell commands are now lexed against a static subset; anything outside it (expansions, globs in command words, `eval`, interpreters given code, encoded PowerShell, code-carrying tools) is never allowed silently: it is denied when a deny fragment is visible and escalated otherwise. Allowlisted git commands accept only known read-only flags; all of `.git/**` is write-protected. Saved `allow_patterns` such as `^ls` no longer match `ls/x.sh` or `cat.sh`: the hook requires whitespace or the end of the command after the match, so those commands escalate. Run `sandbox doctor <folder>` to list saved patterns that lack a `(\s|$)` boundary and fix them. Details and measured numbers: `docs/BYPASS_SUITE.md`.

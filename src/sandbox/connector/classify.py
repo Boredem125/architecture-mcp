@@ -27,14 +27,18 @@ Trigger map (from the plan):
 from __future__ import annotations
 
 import re
+import string
+import time
 from dataclasses import dataclass, field
+from functools import lru_cache
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from sandbox.connector.layout import FolderLayout
-from sandbox.connector.policy import FolderPolicy
+from sandbox.connector import shellwords
+from sandbox.connector.policy import _PROTECT_SHELL_PATTERNS, FolderPolicy
 from sandbox.fs.containment import is_contained
 
 SANDBOX_MCP_PREFIX = "mcp__sandbox__"
@@ -45,6 +49,9 @@ SANDBOX_MCP_PREFIX = "mcp__sandbox__"
 # glob matching and case folding, so `.sand*`, `.sand''box` and `.SANDBOX` all
 # hit `.sandbox`. They are never matched by regex on the command string.
 _PROTECTED_SEQS: tuple[tuple[str, ...], ...] = ((".sandbox",), (".git", "hooks"))
+# Paths the agent may read but not write: `git status` runs core.fsmonitor from .git/config,
+# and hooks, attributes, refs and objects steer git too.
+_WRITE_ONLY_SEQS: tuple[tuple[str, ...], ...] = ((".git",),)  # all of .git/**: reads stay allowed
 # Never readable by the agent: reviewer signing seeds (and, later, device keys).
 _KEY_SEQS: tuple[tuple[str, ...], ...] = (
     (".sandbox", "state", "keys"), (".sandbox", "state", "device"),
@@ -60,7 +67,6 @@ _APPROVER_SUBCOMMANDS = frozenset(
 _BENIGN_REDIRECT_RE = re.compile(
     r"[012]?>>?&[012-](?![\w./\\~$-])|[012]?>>?\s*(?:/dev/null|nul|\$null)(?![\w./\-])", re.I
 )
-_SHORT_NAME_RE = re.compile(r"sandbo~\d+")  # 8.3 alias of .sandbox on NTFS
 
 _SHELL_TOOLS = {"Bash", "PowerShell"}
 _WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
@@ -149,7 +155,8 @@ def classify(
         return Classification("allow", "", reason="sandbox MCP tool", reason_code="ALLOW")
 
     if tool_name in _SHELL_TOOLS:
-        return _classify_shell(tool_input, policy, blocklist)
+        return _classify_shell(tool_input, policy, blocklist,
+                               "pwsh" if tool_name == "PowerShell" else "bash")
 
     if tool_name in _WRITE_TOOLS:
         return _classify_write(tool_name, tool_input, policy, layout, base)
@@ -178,9 +185,15 @@ def classify(
 
 
 def _classify_shell(
-    tool_input: dict[str, Any], policy: FolderPolicy, blocklist: Any
+    tool_input: dict[str, Any], policy: FolderPolicy, blocklist: Any, shell: str = "bash"
 ) -> Classification:
     command = _shell_target_path(tool_input)
+
+    # 0. Bounds first, before anything scans the text (D0b.5): an oversize or NUL
+    # command is denied unlexed, and the blocklist regexes never see it.
+    bound = _command_bound(command)
+    if bound:
+        return Classification("deny", "shell", reason=bound[1], reason_code=bound[0], command="")
 
     # 1. Hard blocklist (destructive commands that can never be approved).
     if blocklist is not None:
@@ -197,20 +210,38 @@ def _classify_shell(
     # 2a/2b. Non-removable, in code: a word that names (or globs onto) a
     # protected path, or any segment that runs the approver CLI (approvals
     # come from a human's terminal, never the agent's shell, not even escalated).
-    denied = shell_deny_reason(command)
-    if denied:
+    # Outside the static subset (shellwords.py) a command is never allowed: denied
+    # when a deny fragment is visible, else escalated below.
+    analysis = analyse_shell(command, shell)
+    if analysis.deny:
         return Classification(
-            "deny", "shell", reason=denied[1], reason_code=denied[0], command=command,
+            "deny", "shell", reason=analysis.deny[1], reason_code=analysis.deny[0], command=command,
         )
 
-    # 2c. Self-protection deny patterns (.sandbox etc., re-injected each load).
+    # 2c. Deny patterns from the policy. The built-in self-protection pattern
+    # (`\.sandbox`, re-injected each load) is skipped: it matched quoted prose
+    # too (`echo "the .sandbox folder"`), and 2a now checks the same thing on the
+    # lexed words, including globs, quote splits and attached option values.
     for pat in policy.shell.deny_patterns:
+        if pat in _PROTECT_SHELL_PATTERNS:
+            continue
         if re.search(pat, command):
             return Classification(
                 "deny", "shell",
                 reason=f"command touches a protected path (pattern {pat!r})",
                 reason_code="SANDBOX_PROTECT", command=command,
             )
+
+    # 2d. Unresolvable: always a human, whatever triggers.shell says. The reason
+    # code and text tell the approver the command could not be analysed.
+    if analysis.unresolvable:
+        why = ", ".join(analysis.unresolvable)
+        return Classification(
+            "escalate", "shell",
+            reason=f"the command could not be analysed statically ({why}); read it before approving",
+            reason_code="SHELL_UNRESOLVABLE", command=command,
+            metadata={"unresolvable": list(analysis.unresolvable)},
+        )
 
     # 3. Allowlisted safe commands run silently, but only when the whole
     # command is safe: no substitution, redirect or expansion, and every
@@ -469,36 +500,215 @@ def command_allowlisted(command: str, allow_patterns: list[str]) -> bool:
         return False
     if unsafe or not segments:
         return False
-    for raw, _words in segments:
-        if not any(re.search(pat, raw) for pat in allow_patterns):
+    for raw, words in segments:
+        if not any(_allow_match(pat, raw) for pat in allow_patterns):
+            return False
+        if not _flags_ok(words):
             return False
     return True
+
+
+_GIT_LONG = frozenset((
+    "patch no-patch stat shortstat numstat summary oneline name-only name-status graph decorate "
+    "no-decorate abbrev-commit no-abbrev-commit no-color color all merges no-merges first-parent "
+    "follow reverse cached staged check relative-date raw topo-order date-order abbrev full-history "
+    "dirstat word-diff color-words ignore-space-change ignore-all-space minimal patience histogram "
+    "no-renames find-renames left-right boundary source stat-width unified pretty format date since "
+    "until after before author committer grep max-count skip diff-filter no-pager no-ext-diff no-textconv").split())
+_GIT_STATUS_LONG = frozenset((
+    "short branch porcelain long ignored untracked-files show-stash ahead-behind no-ahead-behind "
+    "column no-column ignore-submodules renames no-renames").split())
+_GIT_BRANCH_LONG = frozenset(
+    "list all remotes verbose show-current contains no-contains merged no-merged sort format "
+    "points-at column".split())
+_GIT_BRANCH_LIST = frozenset("list contains no-contains merged no-merged show-current points-at".split())
+_GIT_REVPARSE_LONG = frozenset((
+    "short abbrev-ref show-toplevel is-inside-work-tree verify symbolic-full-name show-prefix "
+    "show-cdup git-dir absolute-git-dir is-bare-repository quiet").split())
+_GIT_SEP_VALUE = frozenset((
+    "-n", "-U", "-S", "-G", "--max-count", "--skip", "--since", "--until", "--author", "--committer",
+    "--grep", "--diff-filter", "--after", "--before", "--contains", "--no-contains", "--merged",
+    "--no-merged", "--points-at", "--sort"))
+_GIT_SHORT = re.compile(r"-(?:[pusbwzarvq]+|\d+|n\d*|U\d+|[SG].+|u(?:no|normal|all))")
+
+
+def _git_flags_ok(sub: str, args: list[str]) -> bool:
+    """Only known read-only flags pass for an allowlisted git subcommand (D0b / T0f).
+    Anything else, including --output, -o, -O, --ext-diff, --textconv, --no-index, -c,
+    --git-dir, --work-tree, -C and --exec-path, is not allowed silently."""
+    long_ok = {"status": _GIT_STATUS_LONG, "branch": _GIT_BRANCH_LONG,
+               "rev-parse": _GIT_REVPARSE_LONG}.get(sub, _GIT_LONG)
+    skip_value = False
+    positional = False
+    listing = False
+    only_paths = False
+    for a in args:
+        if skip_value:
+            skip_value = False
+            continue
+        if only_paths or not a.startswith("-") or a == "-":
+            positional = True
+            continue
+        if a == "--":
+            only_paths = True
+            continue
+        if a.startswith("--"):
+            name = a[2:].split("=", 1)[0]
+            if name not in long_ok:
+                return False
+            if name in _GIT_BRANCH_LIST:
+                listing = True
+            if "=" not in a and a in _GIT_SEP_VALUE:
+                skip_value = True
+            continue
+        if sub == "branch" and a in ("-a", "-r", "-v", "-vv"):
+            continue
+        if sub == "rev-parse" or sub == "branch":
+            return False
+        if a in _GIT_SEP_VALUE:
+            skip_value = True
+            continue
+        if not _GIT_SHORT.fullmatch(a):
+            return False
+    if sub == "branch" and positional and not listing:
+        return False  # `git branch name` creates a branch
+    return True
+
+
+_PLAIN_CMDS = frozenset("ls dir pwd cd cat type echo which where".split())
+
+
+def _flags_ok(words: list[str]) -> bool:
+    """The words of one allowlisted segment carry no write or config flag."""
+    if not words:
+        return False
+    first = words[0]
+    if re.match(r"[A-Za-z_][A-Za-z0-9_]*\+?=", first):
+        return False  # GIT_EXTERNAL_DIFF=x git diff, PATH=... ls
+    names = shellwords.bases(first)
+    if "git" in names:
+        if len(words) < 2:
+            return True
+        return _git_flags_ok(words[1], words[2:])
+    if names & _PLAIN_CMDS:
+        # No flag of these commands writes a file; redirects and `tee` are caught earlier
+        # (a redirect makes the command unsafe, and the target is a checked path).
+        return not any(w.startswith("--output") for w in words[1:])
+    return True
+
+
+def _allow_match(pat: str, raw: str) -> bool:
+    """The pattern matches and the match ends at whitespace or the end of the segment,
+    or at the end of a match that itself ends in whitespace. A saved `^ls\\b` pattern
+    therefore no longer allows `ls/x.sh` or `cat.sh` (fail closed: the command escalates)."""
+    m = re.search(pat, raw)
+    if not m:
+        return False
+    end = m.end()
+    return end >= len(raw) or raw[end].isspace() or (end > m.start() and raw[end - 1].isspace())
+
+
+def allow_pattern_gaps(patterns: list[str]) -> list[str]:
+    """Allow patterns with no ``(\\s|$)`` boundary or end anchor. They still work, but the
+    code now requires a whitespace boundary after the match; `sandbox doctor` lists them."""
+    return [p for p in patterns
+            if "(\\s|$)" not in p and not p.endswith(("$", "\\s", "\\s+", " ", ".*"))]
 
 
 def _norm_component(c: str) -> str:
     """Casefold and strip what NTFS ignores (ADS suffix, trailing dots/spaces)."""
     c = c.casefold()
-    if ":" in c:
+    if ":" in c and "[:" not in c:  # `[[:alpha:]]` is a glob class, not a stream
         c = c.split(":", 1)[0]
     if c not in (".", ".."):
         c = c.rstrip(". ")
     return c
 
 
+_POSIX_CLASSES = {
+    "alpha": "a-zA-Z", "digit": "0-9", "alnum": "a-zA-Z0-9", "upper": "a-zA-Z", "lower": "a-zA-Z",
+    "space": " \\t\\n\\r\\f\\v", "blank": " \\t", "punct": re.escape(string.punctuation),
+    "xdigit": "0-9a-fA-F", "word": "\\w", "cntrl": "\\x00-\\x1f\\x7f", "graph": "\\x21-\\x7e",
+    "print": "\\x20-\\x7e",
+}  # upper/lower are widened to alpha: the names compared are case-folded (NTFS ignores case)
+
+
+@lru_cache(maxsize=4096)
+def _glob_regex(pattern: str) -> re.Pattern[str]:
+    """Translate one bash glob component: * ? [..] with ! or ^ negation, ranges and
+    POSIX classes. Python's fnmatch has neither ``^`` nor ``[:alpha:]``."""
+    out: list[str] = []
+    n, i = len(pattern), 0
+    while i < n:
+        c = pattern[i]
+        if c == "*":
+            if not out or out[-1] != ".*":
+                out.append(".*")
+        elif c == "?":
+            out.append(".")
+        elif c == "[":
+            j, neg, items, first = i + 1, False, [], True
+            if j < n and pattern[j] in "!^":
+                neg, j = True, j + 1
+            while j < n and (pattern[j] != "]" or first):
+                first = False
+                if pattern.startswith("[:", j):
+                    k = pattern.find(":]", j + 2)
+                    if k > 0 and pattern[j + 2:k] in _POSIX_CLASSES:
+                        items.append(_POSIX_CLASSES[pattern[j + 2:k]])
+                        j = k + 2
+                        continue
+                if j + 2 < n and pattern[j + 1] == "-" and pattern[j + 2] != "]":
+                    items.append(re.escape(pattern[j]) + "-" + re.escape(pattern[j + 2]))
+                    j += 3
+                    continue
+                items.append(re.escape(pattern[j]))
+                j += 1
+            if j >= n:  # no closing bracket: a literal [
+                out.append(re.escape("["))
+            else:
+                out.append("[" + ("^" if neg else "") + "".join(items) + "]")
+                i = j
+        else:
+            out.append(re.escape(c))
+        i += 1
+    try:
+        return re.compile("".join(out), re.I | re.S)
+    except re.error:
+        return re.compile(".*", re.S)  # unreadable bracket: assume it can match
+
+
+_ALIAS_RE = re.compile(r"([^~./\\]{1,6})~[0-9]+(\.[^.~]{0,3})?")
+
+
+def _alias_of(pattern: str, name: str) -> bool:
+    """Is *pattern* an NTFS 8.3 short name (``GIT~1``, ``SANDBO~1``, ``MCP~1.JSO``) that
+    could alias the long component *name*?"""
+    m = _ALIAS_RE.fullmatch(pattern)
+    if not m:
+        return False
+    stem = name.lstrip(".")
+    base, _, ext = stem.rpartition(".") if "." in stem else (stem, "", "")
+    if m.group(1) != base.replace(".", "")[:6]:
+        return False
+    return m.group(2) is None or ext.startswith(m.group(2)[1:])
+
+
 def _comp_match(pattern: str, name: str, *, dot_rule: bool = True) -> bool:
     """Does the shell glob component *pattern* match path component *name*?
 
     A leading dot needs an explicit leading dot in the pattern (as in bash),
-    unless ``dot_rule`` is off. Both sides are already case-folded.
+    unless ``dot_rule`` is off (PowerShell and cmd wildcards have no such rule).
+    Both sides are already case-folded.
     """
     if pattern == name:
         return True
-    if name == ".sandbox" and _SHORT_NAME_RE.fullmatch(pattern):
+    if "~" in pattern and _alias_of(pattern, name):
         return True
     if any(ch in pattern for ch in "*?["):
         if dot_rule and name.startswith(".") and not pattern.startswith("."):
             return False
-        return fnmatchcase(name, pattern)
+        return _glob_regex(pattern).fullmatch(name) is not None
     return False
 
 
@@ -512,17 +722,44 @@ def _seq_hit(
     return None
 
 
+_BRACE_RE = re.compile(r"\{([^{}]*)\}")
+_RANGE_RE = re.compile(r"(-?[0-9]+|[A-Za-z])\.\.(-?[0-9]+|[A-Za-z])(?:\.\.(-?[0-9]+))?")
+
+
+def _brace_alts(inner: str) -> list[str] | None:
+    """Alternatives of one brace group (``a,b`` or a ``x..y[..step]`` range), else None."""
+    if "," in inner:
+        return inner.split(",")
+    m = _RANGE_RE.fullmatch(inner)
+    if not m:
+        return None
+    lo, hi, step = m.group(1), m.group(2), abs(int(m.group(3) or 1)) or 1
+    if lo.lstrip("-").isdigit() and hi.lstrip("-").isdigit():
+        x, y = int(lo), int(hi)
+        if abs(y - x) // step + 1 > 256:
+            raise ValueError("brace expansion too large")
+        seq = range(x, y + 1, step) if x <= y else range(x, y - 1, -step)
+        return [str(v) for v in seq]
+    if lo.isalpha() and hi.isalpha() and len(lo) == len(hi) == 1:
+        x, y = ord(lo), ord(hi)
+        seq = range(x, y + 1, step) if x <= y else range(x, y - 1, -step)
+        return [chr(v) for v in seq]
+    return None
+
+
 def _brace_expand(s: str) -> list[str]:
-    """Expand every ``{a,b}`` group; raises ValueError past 256 results."""
+    """Expand every ``{a,b}`` and ``{x..y}`` group; raises ValueError past 256 results."""
     out = [s]
     while True:
         nxt: list[str] = []
         changed = False
         for item in out:
-            m = re.search(r"\{([^{}]*,[^{}]*)\}", item)
-            if m:
-                changed = True
-                nxt.extend(item[:m.start()] + alt + item[m.end():] for alt in m.group(1).split(","))
+            for m in _BRACE_RE.finditer(item):
+                alts = _brace_alts(m.group(1))
+                if alts is not None:
+                    changed = True
+                    nxt.extend(item[:m.start()] + alt + item[m.end():] for alt in alts)
+                    break
             else:
                 nxt.append(item)
         out = list(dict.fromkeys(nxt))
@@ -549,6 +786,10 @@ def _word_components(word: str) -> list[list[str]]:
     """Candidate component lists for one shell word (several readings of it)."""
     cands = {word}
     cands.update(p for p in re.split(r"[=@,:]", word) if p)  # --opt=path, f=@path
+    for c in list(cands):  # -C.sandbox, -xf.sandbox/x.tar, -pO.sandbox/x
+        m = re.match(r"-[A-Za-z]+", c)
+        if m:
+            cands.update(c[i:] for i in range(2, m.end() + 1))
     readings: list[list[str]] = []
     for cand in cands:
         for variant in (cand.replace("\\", "/"), cand.replace("\\", "").replace("^", "")):
@@ -557,25 +798,72 @@ def _word_components(word: str) -> list[list[str]]:
     return readings
 
 
-def _shell_protected_path(command: str, _depth: int = 0) -> str | None:
-    """Name the protected path a shell word names or globs onto, else None."""
-    try:
-        segments, _unsafe = _scan(command)
-        for _raw, words in segments:
-            for w in words:
-                if _depth < 3 and any(ch.isspace() for ch in w):
-                    sub = _shell_protected_path(w, _depth + 1)  # sh -c "..."
-                    if sub:
-                        return sub
-                for comps in _word_components(w):
-                    keys = _seq_hit(comps, _KEY_SEQS, dot_rule=False)
-                    if keys:
-                        return "/".join(keys)
-                    seq = _seq_hit(comps, _PROTECTED_SEQS)
-                    if seq:
-                        return "/".join(seq)
-    except Exception as exc:  # noqa: BLE001 — fail closed
-        return f"unparsable command ({type(exc).__name__})"
+_WRITER_CMDS = frozenset(
+    "tee cp mv install dd ln rm rmdir touch truncate mkdir rsync chmod chown unlink shred "
+    "sed gsed patch tar unzip".split())
+
+
+def _write_hit(comps: list[str], dot_rule: bool = True) -> str | None:
+    """The write-only git path (config, config.worktree, info/attributes, a submodule's
+    config) these components name, else None."""
+    seq = _seq_hit(comps, _WRITE_ONLY_SEQS, dot_rule=dot_rule)
+    if seq:
+        return "/".join(seq)
+    for i in range(len(comps) - 3):
+        if (_comp_match(comps[i], ".git", dot_rule=dot_rule) and comps[i + 1] == "modules"
+                and comps[-1] == "config"):
+            return ".git/modules/*/config"
+    return None
+
+
+def _fd_dup(op: str, target: shellwords.Word) -> bool:
+    """`2>&1`, `>&-`: a descriptor, not a path."""
+    return op.endswith("&") and (target.raw.isdigit() or target.raw == "-"
+                                 or (target.raw[:-1].isdigit() and target.raw.endswith("-")))
+
+
+def _may_name_protected(w: shellwords.Word) -> bool:
+    """Cheap prefilter. Without a ``* ? [`` glob, a word can only name a protected
+    component by spelling it, and every protected name starts with a dot (or is the
+    8.3 alias ``sandbo~N``, caught by the ``~`` test), so a word without a dot and
+    the letters of a protected name cannot hit."""
+    if "~" in w.raw or any(ch in w.raw for ch in "*?[") or ("{" in w.raw and ".." in w.raw):
+        return True
+    if "." not in w.raw:
+        return False
+    letters = set(w.raw.casefold().translate(_PATH_FOLD))
+    return _SANDBOX_LETTERS <= letters or _GIT_HOOKS_LETTERS <= letters
+
+
+_SANDBOX_LETTERS = frozenset("sandbo")
+_GIT_HOOKS_LETTERS = frozenset("git")  # .git/hooks, .git/config
+
+
+_PATH_FOLD = str.maketrans("", "", "'\"\\^`")
+
+
+def _seg_path_hit(seg: shellwords.Segment, deadline: float, dot_rule: bool = True) -> str | None:
+    """The protected path a word or redirect target of the segment names or globs onto.
+    A redirect that writes also may not name the write-only paths (``.git/config``)."""
+    targets = [(t, op.startswith((">", "&>"))) for op, t in seg.redirs if not _fd_dup(op, t)]
+    # `git log --output=.git/config` writes the file: every word of a git segment may.
+    names = shellwords.bases(seg.words[0].raw) if seg.words else set()
+    writer = bool(names & _WRITER_CMDS) or "git" in names  # tee/cp/mv/...: every word may be a target
+    for w, writes in [(w, writer) for w in seg.words] + targets:
+        shellwords.check_deadline(deadline)
+        if not _may_name_protected(w):
+            continue
+        for comps in _word_components(w.raw):
+            keys = _seq_hit(comps, _KEY_SEQS, dot_rule=False)
+            if keys:
+                return "/".join(keys)
+            seq = _seq_hit(comps, _PROTECTED_SEQS, dot_rule=dot_rule)
+            if seq:
+                return "/".join(seq)
+            if writes:
+                hit = _write_hit(comps, dot_rule)
+                if hit:
+                    return hit
     return None
 
 
@@ -602,47 +890,146 @@ def _is_sandbox_cli(words: list[str], j: int) -> bool:
     return False
 
 
-def _approver_cli_use(command: str, _depth: int = 0) -> str | None:
+def _seg_approver(seg: shellwords.Segment) -> str | None:
     """The approver subcommand a segment runs (approve, deny, ...), else None.
 
-    Looks at every segment, whatever precedes the CLI (`env X=1`, a path, `uv
-    run`, `python -m sandbox.cli.main`); a hit anywhere in the segment counts.
+    Whatever precedes the CLI (`env X=1`, a path, `uv run`, `python -m
+    sandbox.cli.main`), a hit anywhere in the segment counts. An argument that
+    cannot be resolved (a glob, a variable) after the CLI is a deny: it could
+    spell any subcommand.
     """
-    segments, _unsafe = _scan(command)
-    for _raw, words in segments:
-        for j, w in enumerate(words):
-            if _depth < 3 and any(ch.isspace() for ch in w):
-                sub = _approver_cli_use(w, _depth + 1)
-                if sub:
-                    return sub
-            if _is_sandbox_cli(words, j):
-                seen_policy = False
-                for rest in words[j + 1:]:
-                    for cand in (rest, rest.replace("\\", "").replace("^", "")):
-                        low = cand.casefold()
-                        if low in _APPROVER_SUBCOMMANDS:
-                            return low
-                        # SEC-25: `policy propose` is half of a two-person change;
-                        # the agent must not file it under a name of its choosing.
-                        if low == "propose" and seen_policy:
-                            return "policy propose"
-                        if low == "policy":
-                            seen_policy = True
+    raws = [w.raw for w in seg.words]
+    for j in range(len(raws)):
+        # Cheap prefilter: the CLI is named `sandbox` (any path, any case) or is a
+        # `-m` flag cluster such as `-Im`; any other word cannot be it.
+        if not raws[j].startswith("-") and "sandbo" not in raws[j].casefold().translate(_PATH_FOLD):
+            continue
+        if not _is_sandbox_cli(raws, j):
+            continue
+        seen_policy = False
+        for rest in seg.words[j + 1:]:
+            if rest.glob or rest.dyn:
+                return "unresolved argument"
+            for cand in (rest.raw, rest.raw.replace("\\", "").replace("^", "")):
+                low = cand.casefold()
+                if low in _APPROVER_SUBCOMMANDS:
+                    return low
+                # SEC-25: `policy propose` is half of a two-person change;
+                # the agent must not file it under a name of its choosing.
+                if low == "propose" and seen_policy:
+                    return "policy propose"
+                if low == "policy":
+                    seen_policy = True
     return None
 
 
-def shell_deny_reason(command: str) -> tuple[str, str] | None:
-    """Non-removable shell denies: ``(reason_code, reason)`` or None."""
-    hit = _shell_protected_path(command)
-    if hit:
-        return "SANDBOX_PROTECT", f"command touches a protected path ({hit})"
+_CODE_CHARS = frozenset(" \t\r\n;&|()<>`$")
+_MAX_RECURSE = 3
+
+
+@dataclass
+class ShellAnalysis:
+    deny: tuple[str, str] | None = None  # (reason_code, reason)
+    unresolvable: list[str] = field(default_factory=list)
+
+
+def _command_bound(command: str) -> tuple[str, str] | None:
+    if "\x00" in command:
+        return "BAD_INPUT", "SANDBOX DENIED: the command contains a NUL byte"
+    if len(command.encode("utf-8", "surrogatepass")) > shellwords.MAX_BYTES:
+        return "COMMAND_TOO_LARGE", (
+            f"shell command exceeds {shellwords.MAX_BYTES // 1024} KiB and was not analysed; "
+            "use the Write tool for large content")
+    return None
+
+
+def _writes_file(seg: shellwords.Segment) -> bool:
+    return (any(op.startswith((">", "&>")) and not _fd_dup(op, t) for op, t in seg.redirs)
+            or bool(seg.words and "tee" in shellwords.bases(seg.words[0].raw)))
+
+
+def _analyse(command: str, shell: str, deadline: float, depth: int, dot_rule: bool = True
+             ) -> tuple[tuple[str, str] | None, set[str]]:
+    lexed = shellwords.lex(command, shell, deadline)
+    reasons = set(lexed.reasons)
+    segs = lexed.segments
+    seg_reasons: list[list[str]] = []
+    for seg in segs:
+        shellwords.check_deadline(deadline)
+        if shellwords.encoded_command(seg):
+            return ("ENCODED_COMMAND",
+                    "an encoded PowerShell command cannot be reviewed by a human"), reasons
+        r = shellwords.segment_reasons(seg)
+        seg_reasons.append(r)
+        reasons.update(r)
+    for seg in segs:
+        hit = _seg_path_hit(seg, deadline, dot_rule)
+        if hit:
+            return ("SANDBOX_PROTECT", f"command touches a protected path ({hit})"), reasons
+    for seg in segs:
+        sub = _seg_approver(seg)
+        if sub:
+            return ("APPROVER_CLI",
+                    f"the agent may not run the sandbox approver CLI ({sub})"), reasons
+    # Strings handed to a program that runs them, or written to a file that may be
+    # run later, are read again as a command line of their own (depth 3).
+    for seg, r in zip(segs, seg_reasons):
+        if not (r or _writes_file(seg)):
+            continue
+        for w in seg.words[1:]:
+            if not _CODE_CHARS.intersection(w.raw):
+                continue
+            if depth >= _MAX_RECURSE:
+                reasons.add("nesting_depth")
+                continue
+            try:
+                deny, inner = _analyse(w.raw, "bash", deadline, depth + 1, dot_rule)
+            except shellwords.LexError:
+                reasons.add("inner_lex_error")
+                continue
+            if deny:
+                return deny, reasons
+            reasons.update(inner)
+    return None, reasons
+
+
+def analyse_shell(command: str, shell: str = "bash") -> ShellAnalysis:
+    """Static analysis of one shell command line (D0b). Never raises.
+
+    ``deny`` is set for a protected path, the approver CLI, an encoded PowerShell
+    command, a bound or a lexer error, and for an unresolvable command that shows a
+    deny fragment. Otherwise ``unresolvable`` lists why the command may never be
+    allowed (the caller escalates), or is empty for a command in the static subset.
+    """
+    bound = _command_bound(command)
+    if bound:
+        return ShellAnalysis(deny=bound)
     try:
-        sub = _approver_cli_use(command)
+        deny, reasons = _analyse(command, shell, time.monotonic() + shellwords.DEADLINE_SECONDS, 0,
+                                 dot_rule=shell != "pwsh")
+    except shellwords.Bound as exc:
+        return ShellAnalysis(deny=(exc.code, f"SANDBOX DENIED: {exc}"))
+    except shellwords.LexError as exc:
+        return ShellAnalysis(deny=("SHELL_LEXER_ERROR",
+                                   f"SANDBOX DENIED: the command does not lex ({exc})"))
+    except ValueError as exc:  # brace expansion past 256 results
+        return ShellAnalysis(deny=("SANDBOX_PROTECT", "command touches a protected path "
+                                   f"(unparsable command ({type(exc).__name__}))"))
     except Exception as exc:  # noqa: BLE001 — fail closed
-        return "APPROVER_CLI", f"unparsable command (approver CLI check: {type(exc).__name__})"
-    if sub is not None:
-        return "APPROVER_CLI", f"the agent may not run the sandbox approver CLI ({sub})"
-    return None
+        return ShellAnalysis(deny=("SHELL_ANALYSIS_ERROR",
+                                   f"SANDBOX DENIED: analysis failed ({type(exc).__name__})"))
+    names = sorted(reasons)
+    if deny is None and reasons:
+        frag = shellwords.fragment(command)
+        if frag:
+            deny = ("SHELL_UNRESOLVABLE", "the command could not be analysed statically "
+                    f"({', '.join(names)}) and contains {frag!r}")
+    return ShellAnalysis(deny=deny, unresolvable=names)
+
+
+def shell_deny_reason(command: str, shell: str = "bash") -> tuple[str, str] | None:
+    """Non-removable shell denies: ``(reason_code, reason)`` or None."""
+    return analyse_shell(command, shell).deny
 
 
 def _rel_components(layout: FolderLayout, target: str, base: str) -> list[str] | None:
@@ -670,11 +1057,16 @@ def _protected_write(target: str, layout: FolderLayout, base: str) -> str:
         seq = _seq_hit(comps, _PROTECTED_SEQS)
         if seq:
             return "/".join(seq)
+        hit = _write_hit(comps)
+        if hit:
+            return hit
         # Agent config at any depth: a session started in a package directory
         # of a monorepo reads that directory's own config.
-        if comps and comps[-1] == ".mcp.json":
+        if comps and (comps[-1] == ".mcp.json" or _alias_of(comps[-1], ".mcp.json")):
             return ".mcp.json"
-        if len(comps) >= 2 and comps[-2] == ".claude" and fnmatchcase(comps[-1], "settings*.json"):
+        if len(comps) >= 2 and (comps[-2] == ".claude" or _alias_of(comps[-2], ".claude")) and (
+                fnmatchcase(comps[-1], "settings*.json") or
+                re.fullmatch(r"settin~[0-9]+\.jso", comps[-1])):
             return ".claude/settings*.json"
     return ""
 

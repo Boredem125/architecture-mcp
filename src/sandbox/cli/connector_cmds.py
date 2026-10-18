@@ -375,6 +375,16 @@ def doctor_cmd(path: str) -> None:
     if problems:
         raise SystemExit(1)
     click.echo("OK: connector installed outside the governed folder; hook is isolated and fail-closed.")
+    try:  # saved allow patterns without a word boundary (T0f): listed, never fatal
+        from sandbox.connector.classify import allow_pattern_gaps
+        from sandbox.connector.policy_versions import enforced_policy
+
+        gaps = allow_pattern_gaps(enforced_policy(layout)[0].shell.allow_patterns)
+    except Exception:  # noqa: BLE001 — the warning must not break the layout check
+        gaps = []
+    for g in gaps:
+        click.echo(f"WARNING: allow pattern {g!r} has no (\\s|$) boundary or end anchor; the hook now "
+                   "requires whitespace after the match, so e.g. `ls/x.sh` escalates. Add the boundary.")
 
 
 @click.command("status")

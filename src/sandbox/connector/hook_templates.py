@@ -66,8 +66,21 @@ def _inside(path, root):
     return a == b or a.startswith(b + os.sep)
 
 
+def _read_stdin():
+    """stdin as bytes, strict UTF-8 (T0f): the locale codec would turn a non-ASCII
+    command into mojibake. Undecodable input or a NUL byte is denied."""
+    data = sys.stdin.buffer.read()
+    try:
+        raw = data.decode("utf-8")
+    except UnicodeDecodeError:
+        _fail_closed("hook input is not valid UTF-8")
+    if "\x00" in raw:
+        _fail_closed("hook input contains a NUL byte")
+    return raw
+
+
 def main():
-    raw = sys.stdin.read()
+    raw = _read_stdin()
     # Parsed only to locate .sandbox/. Malformed input is judged by the
     # package (pre_tool_use_raw), which denies it: the stub never allows.
     try:
@@ -127,8 +140,8 @@ def main():
         env = dict(os.environ)
         env["PYTHONPATH"] = package_src
         proc = subprocess.run(
-            [python, "-I", "-c", _BOOT, package_src, "sandbox.connector.hook_eval"],
-            input=raw, capture_output=True, text=True, env=env, timeout=120,
+            [python, "-I", "-X", "utf8", "-c", _BOOT, package_src, "sandbox.connector.hook_eval"],
+            input=raw, capture_output=True, encoding="utf-8", env=env, timeout=120,
         )
     except Exception as exc:
         # 3) fail closed
