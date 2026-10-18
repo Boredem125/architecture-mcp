@@ -305,7 +305,11 @@ def test_mcp_server_mismatched_origin_exits_2_before_stdio(root, tmp_path_factor
 
 
 def test_mcp_server_matching_origin_starts(root):
-    p = _mcp(root, SRC)
+    # The origin is where the subprocess actually imports `sandbox` from: the
+    # checkout's src locally, site-packages in the standalone CI jobs.
+    import sandbox
+
+    p = _mcp(root, str(Path(sandbox.__file__).resolve().parents[1]))
     assert p.returncode != 2 and "origin mismatch" not in p.stderr, p.stderr[-300:]
 
 
