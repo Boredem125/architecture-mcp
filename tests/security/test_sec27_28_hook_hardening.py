@@ -227,3 +227,61 @@ def test_evaluator_crash_or_hang_gives_exit_2(root, tmp_path_factory):
     # the stub's own subprocess timeout is mapped to exit 2 (not an uncaught crash)
     from sandbox.connector.hook_templates import PRETOOLUSE_STUB
     assert "except Exception as exc:" in PRETOOLUSE_STUB and "timeout=120" in PRETOOLUSE_STUB
+
+
+# -- SEC-27 conditions: C1 refuse in-root installs, C2 -I, C3 codex env -------
+
+def test_c1_refuses_in_root_venv_site_packages(tmp_path, monkeypatch):
+    """A .pth in an in-root venv's site-packages would run inside the hook."""
+    sp = tmp_path / "venv" / "Lib" / "site-packages"
+    sp.mkdir(parents=True)
+    monkeypatch.setattr(install_mod, "_interpreter_dirs", lambda: [str(tmp_path / "venv"), str(sp)])
+    with pytest.raises(install_mod.InstallLayoutError, match="outside"):
+        init(tmp_path, claude=False, mcp=False)
+
+
+def test_c1_refuses_in_root_package_src(tmp_path, monkeypatch):
+    src = tmp_path / "vendor" / "src"
+    src.mkdir(parents=True)
+    monkeypatch.setattr(install_mod, "_package_src", lambda: str(src))
+    with pytest.raises(install_mod.InstallLayoutError, match="outside"):
+        init(tmp_path, claude=False, mcp=False)
+
+
+def test_c1_cli_exits_nonzero(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from sandbox.cli.connector_cmds import init_cmd
+
+    monkeypatch.setattr(install_mod, "_package_src", lambda: str(tmp_path / "src"))
+    (tmp_path / "src").mkdir()
+    r = CliRunner().invoke(init_cmd, [str(tmp_path)])
+    assert r.exit_code != 0 and "outside" in r.output
+
+
+def test_c2_hook_commands_and_boot_use_isolated_mode(tmp_path):
+    from sandbox.connector.hook_templates import POSTTOOLUSE_STUB, PRETOOLUSE_STUB
+
+    init(tmp_path, claude=True, mcp=True)
+    hooks = _settings(tmp_path)["hooks"]
+    for event in ("PreToolUse", "PostToolUse", "SessionStart"):
+        assert f'" -I "' in hooks[event][0]["hooks"][0]["command"]
+    for stub in (PRETOOLUSE_STUB, POSTTOOLUSE_STUB):
+        assert '"-I"' in stub and '"-P"' not in stub
+    srv = json.loads((tmp_path / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["sandbox"]
+    assert srv["args"][0] == "-I"
+
+
+def test_c2_isolated_fallback_still_works_and_keeps_windows_env(root):
+    _set_session(root, sys.executable, SRC)
+    p = _run_stub(root, "pretooluse.py", sys.executable, READ_SEED)
+    assert p.returncode == 0, p.stderr
+
+
+def test_c3_codex_snippet_has_env_and_mcp_origin_check(tmp_path):
+    from sandbox.connector.layout import FolderLayout
+
+    snip = install_mod.codex_config_snippet(FolderLayout(tmp_path))
+    assert "PYTHONPATH" in snip and "-I" in snip
+    mcp_src = (Path(SRC) / "sandbox" / "connector" / "mcp_server.py").read_text(encoding="utf-8")
+    assert "origin" in mcp_src.lower()
