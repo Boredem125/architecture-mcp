@@ -10,12 +10,15 @@ must not break CI; the frozen gate numbers live in M0_BASELINE.md.
 
 Failing tests are also emitted as ``::error`` workflow annotations (one list of
 node ids, then details for the first few), because annotations are readable
-through the public API while job logs need a token.
+through the public API while job logs need a token. Skipped tests are listed
+the same way in one ``::notice`` (node ids, xfail marked), so the Linux skip
+set can be checked by id.
 """
 from __future__ import annotations
 
 import argparse
 import os
+from pathlib import Path
 import sys
 from defusedxml.ElementTree import parse  # installed by tests.yml next to the test runner
 
@@ -49,6 +52,29 @@ def failing(path: str) -> list[tuple[str, str]]:
     return out
 
 
+def node_id(classname: str, name: str) -> str:
+    """JUnit classname (tests.unit.test_x.TestC) -> pytest id (tests/unit/test_x.py::TestC::name).
+
+    The module is the longest dotted prefix that is a .py file in the checkout.
+    """
+    parts = classname.split(".")
+    for i in range(len(parts), 0, -1):
+        mod = "/".join(parts[:i]) + ".py"
+        if Path(mod).is_file():
+            return "::".join([mod, *parts[i:], name])
+    return f"{classname}::{name}"
+
+
+def skipped(path: str) -> list[str]:
+    out = []
+    for case in parse(path).getroot().iter("testcase"):
+        el = case.find("skipped")
+        if el is not None:
+            tag = " [xfail]" if el.get("type") == "pytest.xfail" else ""
+            out.append(node_id(case.get("classname", ""), case.get("name", "")) + tag)
+    return sorted(out)
+
+
 def annotate(label: str, fails: list[tuple[str, str]]) -> None:
     # GitHub keeps at most 10 error annotations per step: 1 list + 9 details.
     nodes = LF.join(node for node, _ in fails)
@@ -69,6 +95,10 @@ def main() -> int:
             f"{t['errors']} errors, {t['skipped']} skipped (incl. xfail)")
     print(line)
     print(f"::notice title={args.label} counts::{line}")  # readable via the public API
+    skips = skipped(args.report)
+    if skips:
+        ids = _escape(LF.join(skips))
+        print(f"::notice title={args.label} skipped ids::{ids[:30000]}")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as f:
