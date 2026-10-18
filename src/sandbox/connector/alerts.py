@@ -28,6 +28,8 @@ _ALWAYS = {
     "semantic_injection_detected": "injection",
     "rate_limited": "rate_limit",
     "policy_drift": "policy_drift",
+    "governance_unevaluated": "governance",
+    "money_floor_disabled": "money_floor",
 }
 # Escalations alert only when critical or dual control.
 _ESCALATIONS = {"shell_escalated", "tool_call_escalated", "escalate_redirect"}

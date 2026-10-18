@@ -232,10 +232,21 @@ class ClassificationRule(BaseModel):
         return level if level in DATA_LEVELS else "restricted"
 
 
+class GovernanceControls(BaseModel):
+    # ADR 0008 (SEC-23): a call that describe_call tags moves_money escalates
+    # (at least), whatever the allowlist, auto_allow, environment rules,
+    # governance clauses or the model say. false is honoured only in the
+    # approved version of a versioned folder; meet() keeps true on drift.
+    money_floor: bool = True
+
+
 class FolderPolicy(BaseModel):
     version: int = 1
     mode: str = "enforce"
     auto_allow: bool = False
+    # Only "closed" is accepted (ADR 0008); any other value reads as closed.
+    # It is what hook_eval applies when governance clauses can't be evaluated:
+    # escalate, or deny if a gated clause says deny, and audit it.
     fail_mode: str = "closed"
     escalation_timeout_seconds: int = 300
     unknown_tool_action: str = "allow"
@@ -253,11 +264,17 @@ class FolderPolicy(BaseModel):
     audit: AuditPolicy = Field(default_factory=AuditPolicy)
     alerts: AlertPolicy = Field(default_factory=AlertPolicy)
     limits: LimitPolicy = Field(default_factory=LimitPolicy)
+    governance: GovernanceControls = Field(default_factory=GovernanceControls)
     # dev | staging | prod, or None (unset: today's behaviour, SANDBOX_ENV still
     # read by the risk score). See docs/DATA_AND_ENVIRONMENT.md.
     environment: str | None = None
     # Ordered glob -> level rules; empty = no classification (today's behaviour).
     classification: list[ClassificationRule] = Field(default_factory=list)
+
+    @field_validator("fail_mode", mode="before")
+    @classmethod
+    def _fail_mode(cls, v: object) -> str:
+        return "closed"  # no fail-open mode is offered (ADR 0008)
 
     @field_validator("environment", mode="before")
     @classmethod

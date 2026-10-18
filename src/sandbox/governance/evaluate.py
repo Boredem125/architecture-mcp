@@ -36,6 +36,22 @@ class Violation:
         }
 
 
+class GovernanceUnevaluated(Exception):
+    """Gated clauses apply but the service gave no result (strict mode only)."""
+
+    def __init__(self, clauses: list[Clause]) -> None:
+        super().__init__(", ".join(c.id for c in clauses))
+        self.clauses = clauses
+
+
+def gated_tool_clauses(
+    policy: GovernancePolicy, tool_call: tuple[str, dict[str, Any]], extra_tags: Iterable[str] = (),
+) -> list[Clause]:
+    """Clauses that apply to a non-shell call, by deterministic tags only (no model)."""
+    tags = {t for t, _ in _describe_call(*tool_call)} | set(extra_tags or ())
+    return [c for c in policy.clauses if set(c.requires_tool_actions) & tags]
+
+
 def _gate_ok(clause: Clause, command: str) -> bool:
     if not clause.requires_actions:
         return True
@@ -51,6 +67,7 @@ def evaluate(
     command: str = "",
     tool_call: tuple[str, dict[str, Any]] | None = None,
     extra_tags: Iterable[str] = (),
+    strict: bool = False,
 ) -> list[Violation]:
     """Clauses violated by this action, worst `action` first. Empty on any
     service failure (no extra scrutiny, never less).
@@ -60,11 +77,14 @@ def evaluate(
     checked, against the call rendered as text (``text`` is ignored).
     ``extra_tags`` adds tags the caller derived, e.g. ``data_restricted`` from
     the data classification of a file path in the call's arguments.
+
+    ``strict=True`` (the hook's tool-call path, SEC-23): if gated clauses
+    apply and the service gives no result, raise ``GovernanceUnevaluated``
+    with the clauses nothing evaluated, instead of returning [].
     """
     students = {}
     if tool_call is not None:
-        tags = {t for t, _ in _describe_call(*tool_call)} | set(extra_tags or ())
-        gated = [c for c in policy.clauses if set(c.requires_tool_actions) & tags]
+        gated = gated_tool_clauses(policy, tool_call, extra_tags)
         text = _render_call(*tool_call)
     else:
         gated = [c for c in policy.clauses if _gate_ok(c, command or text)]
@@ -76,6 +96,10 @@ def evaluate(
     if not gated:
         return []
     result = client.ask(text, {c.id: c.question() for c in gated})
+    if result is None and strict:
+        unevaluated = [c for c in gated if c.id not in students]
+        if unevaluated:
+            raise GovernanceUnevaluated(unevaluated)
     if result is None and not any(c.id in students for c in gated):
         return []
     violations = []

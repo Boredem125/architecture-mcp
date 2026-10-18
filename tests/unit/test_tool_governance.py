@@ -185,16 +185,33 @@ def test_read_call_on_allowlisted_server_still_runs(folder):
     assert not pending_ids(folder)
 
 
-def test_service_down_adds_no_scrutiny(folder, monkeypatch):
+def test_service_down_escalates_and_is_audited(folder, monkeypatch):
+    # SEC-23: clauses that apply but can't be evaluated fail closed (named
+    # exception, signed off: security-engineer).
     monkeypatch.setattr(SemanticClient, "from_policy", classmethod(lambda cls, p: FakeClient(down=True)))
-    assert decision(call(folder, *REFUND))[0] != "deny"
+    d, why = decision(call(folder, *REFUND))
+    assert d == "deny" and "retry exactly the same call" in why
+    pending = [r for r in EscalationQueue(folder).list_pending()
+               if r.get("kind") == "tool_call" and r.get("fingerprint") == tool_grants.fingerprint(*REFUND)]
+    assert len(pending) == 1
+    records = [json.loads(line) for f in folder.audit_dir.rglob("*.jsonl")
+               for line in f.read_text(encoding="utf-8").splitlines() if line.strip()]
+    unevaluated = [r for r in records if r.get("event") == "governance_unevaluated"]
+    assert any(r.get("tool") == REFUND[0] and "no_payments" in json.dumps(r) for r in unevaluated), unevaluated
 
 
-def test_no_governance_policy_changes_nothing(folder):
+def test_no_governance_policy_still_has_the_money_floor(folder):
+    # ADR 0008 (SEC-23): the deterministic money floor holds without a
+    # governance policy; non-money calls are unchanged (named exception,
+    # signed off: security-engineer).
     policy = load_policy(folder.policy_file)
     policy.semantic.governance_policy = ""
     save_policy(policy, folder.policy_file)
-    assert decision(call(folder, *REFUND))[0] != "deny"
+    d, why = decision(call(folder, *REFUND))
+    assert d == "deny" and "MONEY_FLOOR" in why and "retry exactly the same call" in why
+    assert len(pending_ids(folder)) == 1
+    assert decision(call(folder, *LIST))[0] != "deny"
+    assert len(pending_ids(folder)) == 1
 
 
 def test_records_signed_before_fingerprint_was_added_still_verify(tmp_path):

@@ -219,7 +219,8 @@ _INTERSECT_FIELDS = (
 _AND_FIELDS = (("auto_allow",), ("network", "allow_search"))           # True only if both say so
 _OR_FIELDS = (("semantic", "enabled"), ("semantic", "student"),        # True if either says so
               ("output", "scrub_secrets"), ("scan", "preserve_originals"),
-              ("audit", "log_allowed"), ("alerts", "enabled"), ("limits", "enabled"))
+              ("audit", "log_allowed"), ("alerts", "enabled"), ("limits", "enabled"),
+              ("governance", "money_floor"))
 _MIN_FIELDS = (("semantic", "threshold"), ("semantic", "screen_threshold"),
                ("limits", "shell"), ("limits", "write"), ("limits", "network"), ("limits", "total"))
 _MAX_FIELDS = (("semantic", "taint_ttl_seconds"), ("semantic", "max_scan_chars"),
@@ -603,8 +604,13 @@ def baseline(layout: FolderLayout, reviewer: str, reason: str) -> list[dict[str,
     """Adopt the policies on disk as the first approved versions (unversioned folders only)."""
     if is_versioned(layout):
         raise ValueError("this folder already has an approved policy version; use `sandbox policy propose`")
-    history_dir(layout).mkdir(parents=True, exist_ok=True)
     disk = folder_content(layout)
+    if not disk.get("governance", {}).get("money_floor", True):
+        # ADR 0008: turning the money floor off needs a change approved by a
+        # second reviewer; a one-person baseline must not adopt it.
+        raise ValueError("policy.json has governance.money_floor: false; baseline with true, "
+                         "then `sandbox policy propose` the change for a second reviewer")
+    history_dir(layout).mkdir(parents=True, exist_ok=True)
     entries = [_accept(layout, FOLDER, disk, by=reviewer, reason=reason, how="baseline")]
     gov = read_governance(layout, disk.get("semantic", {}).get("governance_policy", ""))
     if gov is not None:
@@ -814,6 +820,18 @@ def approve_change(layout: FolderLayout, change_id: str, reviewer: str, reason: 
         pass
     audit(layout, {"event": "policy_change_approved", "change_id": change_id, "kind": kind,
                    "version": entry["version"], "proposer": change["proposer"], "reviewer": reviewer})
+    if kind == FOLDER and "governance.money_floor" in (change.get("loosens") or []):
+        # ADR 0008: switching the money floor off is always an alert.
+        record = {"event": "money_floor_disabled", "change_id": change_id, "version": entry["version"],
+                  "proposer": change["proposer"], "reviewer": reviewer, "reason_code": "MONEY_FLOOR",
+                  "reason": "governance.money_floor set to false by an approved change"}
+        audit(layout, record)
+        try:
+            from sandbox.connector import alerts
+
+            alerts.emit(layout, _session_id(layout), record)
+        except Exception:  # noqa: BLE001 — alerting never breaks the change
+            pass
     return {"status": "applied", "version": entry["version"], "change": change}
 
 

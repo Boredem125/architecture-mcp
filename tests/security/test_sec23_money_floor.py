@@ -153,7 +153,6 @@ FAILURES = {"refused": _service_refused, "http_500": _service_500,
             "timeout": _service_timeout, "client_raises": _client_raises}
 
 
-@RED_SEC23
 @pytest.mark.parametrize("failure", sorted(FAILURES))
 @pytest.mark.parametrize("call", [MOVE_MORE_MONEY, MOVE_MONEY], ids=["move-more-money", "move-money"])
 def test_money_call_escalates_and_is_audited_when_clauses_cannot_be_evaluated(tmp_path, monkeypatch,
@@ -165,7 +164,6 @@ def test_money_call_escalates_and_is_audited_when_clauses_cannot_be_evaluated(tm
     _require_unevaluated_audit(layout, call[0])
 
 
-@RED_SEC23
 def test_explicit_fail_mode_closed_is_honoured(tmp_path):
     layout = _folder(tmp_path, fail_mode="closed")
     assert load_policy(layout.policy_file).fail_mode == "closed"
@@ -174,7 +172,6 @@ def test_explicit_fail_mode_closed_is_honoured(tmp_path):
     _require_unevaluated_audit(layout, MOVE_MORE_MONEY[0])
 
 
-@RED_SEC23
 def test_unevaluable_deny_clause_denies_without_queueing(tmp_path):
     gov = json.loads(example_policy_path().read_text(encoding="utf-8"))
     for c in gov["clauses"]:
@@ -194,14 +191,12 @@ def test_unevaluable_deny_clause_denies_without_queueing(tmp_path):
 
 # --- SEC-23 (b) 4: deterministic floor, whatever the model says ------------------------
 
-@RED_SEC23
 def test_floor_allowlisted_money_call_escalates_with_semantic_disabled(tmp_path):
     layout = _folder(tmp_path, semantic=False)
     decision, reason = _call(layout, *MOVE_MORE_MONEY)
     _require_escalated(layout, MOVE_MORE_MONEY, decision, reason)
 
 
-@RED_SEC23
 def test_floor_allowlisted_money_call_escalates_when_the_model_says_no(tmp_path, monkeypatch):
     class SaysNo:
         def ask(self, text, checks):
@@ -245,7 +240,6 @@ def test_guard_clause_that_fires_still_escalates(tmp_path, monkeypatch):
 
 # --- added for M1_PLAN D0 (task list final, 1ee7504) -----------------------------------
 
-@RED_SEC23
 def test_floor_on_by_default_with_no_governance_policy(tmp_path):
     """Main-session ruling: the money floor holds even with no governance policy."""
     layout = _folder(tmp_path, semantic=False)
@@ -261,7 +255,6 @@ def _floor_default(layout):
     return (data.get("governance") or {}).get("money_floor")
 
 
-@RED_SEC23
 def test_money_floor_opt_out_is_a_loosening_change(tmp_path):
     """D0.4: `governance.money_floor: false` loosens, so change control needs two reviewers."""
     from sandbox.connector import policy_versions as pv
@@ -278,7 +271,6 @@ def test_money_floor_opt_out_is_a_loosening_change(tmp_path):
     assert pv.only_tightens(looser, approved)  # turning it back on only tightens
 
 
-@RED_SEC23
 def test_hand_edited_opt_out_does_not_disable_the_floor(tmp_path):
     """Drift protection: an unapproved on-disk `money_floor: false` is ignored."""
     from sandbox.connector import policy_versions as pv

@@ -256,7 +256,7 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
 
     # The approved policy version (or, if the file drifted, the stricter of the
     # approved and on-disk versions). _audit stamps policy_version on records.
-    policy, _ = enforced_policy(layout)
+    policy, policy_info = enforced_policy(layout)
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {}) or {}
     cwd = payload.get("cwd") or str(layout.root)
@@ -362,13 +362,40 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
     # Governance clauses on non-shell calls (MCP tools, WebFetch). Until now no
     # clause saw them: an allowlisted mcp__stripe__create_refund ran silently.
     # Only raises scrutiny; a hard deny stays a deny.
+    money_floor_hit = False
     if result.verdict != "deny" and _is_governed_tool(tool_name):
-        gov_violations, gov_deny = _tool_governance(
+        gov_violations, gov_deny, unevaluated = _tool_governance(
             policy, tool_name, tool_input, result.metadata.get("data_tags", ()))
+        if unevaluated:
+            # SEC-23: clauses apply but nothing evaluated them (service down,
+            # erroring, timing out, or the evaluation raised). fail_mode is
+            # "closed": escalate, or deny if any of them says deny. Never allow.
+            return _governance_unevaluated(
+                policy, tool_name, tool_input, unevaluated, result, layout, session_id, identity,
+            )
         if gov_deny is not None or gov_violations:
             return _govern_tool_call(
                 tool_name, tool_input, gov_violations, gov_deny, result, layout, session_id, identity,
             )
+        # ADR 0008 money floor: a deterministic tag, not the model. Only an
+        # approved governance.money_floor: false in a versioned folder turns it off.
+        money = _money_tags(tool_name, tool_input)
+        if money:
+            floor_on = policy.governance.money_floor or policy_info.get("state") not in ("approved", "drift")
+            if floor_on:
+                money_floor_hit = True
+                if result.verdict in ("allow", "observe"):
+                    result.verdict = "escalate"
+                    result.trigger = "money"
+                    result.reason_code = "MONEY_FLOOR"
+                    result.reason = ("; ".join(lbl for _, lbl in money)
+                                     + ": money movement needs a human (money floor, ADR 0008)")
+            else:
+                _audit(layout, session_id, {
+                    "event": "money_floor_off", "tool": tool_name, "verdict": result.verdict,
+                    "tags": [{"tag": t, "label": lbl} for t, lbl in money],
+                    "identity": identity.to_dict(), "risk": result.risk,
+                })
 
     # Contextual tier upgrades (safety is monotonic — risk only raises scrutiny):
     #   observe  + high/critical risk → escalate (e.g. reading ~/.ssh outside folder)
@@ -382,7 +409,8 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
 
     # A remembered decision can upgrade escalate → allow (never the reverse), but
     # never for a critical/dual-control action — those always face a human.
-    if result.verdict == "escalate" and not result.requires_dual:
+    # Nor for a money-moving call under the floor (ADR 0008).
+    if result.verdict == "escalate" and not result.requires_dual and not money_floor_hit:
         memory = DecisionMemory(layout.remembered, session_id)
         remembered = memory.recall(
             command=result.command,
@@ -457,29 +485,94 @@ def _is_governed_tool(tool_name: str) -> bool:
 
 def _tool_governance(
     policy: Any, tool_name: str, tool_input: dict, extra_tags: Any = (),
-) -> tuple[list[dict], dict | None]:
-    """Governance clauses violated by a non-shell call: (evidence, deny-clause-or-None).
+) -> tuple[list[dict], dict | None, list[dict]]:
+    """Governance for a non-shell call: (evidence, deny-clause-or-None, unevaluated).
 
     Only clauses with requires_tool_actions matching what the call does are
-    checked, so most calls never reach the service. No policy, or the service
-    down, → ([], None): no extra scrutiny.
+    checked, so most calls never reach the service. No policy (or semantic
+    off) gives ([], None, []). SEC-23: if clauses apply and the service gives
+    no result, or anything raises, they come back in *unevaluated*, never as
+    "no clauses". A governance file that can't be loaded counts as one
+    unevaluated clause, since what it gates is unknown.
     """
     sem = getattr(policy, "semantic", None)
     if not sem or not sem.enabled or not sem.governance_policy:
-        return [], None
+        return [], None, []
     try:
+        from sandbox.governance.evaluate import GovernanceUnevaluated, gated_tool_clauses
         from sandbox.governance.evaluate import evaluate as _gov_eval
         from sandbox.governance.policy import load as _gov_load
         from sandbox.semantic.client import SemanticClient
 
         gov = _gov_load(sem.governance_policy)
+    except Exception:  # noqa: BLE001 — unreadable policy: fail closed, never open
+        return [], None, [{"clause_id": "governance_policy_unreadable",
+                           "title": "governance policy unreadable", "action": "escalate"}]
+    gated: list[Any] = []
+    try:
+        gated = gated_tool_clauses(gov, (tool_name, tool_input), extra_tags)
         violations = _gov_eval(gov, "", SemanticClient.from_policy(sem), tool_call=(tool_name, tool_input),
-                               extra_tags=extra_tags)
-        evidence = [v.evidence() for v in violations]
-        deny = next((v.evidence() | {"description": v.description} for v in violations if v.action == "deny"), None)
-        return evidence, deny
-    except Exception:  # noqa: BLE001 — governance must never break the hook
-        return [], None
+                               extra_tags=extra_tags, strict=True)
+    except GovernanceUnevaluated as exc:
+        return [], None, [_clause_ref(c) for c in exc.clauses]
+    except Exception:  # noqa: BLE001 — the hook never breaks, and never fails open
+        if not gated:
+            return [], None, [{"clause_id": "governance_evaluation_failed",
+                               "title": "governance evaluation failed", "action": "escalate"}]
+        return [], None, [_clause_ref(c) for c in gated]
+    evidence = [v.evidence() for v in violations]
+    deny = next((v.evidence() | {"description": v.description} for v in violations if v.action == "deny"), None)
+    return evidence, deny, []
+
+
+def _clause_ref(clause: Any) -> dict:
+    return {"clause_id": clause.id, "title": clause.title, "action": clause.action}
+
+
+def _money_tags(tool_name: str, tool_input: dict) -> list[tuple[str, str]]:
+    """describe_call's deterministic moves_money tags for this call (no model)."""
+    try:
+        from sandbox.safety.tool_actions import describe_call
+
+        return [(t, lbl) for t, lbl in describe_call(tool_name, tool_input) if t == "moves_money"]
+    except Exception:  # noqa: BLE001 — a tagger failure must not open the floor
+        return [("moves_money", "could not be checked for money movement")]
+
+
+def _governance_unevaluated(
+    policy: Any,
+    tool_name: str,
+    tool_input: dict,
+    clauses: list[dict],
+    result: Any,
+    layout: FolderLayout,
+    session_id: str,
+    identity: Any,
+) -> dict[str, Any]:
+    """fail_mode "closed" for clauses nothing could evaluate: audit, then deny
+    if any of them says deny, else approve-then-retry (SEC-23)."""
+    from sandbox.safety.tool_actions import render
+
+    ident_dict = identity.to_dict() if identity is not None else {}
+    ids = ", ".join(c["clause_id"] for c in clauses)
+    deny = next((c for c in clauses if c.get("action") == "deny"), None)
+    _audit(layout, session_id, {
+        "event": "governance_unevaluated", "reason_code": "GOVERNANCE_UNEVALUATED", "tool": tool_name,
+        "command": render(tool_name, tool_input), "clauses": clauses, "fail_mode": policy.fail_mode,
+        "outcome": "deny" if deny is not None else "escalate",
+        "reason": f"governance clause(s) {ids} apply but could not be evaluated",
+        "identity": ident_dict, "risk": result.risk,
+    })
+    if deny is not None:
+        return _pre_output("deny", (
+            f"SANDBOX DENIED [GOVERNANCE_UNEVALUATED]: policy clause {deny['clause_id']} "
+            f"({deny.get('title', '')}) applies to this {tool_name} call and could not be evaluated, "
+            f"so it is denied (fail closed). Choose a different approach."
+        ))
+    result.trigger = "governance"
+    result.reason_code = "GOVERNANCE_UNEVALUATED"
+    result.reason = f"governance clause(s) {ids} apply but could not be evaluated (fail closed)"
+    return _govern_tool_call(tool_name, tool_input, [], None, result, layout, session_id, identity)
 
 
 def _govern_tool_call(
