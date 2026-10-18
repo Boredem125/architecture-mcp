@@ -28,7 +28,9 @@ _register_connector(cli)
                    "SANDBOX_CONNECTOR_ROOTS). With none, every connector call is refused (403).")
 def serve(host: str, port: int, reload: bool, workers: int, roots: tuple[str, ...]) -> None:
     """Start the sandbox API server."""
-    from sandbox.api.app import ROOTS_ENV
+    # Do not import sandbox.api.app here: it builds the app at import time and would
+    # read the roots before they are set below (every connector call would be 403).
+    ROOTS_ENV = "SANDBOX_CONNECTOR_ROOTS"  # same value as sandbox.api.app.ROOTS_ENV
     from sandbox.api.auth import APPROVER_ENV, check_bind, ensure_tokens
 
     # Through the environment, because uvicorn starts the app by import string

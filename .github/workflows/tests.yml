@@ -107,10 +107,12 @@ jobs:
         run: |
           python -m pip install --quiet .
           python -m pip install --quiet "pytest>=8.3.0" "pytest-asyncio>=0.24.0" "pytest-timeout>=2.3.0" "defusedxml>=0.7.1"
-      - name: Class C files unchanged (M0_C_MANIFEST.sha256, once QA commits it)
-        # Hashes are of LF content; only the Linux checkout is LF on disk.
-        if: runner.os == 'Linux' && hashFiles('docs/control-plane/M0_C_MANIFEST.sha256') != ''
-        run: sha256sum -c --quiet docs/control-plane/M0_C_MANIFEST.sha256
+      - name: Frozen test files unchanged (M1_FROZEN_MANIFEST.sha256)
+        # M1 manifest supersedes M0_C_MANIFEST (which lags the documented M1
+        # re-hashes in M1_BASELINE.md). Hashes are of LF content; only the Linux
+        # checkout is LF on disk.
+        if: runner.os == 'Linux' && hashFiles('docs/control-plane/M1_FROZEN_MANIFEST.sha256') != ''
+        run: sha256sum -c --quiet docs/control-plane/M1_FROZEN_MANIFEST.sha256
       - name: Run the connector (Class C) tests
         run: |
           python .github/scripts/c_tests.py > "$RUNNER_TEMP/c_tests.txt"

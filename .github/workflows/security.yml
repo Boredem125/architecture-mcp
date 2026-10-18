@@ -174,9 +174,10 @@ jobs:
           mkdir -p zap && chmod 777 zap
           # Give ZAP the listed root as the `root` example, so it reaches the
           # handlers instead of the 403 of the allowlist.
-          curl -sf http://127.0.0.1:8000/openapi.json | python -c "
-          import json, os, sys
-          spec = json.load(sys.stdin)
+          curl -sf -o zap/openapi.orig.json http://127.0.0.1:8000/openapi.json
+          python -c "
+          import json, os
+          spec = json.load(open('zap/openapi.orig.json'))
           for ops in spec['paths'].values():
               for op in ops.values():
                   for prm in op.get('parameters', []):
@@ -184,6 +185,7 @@ jobs:
                           prm['example'] = os.environ['ZAP_ROOT']
           json.dump(spec, open('zap/openapi.json', 'w'))
           "
+          rm zap/openapi.orig.json
           docker run --rm --network host -v "$PWD/zap:/zap/wrk:rw" \
             -e ZAP_AUTH_HEADER=Authorization \
             -e ZAP_AUTH_HEADER_VALUE="Bearer $SANDBOX_APPROVER_TOKEN" \
