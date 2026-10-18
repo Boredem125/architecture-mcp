@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "ai-agent-sandbox"
 version = "1.0.0"
-description = "Enterprise AI Agent Sandbox Security System — 3-zone, 9-agent containment pipeline"
+description = "Agent Governance Gateway: authorization, dual-control approval and signed audit for AI coding agents' tool calls (OSS connector)"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
@@ -13,21 +13,16 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
     "pydantic>=2.9.0",
     "pydantic-settings>=2.5.0",
-    "nats-py>=2.9.0",
-    "redis[hiredis]>=5.1.0",
     "httpx>=0.27.0",
     "pynacl>=1.5.0",
-    "pyjwt>=2.14.0",  # CVE-2026-102266..102273 fixed in 2.14.0
-    "cryptography>=43.0.0",
     "structlog>=24.4.0",
     "orjson>=3.10.0",
     "aiofiles>=24.1.0",
     "click>=8.1.0",
-    "rich>=13.9.0",
-    "anthropic>=0.40.0",
-    "openai>=1.50.0",
-    "docker>=7.1.0",
     "mcp>=1.9.0,<2",
+    # Not imported by us: a security floor for mcp's transitive pyjwt[crypto]
+    # (mcp only needs >=2.10.1); CVE-2026-102266..102273 fixed in 2.14.0.
+    "pyjwt>=2.14.0",
 ]
 
 [project.optional-dependencies]
@@ -38,7 +33,6 @@ dev = [
     "pytest-timeout>=2.3.0",
     "ruff>=0.6.0",
     "mypy>=1.11.0",
-    "fakeredis>=2.25.0",
 ]
 
 # Optional intent-aware layer: runs the local jev-os service (`jevos serve`).
