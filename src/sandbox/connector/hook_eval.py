@@ -176,6 +176,7 @@ def _shell_verdict(command: str, policy: FolderPolicy) -> str:
 # hook input validation — malformed input fails closed
 # ---------------------------------------------------------------------------
 
+MAX_COMMAND_BYTES = 32 * 1024  # D0b bound
 BAD_INPUT_REASON = "SANDBOX: unreadable hook input (fail-closed)"
 
 
@@ -253,6 +254,22 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
     problem = _input_problem(payload)
     if problem is not None:
         return _bad_input(layout, problem)
+
+    # Hard size cap, checked before any parsing or scanning: a padded command
+    # must not be able to push the hook past its timeout (which, on an old
+    # Claude Code, lets the call proceed). Nothing from the command is logged.
+    ti = payload.get("tool_input")
+    cmd = ti.get("command") if isinstance(ti, dict) else None
+    if isinstance(cmd, str) and len(cmd.encode("utf-8", "surrogatepass")) > MAX_COMMAND_BYTES:
+        _audit(layout, _read_session(layout).get("session_id", ""), {
+            "event": "denied", "tool": payload.get("tool_name", ""),
+            "reason_code": "COMMAND_TOO_LARGE",
+            "reason": f"shell command exceeds {MAX_COMMAND_BYTES} bytes; not analysed",
+        })
+        return _pre_output("deny", (
+            f"SANDBOX DENIED [COMMAND_TOO_LARGE]: the command is over {MAX_COMMAND_BYTES // 1024} KiB "
+            "and was not analysed. Split it or put it in a reviewed script."
+        ))
 
     # The approved policy version (or, if the file drifted, the stricter of the
     # approved and on-disk versions). _audit stamps policy_version on records.

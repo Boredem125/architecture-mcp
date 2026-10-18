@@ -7,6 +7,9 @@ connector's own entries and preserves everything else, including the M1
 from __future__ import annotations
 
 import json
+import re
+import shutil
+import subprocess
 import sys
 import time
 import uuid
@@ -42,7 +45,36 @@ def _mcp_command() -> tuple[str, list[str]]:
     Uses the absolute interpreter so a Store-shim `python` on PATH can't break
     stdio launch; `--root` is filled in per-folder by the caller.
     """
-    return sys.executable, ["-m", "sandbox.connector.mcp_server", "--root"]
+    # -P: the launch directory (project root, agent-writable) never goes on
+    # sys.path, so files there cannot shadow the package (SEC-27).
+    return sys.executable, ["-P", "-m", "sandbox.connector.mcp_server", "--root"]
+
+
+_MIN_CLAUDE = (2, 1, 295)  # first release with hook "onFailure": "block"
+
+
+def _claude_code_version() -> tuple[int, int, int] | None:
+    """Installed Claude Code version, best effort (None when unknown)."""
+    exe = shutil.which("claude")
+    if not exe:
+        return None
+    out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=5).stdout
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", out)
+    return (int(m[1]), int(m[2]), int(m[3])) if m else None
+
+
+def _version_warnings() -> list[str]:
+    try:
+        v = _claude_code_version()
+    except Exception:  # noqa: BLE001 - best effort, never fail init
+        return []
+    if v is not None and v < _MIN_CLAUDE:
+        return [
+            "Claude Code %s is older than 2.1.295: PreToolUse onFailure=block is not "
+            "honoured, so a hook timeout or crash lets the tool call proceed. Upgrade."
+            % ".".join(map(str, v))
+        ]
+    return []
 
 
 def write_mcp_json(layout: FolderLayout) -> Path:
@@ -58,6 +90,7 @@ def write_mcp_json(layout: FolderLayout) -> Path:
         "type": "stdio",
         "command": cmd,
         "args": [*args, str(layout.root)],
+        "env": {"PYTHONPATH": _package_src()},
     }
     path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
     return path
@@ -123,8 +156,10 @@ def init(
     session_stub_path.write_text(SESSIONSTART_STUB, encoding="utf-8")
 
     settings_path = None
+    warnings: list[str] = []
     if claude:
-        settings_path = _merge_settings(layout, stub_path)
+        settings_path = _merge_settings(layout, stub_path, session["python"])
+        warnings = _version_warnings()
 
     mcp_json_path = None
     if mcp:
@@ -140,10 +175,11 @@ def init(
         "mcp_json": str(mcp_json_path) if mcp_json_path else None,
         "codex_snippet": codex_snippet,
         "policy": str(layout.policy_file),
+        "warnings": warnings,
     }
 
 
-def _merge_settings(layout: FolderLayout, stub_path: Path) -> Path:
+def _merge_settings(layout: FolderLayout, stub_path: Path, python: str | None = None) -> Path:
     """Merge marker-tagged PreToolUse and PostToolUse entries into Claude Code settings."""
     target = None
     for rel in _SETTINGS_CANDIDATES:
@@ -161,6 +197,10 @@ def _merge_settings(layout: FolderLayout, stub_path: Path) -> Path:
         existing = {}
 
     hooks = existing.setdefault("hooks", {})
+    py = python or sys.executable  # absolute interpreter recorded in session.json
+
+    def _cmd(stub: Path) -> str:
+        return f'"{py}" -P "{stub}"'
 
     # PreToolUse hook
     pre = hooks.setdefault("PreToolUse", [])
@@ -171,8 +211,9 @@ def _merge_settings(layout: FolderLayout, stub_path: Path) -> Path:
         "hooks": [
             {
                 "type": "command",
-                "command": f'python "{stub_path}"',
+                "command": _cmd(stub_path),
                 "timeout": 600,
+                "onFailure": "block",  # SEC-28: PreToolUse only
             }
         ],
     }
@@ -188,7 +229,7 @@ def _merge_settings(layout: FolderLayout, stub_path: Path) -> Path:
         "hooks": [
             {
                 "type": "command",
-                "command": f'python "{post_stub}"',
+                "command": _cmd(post_stub),
                 "timeout": 120,
             }
         ],
@@ -205,7 +246,7 @@ def _merge_settings(layout: FolderLayout, stub_path: Path) -> Path:
         "hooks": [
             {
                 "type": "command",
-                "command": f'python "{session_stub}"',
+                "command": _cmd(session_stub),
                 "timeout": 30,
             }
         ],

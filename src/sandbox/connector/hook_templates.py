@@ -32,6 +32,33 @@ def _fail_closed(msg):
     sys.stderr.flush()
     sys.exit(2)
 
+_BOOT = (
+    "import os, sys\n"
+    "src = os.path.realpath(sys.argv[1])\n"
+    "sys.path.insert(0, src)\n"
+    "import sandbox\n"
+    "f = os.path.normcase(os.path.realpath(sandbox.__file__))\n"
+    "if not f.startswith(os.path.normcase(src) + os.sep):\n"
+    "    sys.stderr.write('SANDBOX: package origin mismatch (fail-closed)')\n"
+    "    sys.exit(2)\n"
+    "from sandbox.connector import hook_eval\n"
+    "sys.exit(hook_eval.main(sys.argv[2:]))\n"
+)
+
+
+def _verify_origin(package_src):
+    """Exit 2 unless the imported `sandbox` package lives under package_src."""
+    import sandbox
+    src = os.path.normcase(os.path.realpath(package_src)) + os.sep
+    if not os.path.normcase(os.path.realpath(sandbox.__file__)).startswith(src):
+        _fail_closed("package origin mismatch")
+
+
+def _prepend_trusted(package_src):
+    """Put the trusted package dir first on sys.path (cwd/script dir never trusted)."""
+    sys.path[:] = [p for p in sys.path if p != package_src]
+    sys.path.insert(0, package_src)
+
 
 def main():
     raw = sys.stdin.read()
@@ -65,11 +92,13 @@ def main():
 
     # 1) in-process import (fastest)
     try:
-        if package_src and package_src not in sys.path:
-            sys.path.insert(0, package_src)
+        if package_src:
+            _prepend_trusted(package_src)
         import asyncio
         from sandbox.connector.hook_eval import pre_tool_use_raw
         from sandbox.connector.layout import FolderLayout
+        if package_src:
+            _verify_origin(package_src)
         layout = FolderLayout(root)
         result = asyncio.run(pre_tool_use_raw(raw, layout))
         sys.stdout.write(json.dumps(result))
@@ -78,23 +107,36 @@ def main():
     except Exception:
         pass
 
-    # 2) subprocess fallback with the captured interpreter
+    # 2) subprocess fallback: isolated launch (-P: no cwd/script dir on sys.path),
+    #    the package must come from package_src, and only rc 0 + a well-formed
+    #    PreToolUse JSON (or rc 2) is passed on. Everything else is exit 2.
+    if not package_src or not os.path.isabs(python):
+        _fail_closed("cannot evaluate hook: no trusted interpreter/package")
     try:
         env = dict(os.environ)
-        if package_src:
-            existing = env.get("PYTHONPATH", "")
-            env["PYTHONPATH"] = package_src + (os.pathsep + existing if existing else "")
+        env["PYTHONPATH"] = package_src
         proc = subprocess.run(
-            [python, "-m", "sandbox.connector.hook_eval"],
+            [python, "-P", "-c", _BOOT, package_src, "sandbox.connector.hook_eval"],
             input=raw, capture_output=True, text=True, env=env, timeout=120,
         )
-        if proc.stdout:
-            sys.stdout.write(proc.stdout)
-            sys.stdout.flush()
-        sys.exit(proc.returncode)
     except Exception as exc:
         # 3) fail closed
         _fail_closed("cannot evaluate hook: %s" % exc)
+    if proc.returncode == 0:
+        try:
+            out = json.loads(proc.stdout)
+            hso = out["hookSpecificOutput"]
+            ok = isinstance(hso, dict) and hso.get("hookEventName") == "PreToolUse"
+        except Exception:
+            ok = False
+        if ok:
+            sys.stdout.write(proc.stdout)
+            sys.stdout.flush()
+            sys.exit(0)
+    if proc.stdout and proc.returncode == 2:
+        sys.stdout.write(proc.stdout)
+    sys.stderr.write(proc.stderr or "")
+    _fail_closed("hook evaluator failed (rc %s)" % proc.returncode)
 
 
 if __name__ == "__main__":
@@ -126,6 +168,33 @@ def _fail_closed(msg):
     sys.stderr.flush()
     sys.exit(2)
 
+_BOOT = (
+    "import os, sys\n"
+    "src = os.path.realpath(sys.argv[1])\n"
+    "sys.path.insert(0, src)\n"
+    "import sandbox\n"
+    "f = os.path.normcase(os.path.realpath(sandbox.__file__))\n"
+    "if not f.startswith(os.path.normcase(src) + os.sep):\n"
+    "    sys.stderr.write('SANDBOX: package origin mismatch (fail-closed)')\n"
+    "    sys.exit(2)\n"
+    "from sandbox.connector import hook_eval\n"
+    "sys.exit(hook_eval.main(sys.argv[2:]))\n"
+)
+
+
+def _verify_origin(package_src):
+    """Exit 2 unless the imported `sandbox` package lives under package_src."""
+    import sandbox
+    src = os.path.normcase(os.path.realpath(package_src)) + os.sep
+    if not os.path.normcase(os.path.realpath(sandbox.__file__)).startswith(src):
+        _fail_closed("package origin mismatch")
+
+
+def _prepend_trusted(package_src):
+    """Put the trusted package dir first on sys.path (cwd/script dir never trusted)."""
+    sys.path[:] = [p for p in sys.path if p != package_src]
+    sys.path.insert(0, package_src)
+
 
 def main():
     raw = sys.stdin.read()
@@ -151,11 +220,13 @@ def main():
     python = session.get("python") or sys.executable
 
     try:
-        if package_src and package_src not in sys.path:
-            sys.path.insert(0, package_src)
+        if package_src:
+            _prepend_trusted(package_src)
         import asyncio
         from sandbox.connector.hook_eval import post_tool_use
         from sandbox.connector.layout import FolderLayout
+        if package_src:
+            _verify_origin(package_src)
         layout = FolderLayout(root)
         result = asyncio.run(post_tool_use(payload, layout))
         if result:
@@ -165,18 +236,19 @@ def main():
     except Exception:
         pass
 
+    if not package_src or not os.path.isabs(python):
+        _fail_closed("cannot evaluate hook: no trusted interpreter/package")
     try:
         env = dict(os.environ)
-        if package_src:
-            existing = env.get("PYTHONPATH", "")
-            env["PYTHONPATH"] = package_src + (os.pathsep + existing if existing else "")
+        env["PYTHONPATH"] = package_src
         proc = subprocess.run(
-            [python, "-m", "sandbox.connector.hook_eval", "--post"],
+            [python, "-P", "-c", _BOOT, package_src, "sandbox.connector.hook_eval", "--post"],
             input=raw, capture_output=True, text=True, env=env, timeout=120,
         )
         if proc.stdout:
             sys.stdout.write(proc.stdout)
             sys.stdout.flush()
+        sys.stderr.write(proc.stderr or "")
         sys.exit(proc.returncode)
     except Exception as exc:
         _fail_closed("cannot evaluate hook: %s" % exc)

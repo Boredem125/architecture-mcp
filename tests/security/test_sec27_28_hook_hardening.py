@@ -184,3 +184,46 @@ def test_init_never_fails_if_version_probe_raises(tmp_path, monkeypatch):
 
     monkeypatch.setattr(install_mod, "_claude_code_version", boom)
     assert "warnings" in init(tmp_path, claude=True, mcp=False)
+
+
+# -- padding DoS: size cap before any parsing; crash/timeout -> exit 2 --------
+
+def test_oversized_command_denied_fast_through_real_hook(root):
+    import time
+
+    _set_session(root, sys.executable, SRC)
+    big = {"tool_name": "Bash", "tool_input": {"command": "echo " + "a" * (33 * 1024)}}
+    t = time.monotonic()
+    p = _run_stub(root, "pretooluse.py", sys.executable, big)
+    assert time.monotonic() - t < 2.0 + 1.5  # interpreter start-up allowance
+    assert p.returncode == 0, p.stderr
+    hso = json.loads(p.stdout)["hookSpecificOutput"]
+    assert hso["permissionDecision"] == "deny" and "COMMAND_TOO_LARGE" in hso["permissionDecisionReason"]
+
+
+async def test_oversized_check_is_fast_in_process(root):
+    import time
+
+    from sandbox.connector.hook_eval import pre_tool_use_raw
+    from sandbox.connector.layout import FolderLayout
+
+    raw = json.dumps({"tool_name": "Bash", "tool_input": {"command": "x" * (33 * 1024)}, "cwd": str(root)})
+    t = time.monotonic()
+    out = await pre_tool_use_raw(raw, FolderLayout(root))
+    assert time.monotonic() - t < 2.0
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_evaluator_crash_or_hang_gives_exit_2(root, tmp_path_factory):
+    fake = tmp_path_factory.mktemp("crashsrc")
+    pkg = fake / "sandbox" / "connector"
+    pkg.mkdir(parents=True)
+    (fake / "sandbox" / "__init__.py").write_text("")
+    (pkg / "__init__.py").write_text("")
+    (pkg / "hook_eval.py").write_text("def main(argv=None):\n    raise SystemExit(139)\n")
+    _set_session(root, sys.executable, str(fake))
+    p = _run_stub(root, "pretooluse.py", sys.executable, READ_SEED)
+    assert p.returncode == 2
+    # the stub's own subprocess timeout is mapped to exit 2 (not an uncaught crash)
+    from sandbox.connector.hook_templates import PRETOOLUSE_STUB
+    assert "except Exception as exc:" in PRETOOLUSE_STUB and "timeout=120" in PRETOOLUSE_STUB
