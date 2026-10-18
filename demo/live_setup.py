@@ -42,7 +42,6 @@ def setup(parent: Path) -> Path:
     layout = FolderLayout(root)
     policy = load_policy(layout.policy_file)
     policy.semantic.enabled = True
-    policy.network.allow_mcp_servers = ["stripe"]
     save_policy(policy, layout.policy_file)
     for args in (["governance", "use", str(GOV_POLICY)],
                  ["policy", "baseline", "--reason", "live demo baseline"]):
