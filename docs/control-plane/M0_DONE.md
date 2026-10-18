@@ -1,0 +1,14 @@
+# M0 done: legacy paths retired (18 Oct 2026)
+
+**Next action (founder):** read this, then make the `tests`, `security` and `image` workflows required checks on `main` (repo settings). Until SEC-23 is fixed, do not run the money presets (`move-money`, `move-more-money`) in a live demo.
+
+1. **Gate PASS** at `b87703e`: 679 collected, 678 passed, 1 skipped (symlink), 0 deselected; the old e2b crasher passes. Details: `M0_GATE.md`.
+2. **Connector tests unchanged** (5-part proof): 645 C node ids, manifest 53/53. Named exceptions, all signed off by security-engineer: `test_posttooluse_fallback.py` (SYSTEMDRIVE env, T11) and 5 Windows-path tests deselected on Linux only, covered by POSIX twins (T12).
+3. **CI green on Windows and Linux:** tests (full suite + connector-standalone), security scanners, image build + compose smoke. Linux counts in `M0_BASELINE.md` section 8.
+4. **Removed:** pipeline/, agents/, launcher/, hitl/, translate/, transport/, OPA, containment/, executor/, rollback/, legacy models, crypto/tokens.py, websocket, 12 legacy route files, 3 CLI commands, sandbox_hook.py, nats/opa/redis/executor services, 8 deps, the mock frontend pages. The agent token now reaches no route (403); WebSockets are closed with 1008.
+5. **Security (T0 hotfix + T8):** SEC-01/02/03 closed (162 tests). T8 signed off (`M0_SECURITY_SIGNOFF.md`), nothing gate-blocking.
+6. **New finding SEC-23 (High, pre-M0):** with the optional jev-os service down, a money-moving MCP call (`mcp__stripe__create_transfer`, $90,000) runs with **no approval**: the governance clause is dropped silently and `fail_mode="closed"` is read nowhere. Fix lands in M1 Phase A (deterministic money floor: escalate and audit when clauses can't be evaluated).
+7. **Also for M1:** SEC-24 (`verify_record` trusts the record's own signed-field list), key seeds reachable by Grep/Glob, `?root=` trust gap.
+8. **Adversarial review (CONCERNS, 0 critical):** (a) the CI auth smoke check uses `?root=.` and becomes vacuous after the M1 `?root=` allowlist: retarget it to a listed root plus an approver-200 positive control; (b) `is_agent_route` matches by raw prefix (`/api/v1/sync` would also allow `/api/v1/syncX`): use the same boundary check as `is_public` before M1 adds agent routes. Notes: `/ready` is constant, stale `ai-agent-sandbox` names, `cryptography` still arrives transitively via `mcp` → `pyjwt[crypto]`.
+9. **Limits (honest):** no compliance claims; Linux has 21 skips (Windows-only tests) plus the 5 named deselects; Docker is not running locally, so image checks run only in CI; E2E dual-control step ran via `call_demo` scene 6 and tests, not via the live money preset (SEC-23).
+10. **Founder approval:** the founder approved M1 ("approve m1 , explicit permission given"), which covers moving past this gate. M1 Phase A starts now.
