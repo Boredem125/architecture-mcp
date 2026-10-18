@@ -17,7 +17,6 @@ from sandbox.connector.policy import default_policy, save_policy
 from sandbox.connector.queue import EscalationQueue
 from sandbox.safety.blocklist import CommandBlocklist
 
-_RED = pytest.mark.xfail(strict=True, reason="SEC-25: policy propose is not in the approver-CLI deny")
 
 
 @pytest.fixture
@@ -59,7 +58,7 @@ PROPOSE = [
 ]
 
 
-@_RED
+
 @pytest.mark.parametrize("command", PROPOSE)
 def test_sec25_policy_propose_denied_classify(layout, command):
     c = _classify(layout, command)
@@ -67,7 +66,7 @@ def test_sec25_policy_propose_denied_classify(layout, command):
     assert "approver" in c.reason.lower(), c.reason
 
 
-@_RED
+
 @pytest.mark.parametrize("command", PROPOSE)
 async def test_sec25_policy_propose_denied_hook(layout, command):
     decision, reason = await _hook(layout, command)

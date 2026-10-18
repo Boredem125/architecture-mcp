@@ -616,10 +616,18 @@ def _approver_cli_use(command: str, _depth: int = 0) -> str | None:
                 if sub:
                     return sub
             if _is_sandbox_cli(words, j):
+                seen_policy = False
                 for rest in words[j + 1:]:
                     for cand in (rest, rest.replace("\\", "").replace("^", "")):
-                        if cand.casefold() in _APPROVER_SUBCOMMANDS:
-                            return cand.casefold()
+                        low = cand.casefold()
+                        if low in _APPROVER_SUBCOMMANDS:
+                            return low
+                        # SEC-25: `policy propose` is half of a two-person change;
+                        # the agent must not file it under a name of its choosing.
+                        if low == "propose" and seen_policy:
+                            return "policy propose"
+                        if low == "policy":
+                            seen_policy = True
     return None
 
 
