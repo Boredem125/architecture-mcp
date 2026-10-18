@@ -4,7 +4,7 @@ Status: Accepted (18 Oct 2026). The default was ruled by security-engineer (`REV
 
 ## Next action
 
-1. **Founder:** this changes the default UX (every test run asks a human). Approve, or object, in the M1 summary.
+1. **Founder: approved** on 18 Oct 2026, in chat: "ADR 0009 approved as proposed: npm run / pytest escalate by default; opt-in via shell.allow_runners in a two-reviewer approved policy version."
 2. **QA, then backend:** T0g against this ADR, tests first. It lands after T0f, because it reuses T0f's resolved words.
 
 ## Context
