@@ -351,7 +351,7 @@ async def test_t0e_approver_cli_denied_hook(layout, command):
     assert _pending(layout) == [], "the approver CLI must be denied, not sent to a human"
 
 
-# --- SEC-04 (connector part, a guard today): the agent token cannot decide -------
+# --- SEC-08 (connector part, a guard today): the agent token cannot decide -------
 # The full "403 on every non-public route" test needs AGENT_ROUTES empty, so it
 # lands with T4 (REVIEW_QA.md R3). This part must hold before and after T0.
 
@@ -366,7 +366,7 @@ def _connector_routes():
 
 
 @pytest.mark.parametrize("method,path", _connector_routes())
-def test_sec04_agent_token_403_on_every_connector_route(layout, monkeypatch, method, path):
+def test_sec08_agent_token_403_on_every_connector_route(layout, monkeypatch, method, path):
     from fastapi.testclient import TestClient
 
     from sandbox.api import auth
@@ -381,7 +381,7 @@ def test_sec04_agent_token_403_on_every_connector_route(layout, monkeypatch, met
     assert r.status_code == 403, (method, path, r.status_code)
 
 
-def test_sec04_connector_approve_and_deny_are_covered():
+def test_sec08_connector_approve_and_deny_are_covered():
     paths = {(m, p) for m, p in _connector_routes()}
     assert any(m == "POST" and p.endswith("/approve") for m, p in paths)
     assert any(m == "POST" and p.endswith("/deny") for m, p in paths)
