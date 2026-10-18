@@ -1,0 +1,21 @@
+tests/security/test_t0_hotfix.py::test_t0b_case_variant_shell_denied_classify[cat .SANDBOX/policy.json]
+tests/security/test_t0_hotfix.py::test_t0b_case_variant_shell_denied_classify[cat .Sandbox/state/keys/a.seed]
+tests/security/test_t0_hotfix.py::test_t0b_case_variant_shell_denied_classify[dir .SANDBOX]
+tests/security/test_t0_hotfix.py::test_t0b_case_variant_shell_denied_classify[type .SANDBO?\\state\\keys\\a.seed]
+tests/security/test_t0_hotfix.py::test_t0b_case_variant_write_denied_hook[Edit-.SANDBOX/policy.json]
+tests/security/test_t0_hotfix.py::test_t0b_case_variant_write_denied_hook[Edit-.Sandbox/state/keys/a.seed]
+tests/security/test_t0_hotfix.py::test_t0b_case_variant_write_denied_hook[Edit-.git/HOOKS/pre-commit]
+tests/security/test_t0_hotfix.py::test_t0b_case_variant_write_denied_hook[Write-.SANDBOX/policy.json]
+tests/security/test_t0_hotfix.py::test_t0b_case_variant_write_denied_hook[Write-.Sandbox/state/keys/a.seed]
+tests/security/test_t0_hotfix.py::test_t0b_case_variant_write_denied_hook[Write-.git/HOOKS/pre-commit]
+tests/security/test_t0_hotfix.py::test_t0c_read_key_file_case_variant_denied_classify
+tests/security/test_t0_hotfix.py::test_t0d_agent_config_write_case_variant_denied[.Claude/Settings.json]
+tests/security/test_t0_hotfix.py::test_t0d_agent_config_write_case_variant_denied[.MCP.json]
+tests/unit/test_containment.py::test_case_insensitive_containment
+tests/unit/test_containment.py::test_junction_ancestor_escape_rejected
+tests/unit/test_containment.py::test_windows_exotic_paths_rejected[C:relative.txt]
+tests/unit/test_containment.py::test_windows_exotic_paths_rejected[\\\\.\\PhysicalDrive0]
+tests/unit/test_containment.py::test_windows_exotic_paths_rejected[\\\\?\\C:\\Windows\\x.txt]
+tests/unit/test_containment.py::test_windows_exotic_paths_rejected[\\\\server\\share\\x.txt]
+tests/unit/test_containment.py::test_windows_exotic_paths_rejected[file.txt:hidden]
+tests/unit/test_environment_classification.py::test_case_insensitive_on_windows
