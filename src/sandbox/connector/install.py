@@ -42,7 +42,7 @@ class InstallLayoutError(ValueError):
 def _interpreter_dirs() -> list[str]:
     import site
 
-    dirs = [sys.prefix, *site.getsitepackages()]
+    dirs = [sys.prefix, sys.base_prefix, *site.getsitepackages()]
     try:
         dirs.append(site.getusersitepackages())
     except Exception:  # noqa: BLE001
@@ -328,3 +328,50 @@ def uninstall(root: str | Path, *, keep_data: bool = False) -> dict[str, Any]:
         "settings_entry_removed": removed_entry,
         "data_removed": data_removed,
     }
+
+
+def diagnose_layout(root: str | Path) -> list[str]:
+    """Problems that leave the hook takeover-able (empty list = safe layout)."""
+    import os
+
+    layout = FolderLayout(root)
+    base = os.path.normcase(os.path.realpath(layout.root))
+
+    def inside(p: str) -> bool:
+        r = os.path.normcase(os.path.realpath(p))
+        return r == base or r.startswith(base + os.sep)
+
+    problems: list[str] = []
+    try:
+        session = json.loads(layout.session_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ["UNSAFE LAYOUT: no readable .sandbox/session.json; run `sandbox init`"]
+    py = session.get("python") or ""
+    dirs = [py, str(Path(py).parent), str(Path(py).parent.parent), session.get("package_src") or ""]
+    if py and Path(py).resolve() == Path(sys.executable).resolve():
+        dirs += _interpreter_dirs()
+    for d in dirs:
+        if d and inside(d):
+            problems.append(f"UNSAFE LAYOUT: {d} is inside the governed folder (install the connector outside it, then re-run `sandbox init`)")
+            break
+    found = False
+    for rel in _SETTINGS_CANDIDATES:
+        f = layout.root / rel
+        if not f.exists():
+            continue
+        try:
+            hooks = json.loads(f.read_text(encoding="utf-8")).get("hooks", {})
+        except (OSError, ValueError):
+            continue
+        for entry in hooks.get("PreToolUse", []):
+            if entry.get(_MARKER):
+                found = True
+                h = (entry.get("hooks") or [{}])[0]
+                cmd = h.get("command", "")
+                if " -I " not in cmd or not cmd.startswith('"') or h.get("onFailure") != "block":
+                    problems.append(
+                        "UNSAFE LAYOUT: installed PreToolUse hook lacks an absolute interpreter, -I or "
+                        "onFailure=block; re-run `sandbox init`")
+    if not found:
+        problems.append("UNSAFE LAYOUT: no connector PreToolUse hook found in .claude settings (run `sandbox init`)")
+    return problems

@@ -14,6 +14,7 @@ def register(cli: click.Group) -> None:
     cli.add_command(approve_cmd)
     cli.add_command(deny_cmd)
     cli.add_command(status_cmd)
+    cli.add_command(doctor_cmd)
     cli.add_command(changes_cmd)
     cli.add_command(restore_cmd)
     cli.add_command(verify_cmd)
@@ -355,6 +356,25 @@ def init_cmd(path: str, claude: bool, mcp: bool, codex: bool, auto_allow: bool, 
         click.echo("\nAdd this to ~/.codex/config.toml:\n")
         click.echo(result["codex_snippet"])
     click.echo("\nRun `sandbox watch` in another terminal to approve escalations.")
+
+
+@click.command("doctor")
+@click.argument("path", default=".")
+def doctor_cmd(path: str) -> None:
+    """Check the install layout is safe (exit 1 on UNSAFE LAYOUT)."""
+    from sandbox.connector.install import diagnose_layout
+    from sandbox.connector.layout import FolderLayout
+
+    layout = FolderLayout.discover(path)
+    if layout is None:
+        click.echo("No .sandbox/ found here or above. Run `sandbox init` first.")
+        raise SystemExit(1)
+    problems = diagnose_layout(layout.root)
+    for p in problems:
+        click.echo(p)
+    if problems:
+        raise SystemExit(1)
+    click.echo("OK: connector installed outside the governed folder; hook is isolated and fail-closed.")
 
 
 @click.command("status")

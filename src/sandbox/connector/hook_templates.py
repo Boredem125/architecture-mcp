@@ -60,6 +60,12 @@ def _prepend_trusted(package_src):
     sys.path.insert(0, package_src)
 
 
+def _inside(path, root):
+    a = os.path.normcase(os.path.realpath(path))
+    b = os.path.normcase(os.path.realpath(root))
+    return a == b or a.startswith(b + os.sep)
+
+
 def main():
     raw = sys.stdin.read()
     # Parsed only to locate .sandbox/. Malformed input is judged by the
@@ -89,6 +95,11 @@ def main():
 
     package_src = session.get("package_src")
     python = session.get("python") or sys.executable
+
+    # Legacy installs (connector code inside the governed root) fail closed.
+    for _p in (package_src, python):
+        if _p and _inside(_p, root):
+            _fail_closed("connector code is inside the governed folder; re-run `sandbox init` with an external install")
 
     # 1) in-process import (fastest)
     try:

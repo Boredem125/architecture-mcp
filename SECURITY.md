@@ -105,3 +105,22 @@ moves keys to an HSM/smartcard and the control plane out of the workspace.
 
 This is a personal proof-of-work repository. For a real deployment, security issues would go
 through a coordinated-disclosure process with a named owner and SLA.
+
+## Upgrade notice: hook hardening (existing users, action required)
+
+The hook launch and PreToolUse failure handling were hardened. Existing installs
+are not safe until you do the following:
+
+1. **Install the connector outside the folders it governs.** Code inside a governed
+   project can be changed by the agent, so `sandbox init` now refuses an in-project
+   install (including an in-project `.venv` or editable install). Either
+   `pipx install <path-or-package>`, or an external virtualenv:
+   `py -3.12 -m venv E:\tools\agw-venv`, then `E:\tools\agw-venv\Scripts\pip install <path-to-this-repo>`
+   (the `sandbox` command is then `E:\tools\agw-venv\Scripts\sandbox`). A repo with
+   its own in-project `.venv` cannot govern itself.
+2. **Re-run `sandbox init` in each governed folder.** It rewrites the hook command
+   (absolute interpreter, `-I`) and adds `"onFailure": "block"` to the PreToolUse hook.
+   Hooks need Claude Code 2.1.295 or newer for `onFailure`; `init` warns on older versions.
+3. **Check it:** `sandbox doctor <folder>` prints `OK` or `UNSAFE LAYOUT` (exit 1). The
+   hook entry in `.claude/settings.local.json` should show an absolute interpreter path,
+   `-I`, and `onFailure: block`. Shell commands over 32 KiB are now denied unanalysed.

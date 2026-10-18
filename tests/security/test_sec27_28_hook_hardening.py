@@ -285,3 +285,81 @@ def test_c3_codex_snippet_has_env_and_mcp_origin_check(tmp_path):
     assert "PYTHONPATH" in snip and "-I" in snip
     mcp_src = (Path(SRC) / "sandbox" / "connector" / "mcp_server.py").read_text(encoding="utf-8")
     assert "origin" in mcp_src.lower()
+
+
+# -- final sign-off conditions -------------------------------------------------
+
+def _mcp(root: Path, src: str | None):
+    env = dict(ENV)
+    if src is not None:
+        env["SANDBOX_PACKAGE_SRC"] = src
+    return subprocess.run(
+        [sys.executable, "-I", "-m", "sandbox.connector.mcp_server", "--root", str(root)],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env, timeout=60,
+    )
+
+
+def test_mcp_server_mismatched_origin_exits_2_before_stdio(root, tmp_path_factory):
+    p = _mcp(root, str(tmp_path_factory.mktemp("elsewhere")))
+    assert p.returncode == 2 and "origin mismatch" in p.stderr
+
+
+def test_mcp_server_matching_origin_starts(root):
+    p = _mcp(root, SRC)
+    assert p.returncode != 2 and "origin mismatch" not in p.stderr, p.stderr[-300:]
+
+
+def test_mcp_json_and_codex_always_set_origin_variable(tmp_path):
+    from sandbox.connector.layout import FolderLayout
+
+    init(tmp_path, claude=False, mcp=True)
+    srv = json.loads((tmp_path / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["sandbox"]
+    assert srv["env"]["SANDBOX_PACKAGE_SRC"] == install_mod._package_src()
+    assert "SANDBOX_PACKAGE_SRC" in install_mod.codex_config_snippet(FolderLayout(tmp_path))
+
+
+def test_legacy_install_with_in_root_package_src_exits_2(root):
+    _plant_shadow(root)
+    _set_session(root, sys.executable, str(root))
+    p = _run_stub(root, "pretooluse.py", sys.executable, READ_SEED)
+    assert p.returncode == 2 and "governed" in p.stderr
+
+
+def test_legacy_install_with_in_root_interpreter_exits_2(root):
+    _set_session(root, str(root / "venv" / "Scripts" / "python.exe"), SRC)
+    p = _run_stub(root, "pretooluse.py", sys.executable, READ_SEED)
+    assert p.returncode == 2 and "governed" in p.stderr
+
+
+def test_base_prefix_is_checked():
+    assert sys.base_prefix in install_mod._interpreter_dirs()
+
+
+def test_doctor_ok_on_safe_layout_and_flags_unsafe(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from sandbox.cli.connector_cmds import doctor_cmd
+
+    init(tmp_path, claude=True, mcp=False)
+    r = CliRunner().invoke(doctor_cmd, [str(tmp_path)])
+    assert r.exit_code == 0 and r.output.startswith("OK"), r.output
+    # package_src moved into the root -> unsafe
+    _set_session(tmp_path, sys.executable, str(tmp_path / "src"))
+    r = CliRunner().invoke(doctor_cmd, [str(tmp_path)])
+    assert r.exit_code != 0 and "UNSAFE LAYOUT" in r.output
+
+
+def test_doctor_flags_old_style_hook(tmp_path):
+    from click.testing import CliRunner
+
+    from sandbox.cli.connector_cmds import doctor_cmd
+
+    init(tmp_path, claude=True, mcp=False)
+    f = tmp_path / ".claude" / "settings.local.json"
+    d = json.loads(f.read_text(encoding="utf-8"))
+    h = d["hooks"]["PreToolUse"][0]["hooks"][0]
+    h["command"] = "python x.py"
+    h.pop("onFailure")
+    f.write_text(json.dumps(d), encoding="utf-8")
+    r = CliRunner().invoke(doctor_cmd, [str(tmp_path)])
+    assert r.exit_code != 0 and "UNSAFE LAYOUT" in r.output
