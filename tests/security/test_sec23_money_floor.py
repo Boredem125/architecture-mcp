@@ -241,3 +241,72 @@ def test_guard_clause_that_fires_still_escalates(tmp_path, monkeypatch):
     assert decision == "deny" and "GOVERNANCE" in reason
     (rec,) = _pending_for(layout, *MOVE_MORE_MONEY)
     assert "no_payments" in {v["clause_id"] for v in rec["governance"]}
+
+
+# --- added for M1_PLAN D0 (task list final, 1ee7504) -----------------------------------
+
+@RED_SEC23
+def test_floor_on_by_default_with_no_governance_policy(tmp_path):
+    """Main-session ruling: the money floor holds even with no governance policy."""
+    layout = _folder(tmp_path, semantic=False)
+    policy = load_policy(layout.policy_file)
+    policy.semantic.governance_policy = ""
+    save_policy(policy, layout.policy_file)
+    decision, reason = _call(layout, *MOVE_MORE_MONEY)
+    _require_escalated(layout, MOVE_MORE_MONEY, decision, reason)
+
+
+def _floor_default(layout):
+    data = json.loads(layout.policy_file.read_text(encoding="utf-8"))
+    return (data.get("governance") or {}).get("money_floor")
+
+
+@RED_SEC23
+def test_money_floor_opt_out_is_a_loosening_change(tmp_path):
+    """D0.4: `governance.money_floor: false` loosens, so change control needs two reviewers."""
+    from sandbox.connector import policy_versions as pv
+
+    layout = _folder(tmp_path)
+    if _floor_default(layout) is not True:
+        raise Sec23Open(f"policy.json has no governance.money_floor defaulting to true: {_floor_default(layout)!r}")
+    pv.baseline(layout, "alice", "initial")
+    approved = pv.folder_content(layout)
+    looser = json.loads(json.dumps(approved))
+    looser["governance"]["money_floor"] = False
+    assert not pv.only_tightens(approved, looser)
+    assert "governance.money_floor" in pv.loosened_fields(approved, looser)
+    assert pv.only_tightens(looser, approved)  # turning it back on only tightens
+
+
+@RED_SEC23
+def test_hand_edited_opt_out_does_not_disable_the_floor(tmp_path):
+    """Drift protection: an unapproved on-disk `money_floor: false` is ignored."""
+    from sandbox.connector import policy_versions as pv
+
+    layout = _folder(tmp_path)
+    if _floor_default(layout) is not True:
+        raise Sec23Open(f"policy.json has no governance.money_floor defaulting to true: {_floor_default(layout)!r}")
+    pv.baseline(layout, "alice", "initial")
+    data = json.loads(layout.policy_file.read_text(encoding="utf-8"))
+    data["governance"]["money_floor"] = False
+    layout.policy_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    decision, reason = _call(layout, *MOVE_MORE_MONEY)
+    _require_escalated(layout, MOVE_MORE_MONEY, decision, reason)
+
+
+def test_guard_benign_allowlisted_call_stays_allowed_with_service_up(tmp_path, monkeypatch):
+    """D0 positive control: service up, no clause matching, benign call stays allowed."""
+    class SaysYes:
+        def __init__(self):
+            self.asked = []
+
+        def ask(self, text, checks):
+            self.asked.append(set(checks))
+            return SemanticResult({k: 0.95 for k in checks}, "fake", 1.0)
+    fake = SaysYes()
+    monkeypatch.setattr(SemanticClient, "from_policy", classmethod(lambda cls, p: fake))
+    layout = _folder(tmp_path)
+    decision, _ = _call(layout, *LIST_CHARGES)
+    assert decision in (None, "allow")
+    assert not _pending_for(layout, *LIST_CHARGES)
+    assert fake.asked == []  # no clause gated on a read, so the service is never asked
