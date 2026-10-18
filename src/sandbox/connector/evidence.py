@@ -13,7 +13,7 @@
 - a summary (decisions by outcome and reviewer, governance clause hits by
   clause and framework reference, failed checks);
 - ``manifest.json``: the sha256 of every file, signed with a dedicated Ed25519
-  exporter key kept at ``.sandbox/state/keys/evidence-exporter.seed``.
+  exporter key kept in the key home (ADR 0007), as ``evidence-exporter.seed``.
 
 ``verify_evidence`` needs only the pack: it checks the manifest signature,
 every file hash, that no file was added, every record's checks, and every

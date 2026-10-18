@@ -47,6 +47,8 @@ async def approve(layout: FolderLayout, request_id: str, reviewer_id: str, reaso
     same_reviewer   refused: this reviewer (or key) already gave the first approval
     reason_required refused: reviewer flagged for approval fatigue gave no written reason
     not_pending     no such pending request (taken, finished or unknown)
+    key_unavailable refused: the key home cannot be resolved or written, so nothing can be
+                    signed and nothing runs (ADR 0007 1.3); "reason" says why
 
     Approval fatigue (connector/oversight.py) only adds scrutiny: a flagged
     reviewer must give a reason, and their approval of an ordinary request
@@ -54,7 +56,14 @@ async def approve(layout: FolderLayout, request_id: str, reviewer_id: str, reaso
     """
     from sandbox.connector.broker import FolderBroker
     from sandbox.connector.oversight import check_approval
-    from sandbox.connector.signing import sign_approval
+    from sandbox.connector.keyhome import KeyHomeError
+    from sandbox.connector.signing import ensure_signing_key, sign_approval
+
+    # Fail closed before anything is claimed or run: an approval that cannot be signed is invalid.
+    try:
+        ensure_signing_key(layout, reviewer_id)
+    except KeyHomeError as exc:
+        return {"status": "key_unavailable", "reason": str(exc)}
 
     queue = EscalationQueue(layout)
     rec = queue.claim(request_id, reviewer_id)

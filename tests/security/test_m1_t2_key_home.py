@@ -8,8 +8,7 @@ retired in place, never copied, moved or deleted. Fail closed when the key home
 cannot be resolved or written: no signing, approvals invalid, never a fallback
 to `.sandbox/state/keys`, the cwd or a relative path.
 
-RED tests raise ``KeyHomeOpen`` for the stated reason only (strict xfail); the
-fix commit deletes the decorator. Guards pass today and must keep passing.
+The strict xfail decorators were removed by the T2 fix commit.
 """
 from __future__ import annotations
 
@@ -36,10 +35,6 @@ SRC = str(Path(__file__).resolve().parents[2] / "src")
 
 class KeyHomeOpen(AssertionError):
     """Keys still live in the workspace, or the key home is not protected (M1 T2 open)."""
-
-
-RED_T2 = pytest.mark.xfail(raises=KeyHomeOpen, strict=True,
-                           reason="M1 T2 open: seeds are still in .sandbox/state/keys")
 
 
 def _require(cond: bool, msg: str) -> None:
@@ -88,7 +83,7 @@ def key_home(tmp_path, monkeypatch):
 
 # --- seeds are not in the workspace -------------------------------------------------
 
-@RED_T2
+
 def test_no_seed_bytes_in_the_workspace_after_approvals_grants_and_export(tmp_path, key_home):
     lay = _ws(tmp_path / "ws")
     _approve(lay, _submit(lay), "alice")
@@ -111,7 +106,6 @@ def test_no_seed_bytes_in_the_workspace_after_approvals_grants_and_export(tmp_pa
     _require(not leaks, f"seed bytes (raw or hex) found in workspace files: {leaks}")
 
 
-@RED_T2
 def test_two_workspaces_get_separate_keys_for_the_same_reviewer(tmp_path, key_home):
     a, b = _ws(tmp_path / "a"), _ws(tmp_path / "b")
     ra = _approve(a, _submit(a), "cli")["result"]
@@ -142,7 +136,6 @@ def _default_home_env(monkeypatch, tmp_path) -> Path:
     return home / ".local" / "share" / "agg" / "keys"
 
 
-@RED_T2
 def test_default_key_home_is_the_per_user_os_data_dir(tmp_path, monkeypatch):
     expected = _default_home_env(monkeypatch, tmp_path)
     lay = _ws(tmp_path / "ws")
@@ -151,7 +144,6 @@ def test_default_key_home_is_the_per_user_os_data_dir(tmp_path, monkeypatch):
     _require(not _seeds(lay.root), f"seed files inside the workspace: {_seeds(lay.root)}")
 
 
-@RED_T2
 def test_unresolvable_key_home_fails_closed(tmp_path, monkeypatch):
     for name in ("SANDBOX_KEY_HOME", "LOCALAPPDATA", "APPDATA", "HOME", "USERPROFILE", "XDG_DATA_HOME"):
         monkeypatch.delenv(name, raising=False)
@@ -175,7 +167,6 @@ def test_unresolvable_key_home_fails_closed(tmp_path, monkeypatch):
     _require(not marker.exists(), "an approval ran with no key home (no signing should mean no valid approval)")
 
 
-@RED_T2
 def test_minimal_env_child_never_writes_keys_in_tree(tmp_path):
     """The env shape of test_posttooluse_fallback.py's child (M0 T11's %SystemDrive% bug class)."""
     cwd = tmp_path / "cwd"
@@ -301,7 +292,6 @@ RED_CASES = ["read", "read_via_link", "grep", "glob", "write_pins", "edit_pins",
 GUARD_CASES = ["cat_dollar_var", "cat_ps_env", "type_percent_var", "cat_tilde"]
 
 
-@RED_T2
 @pytest.mark.parametrize("case", RED_CASES)
 def test_key_home_is_denied_to_every_tool(tmp_path, monkeypatch, case):
     lay, kh, w = _hook_setup(tmp_path, monkeypatch)
@@ -339,7 +329,7 @@ def test_guard_ordinary_outside_read_is_unchanged(tmp_path, monkeypatch):
 
 # --- rotate, never migrate ---------------------------------------------------------
 
-@RED_T2
+
 def test_pre_m1_in_tree_seed_is_rotated_and_left_in_place(tmp_path, key_home):
     from nacl.signing import SigningKey
 

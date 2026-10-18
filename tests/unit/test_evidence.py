@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import time
 import zipfile
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -124,7 +126,9 @@ def test_pack_layout_and_no_private_keys(folder, tmp_path):
             "policy/policy.json", "policy/governance_policy.json"} <= names
     assert len([n for n in names if n.startswith("decisions/")]) == 5
     blob = b"".join(p.read_bytes() for p in out.rglob("*") if p.is_file())
-    for seed in (folder.state_dir / "keys").glob("*.seed"):
+    seeds = list(Path(os.environ["SANDBOX_KEY_HOME"]).rglob("*.seed"))  # M1 T2: seeds live in the key home
+    assert len(seeds) >= 3
+    for seed in seeds:
         assert seed.read_bytes() not in blob and seed.read_bytes().hex().encode() not in blob
     keys = json.loads((out / "keys" / "reviewers.json").read_text(encoding="utf-8"))
     assert set(keys) == {"alice", "bob", "carol"} and all(keys.values())
@@ -282,7 +286,7 @@ def test_pinned_exporter_key(folder, tmp_path):
     wrong = bytes(SigningKey.generate().verify_key).hex()
     r = verify_evidence(out, wrong)
     assert not r["ok"] and "not the expected key" in r["failures"][0]
-    assert (folder.state_dir / "keys" / f"{EXPORTER_KEY}.seed").exists()
+    assert list(Path(os.environ["SANDBOX_KEY_HOME"]).rglob(f"{EXPORTER_KEY}.seed"))  # M1 T2: in the key home
 
 
 def test_refuses_existing_output_and_control_plane(folder, tmp_path):

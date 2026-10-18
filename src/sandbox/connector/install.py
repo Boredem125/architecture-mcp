@@ -158,6 +158,12 @@ def init(
     layout = FolderLayout(root)
     _refuse_in_root(layout.root)
     layout.ensure_dirs()
+    try:  # the random id that names this workspace's folder in the key home (ADR 0007 1.2)
+        from sandbox.connector.keyhome import workspace_id
+
+        workspace_id(layout)
+    except Exception:  # noqa: BLE001 - created on first signing otherwise
+        pass
 
     # policy.json (only write if absent, so re-init preserves tuning)
     if not layout.policy_file.exists():

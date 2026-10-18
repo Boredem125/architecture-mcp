@@ -26,6 +26,7 @@ Trigger map (from the plan):
 """
 from __future__ import annotations
 
+import os
 import re
 import string
 import time
@@ -37,7 +38,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from sandbox.connector.layout import FolderLayout
-from sandbox.connector import runners, shellwords
+from sandbox.connector import keyhome, runners, shellwords
 from sandbox.connector.policy import _PROTECT_SHELL_PATTERNS, FolderPolicy
 from sandbox.fs.containment import is_contained
 
@@ -61,7 +62,7 @@ _KEY_SEQS: tuple[tuple[str, ...], ...] = (
 _AGENT_CONFIG_GLOBS = (".mcp.json", ".claude/settings*.json")
 # Approver CLI subcommands: approvals come from a human's terminal only.
 _APPROVER_SUBCOMMANDS = frozenset(
-    {"approve", "deny", "watch", "grant", "serve", "approve-change"}
+    {"approve", "deny", "watch", "grant", "serve", "approve-change", "keys"}
 )
 # `2>&1`, `>/dev/null`: redirects that do not write to a file.
 _BENIGN_REDIRECT_RE = re.compile(
@@ -214,7 +215,7 @@ def _classify_shell(
     # come from a human's terminal, never the agent's shell, not even escalated).
     # Outside the static subset (shellwords.py) a command is never allowed: denied
     # when a deny fragment is visible, else escalated below.
-    analysis = analyse_shell(command, shell)
+    analysis = analyse_shell(command, shell, cwd=cwd or root)
     if analysis.deny:
         return Classification(
             "deny", "shell", reason=analysis.deny[1], reason_code=analysis.deny[0], command=command,
@@ -299,7 +300,8 @@ def _classify_write(
         return Classification("allow", "", reason="no target path", metadata={"tool": tool_name})
 
     # Non-removable, in code: .sandbox/**, .git/hooks/** and the agent config files.
-    protected = _protected_write(target, layout, base)
+    protected = _protected_write(target, layout, base) or (
+        "key home" if keyhome.touches(target, base) else "")
     if protected:
         return Classification(
             "deny", "write_outside",
@@ -870,15 +872,108 @@ _GIT_HOOKS_LETTERS = frozenset("git")  # .git/hooks, .git/config
 _PATH_FOLD = str.maketrans("", "", "'\"\\^`")
 
 
-def _seg_path_hit(seg: shellwords.Segment, deadline: float, dot_rule: bool = True) -> str | None:
+_RECURSIVE_CMDS = frozenset("rg find tree ag ack du robocopy xcopy get-childitem gci dir".split())
+_RECURSE_FLAG_RE = re.compile(r"^(?:-[A-Za-z]{1,4}|/[A-Za-z]{1,2})$|^--?recurs\w*$", re.I)
+_CD_CMDS = frozenset("cd chdir pushd set-location sl".split())
+
+
+def _word_candidates(raw: str) -> set[str]:
+    """Readings of one word as a path: itself, the part after `=@,:`, `-Cpath` attached
+    option values, with brace groups expanded (ValueError past 256 results propagates)."""
+    cands = {raw}
+    cands.update(p for p in re.split(r"[=@,:]", raw) if p)
+    for c in list(cands):
+        m = re.match(r"-[A-Za-z]+", c)
+        if m:
+            cands.update(c[i:] for i in range(2, m.end() + 1))
+    out: set[str] = set()
+    for c in cands:
+        out.update(e for e in _brace_expand(c) if e)
+    return out
+
+
+def _searches(seg: shellwords.Segment) -> bool:
+    """Could this segment recurse into a directory it is given?"""
+    if seg.words and shellwords.bases(seg.words[0].raw) & _RECURSIVE_CMDS:
+        return True
+    return any(_RECURSE_FLAG_RE.match(w.raw) and re.search(r"[rRsS]", w.raw[1:]) for w in seg.words[1:])
+
+
+class _KeyHomeScan:
+    """Per-command state of the key-home test: the directories relative words resolve
+    against (the cwd, plus where a `cd` went) and a budget on filesystem lookups. Past the
+    budget, or for a word too long to be a path, only the lexical test runs and the command
+    is marked unresolvable, so it can be escalated but never allowed silently."""
+
+    MAX_LOOKUPS = 48
+    MAX_WORD = 1024
+
+    def __init__(self, bases: list[str]) -> None:
+        self.bases = bases
+        self.seen: dict[tuple[str, str, bool], str] = {}
+        self.lookups = 0
+        self.spent = 0.0  # seconds in filesystem lookups: not charged to the 100 ms lexing budget
+
+    def timed_touches(self, cand: str, base: str, search: bool, resolve: bool) -> str:
+        t = time.monotonic()
+        try:
+            return keyhome.touches(cand, base, search=search, resolve=resolve)
+        finally:
+            self.spent += time.monotonic() - t
+
+
+def _key_home_hit(seg: shellwords.Segment, deadline: float, scan: _KeyHomeScan,
+                  reasons: set[str]) -> str | None:
+    """A word or redirect target that names (or, for a recursive command, contains) the key
+    home, however it is spelled (ADR 0007 1.4)."""
+    if not keyhome.protected_roots():
+        return None
+    search = _searches(seg)
+    words = [w.raw for w in seg.words] + [t.raw for op, t in seg.redirs if not _fd_dup(op, t)]
+    for raw in dict.fromkeys(words):
+        shellwords.check_deadline(deadline + scan.spent)
+        for cand in _word_candidates(raw):
+            for base in scan.bases:
+                key = (cand, base, search)
+                kind = scan.seen.get(key)
+                if kind is None:
+                    resolve = len(cand) <= scan.MAX_WORD and scan.lookups < scan.MAX_LOOKUPS
+                    if resolve:
+                        scan.lookups += 1
+                    else:
+                        reasons.add("key_home_unchecked")
+                    kind = scan.seen[key] = scan.timed_touches(cand, base, search, resolve)
+                if kind:
+                    return "key home" if kind == "inside" else "key home (a recursive search from here reaches it)"
+    return None
+
+
+def _track_cd(seg: shellwords.Segment, scan: _KeyHomeScan) -> None:
+    bases = scan.bases
+    """After a `cd X`, later relative words may be resolved against X as well."""
+    if not seg.words or not (shellwords.bases(seg.words[0].raw) & _CD_CMDS):
+        return
+    for w in seg.words[1:]:
+        if w.raw.startswith("-"):
+            continue
+        target = os.path.expanduser(w.raw) if w.raw.startswith("~") else w.raw
+        bases.extend(os.path.normpath(os.path.join(b, target)) for b in list(bases))
+        return
+
+
+def _seg_path_hit(seg: shellwords.Segment, deadline: float, dot_rule: bool = True,
+                  scan: _KeyHomeScan | None = None, reasons: set[str] | None = None) -> str | None:
     """The protected path a word or redirect target of the segment names or globs onto.
     A redirect that writes also may not name the write-only paths (``.git/config``)."""
+    kh = _key_home_hit(seg, deadline, scan or _KeyHomeScan([os.getcwd()]), reasons if reasons is not None else set())
+    if kh:
+        return kh
     targets = [(t, op.startswith((">", "&>"))) for op, t in seg.redirs if not _fd_dup(op, t)]
     # `git log --output=.git/config` writes the file: every word of a git segment may.
     names = shellwords.bases(seg.words[0].raw) if seg.words else set()
     writer = bool(names & _WRITER_CMDS) or "git" in names  # tee/cp/mv/...: every word may be a target
     for w, writes in [(w, writer) for w in seg.words] + targets:
-        shellwords.check_deadline(deadline)
+        shellwords.check_deadline(deadline + (scan.spent if scan else 0.0))
         if not _may_name_protected(w):
             continue
         for comps in _word_components(w.raw):
@@ -979,7 +1074,8 @@ def _writes_file(seg: shellwords.Segment) -> bool:
 
 
 def _analyse(command: str, shell: str, deadline: float, depth: int, dot_rule: bool = True,
-             info: dict[str, Any] | None = None) -> tuple[tuple[str, str] | None, set[str]]:
+             info: dict[str, Any] | None = None,
+             scan: _KeyHomeScan | None = None) -> tuple[tuple[str, str] | None, set[str]]:
     lexed = shellwords.lex(command, shell, deadline)
     reasons = set(lexed.reasons)
     segs = lexed.segments
@@ -998,10 +1094,12 @@ def _analyse(command: str, shell: str, deadline: float, depth: int, dot_rule: bo
         r = shellwords.segment_reasons(seg)
         seg_reasons.append(r)
         reasons.update(r)
+    scan = scan or _KeyHomeScan([os.getcwd()])
     for seg in segs:
-        hit = _seg_path_hit(seg, deadline, dot_rule)
+        hit = _seg_path_hit(seg, deadline, dot_rule, scan, reasons)
         if hit:
             return ("SANDBOX_PROTECT", f"command touches a protected path ({hit})"), reasons
+        _track_cd(seg, scan)
     for seg in segs:
         sub = _seg_approver(seg)
         if sub:
@@ -1019,7 +1117,7 @@ def _analyse(command: str, shell: str, deadline: float, depth: int, dot_rule: bo
                 reasons.add("nesting_depth")
                 continue
             try:
-                deny, inner = _analyse(w.raw, "bash", deadline, depth + 1, dot_rule)
+                deny, inner = _analyse(w.raw, "bash", deadline + scan.spent, depth + 1, dot_rule, scan=scan)
             except shellwords.LexError:
                 reasons.add("inner_lex_error")
                 continue
@@ -1029,7 +1127,7 @@ def _analyse(command: str, shell: str, deadline: float, depth: int, dot_rule: bo
     return None, reasons
 
 
-def analyse_shell(command: str, shell: str = "bash") -> ShellAnalysis:
+def analyse_shell(command: str, shell: str = "bash", cwd: str = "") -> ShellAnalysis:
     """Static analysis of one shell command line (D0b). Never raises.
 
     ``deny`` is set for a protected path, the approver CLI, an encoded PowerShell
@@ -1041,9 +1139,11 @@ def analyse_shell(command: str, shell: str = "bash") -> ShellAnalysis:
     if bound:
         return ShellAnalysis(deny=bound)
     info: dict[str, Any] = {}
+    keyhome.warm(cwd)  # first lookups are not charged to the 100 ms lexing budget
     try:
         deny, reasons = _analyse(command, shell, time.monotonic() + shellwords.DEADLINE_SECONDS, 0,
-                                 dot_rule=shell != "pwsh", info=info)
+                                 dot_rule=shell != "pwsh", info=info,
+                                 scan=_KeyHomeScan([cwd or os.getcwd()]))
     except shellwords.Bound as exc:
         return ShellAnalysis(deny=(exc.code, f"SANDBOX DENIED: {exc}"))
     except shellwords.LexError as exc:
@@ -1065,9 +1165,9 @@ def analyse_shell(command: str, shell: str = "bash") -> ShellAnalysis:
                          segments=info.get("segments", 0))
 
 
-def shell_deny_reason(command: str, shell: str = "bash") -> tuple[str, str] | None:
+def shell_deny_reason(command: str, shell: str = "bash", cwd: str = "") -> tuple[str, str] | None:
     """Non-removable shell denies: ``(reason_code, reason)`` or None."""
-    return analyse_shell(command, shell).deny
+    return analyse_shell(command, shell, cwd=cwd).deny
 
 
 def _rel_components(layout: FolderLayout, target: str, base: str) -> list[str] | None:
@@ -1117,6 +1217,21 @@ def _reads_keys(
     Read: the signing seeds. Grep/Glob: any search rooted in `.sandbox/`
     (which contains them), by path or by pattern.
     """
+    # The key home (ADR 0007 1.4) is denied to every read tool, not the read_outside trigger.
+    # A Grep or Glob rooted above it would search it, so those are denied too.
+    searching = tool_name != "Read"
+    probes = [target] if target else []
+    pat = tool_input.get("pattern") if tool_name == "Glob" else tool_input.get("glob")
+    if isinstance(pat, str) and pat:
+        probes.append(pat)
+    for probe in probes:
+        try:
+            variants = _brace_expand(probe)
+        except ValueError:
+            return "key home (pattern too large to check)"
+        for v in variants:
+            if keyhome.touches(v, base, search=searching and v == target):
+                return "key home"
     comps_list: list[list[str]] = []
     if target:
         rel = _rel_components(layout, target, base)

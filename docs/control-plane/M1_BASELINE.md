@@ -45,6 +45,9 @@ That is 21, equal to the measured Linux skip count (24 JUnit "skipped" at T1b-er
 | `tests/security/test_t0_hotfix.py::test_t0a_guard_plain_allowlisted_still_allow_classify[python -m pytest]` -> `[git log]`; `::test_t0a_guard_plain_allowlisted_still_pass_hook[python -m pytest]` -> `[git log]` | T0g | ADR 0009: `python -m pytest` escalates by default. In `PLAIN`, `"python -m pytest"` became `"git log"` (positive-control count unchanged at 5); the manifest line for `test_t0_hotfix.py` was re-hashed and `M1_BASELINE_NODEIDS.txt` renamed the two ids | security signs off by node id at T0g (founder-approved ADR 0009) |
 | `tests/security/bypass_corpus.jsonl` cases `benign-009`, `benign-010` (not in the frozen manifest) | T0g | Moved from class `benign`/`allow` to `benign_unchanged`/`escalate` (workspace runner, ADR 0009); node ids unchanged. T0f per-class counts: benign 17 to 15 and benign_unchanged 8 to 10 in the 242-case corpus (allow 17 to 15) | same |
 
+| `tests/unit/test_evidence.py::test_pack_layout_and_no_private_keys`, `::test_pinned_exporter_key`; `tests/conftest.py` | T2 (D2, ADR 0007) | As on the named list: both tests read seeds from the key home (`SANDBOX_KEY_HOME`), the first asserts it found 3 or more and keeps the no-seed-bytes check; conftest gains one autouse fixture that sets only `SANDBOX_KEY_HOME` to a per-test tmp dir. Manifest lines for both files re-hashed | security signs off by node id at T2 |
+| `tests/security/test_m1_t2_key_home.py` (new M1 test, not in the frozen manifest) | T2 | The 18 strict xfail decorators (`RED_T2`) removed by the fix commit; assertions unchanged. 26/26 pass | n/a (the tests-first protocol) |
+
 Any other frozen test that fails: stop, list it, security decides.
 
 ## 3. New M1 tests, frozen per task (tests-first commits)
@@ -74,3 +77,7 @@ Corpus size per class: glob_command_word 10, substitution 17, variable_command 1
 ### T0g (ADR 0009)
 
 `tests/security/test_t0g_runners.py`: 116 tests. The first 55 were written before the fix (54 failed, 1 positive control passed); 61 more were added in security's review passes, each failing first against the then-current code. Not frozen in the manifest. Connector node ids: 2 renamed, 0 removed.
+
+### T2 (ADR 0007 section 1)
+
+`tests/security/test_m1_t2_keys_extra.py`: 14 tests added with the fix (workspace id, key home inside the workspace or relative refused, `key_rotated` carries the retired key and the audit heads, `sandbox keys purge-legacy`, the agent cannot run `sandbox keys`, Write/Edit and recursive-search-from-above denies, `cd` into the key home). Not frozen in the manifest. Connector node ids: 0 renamed, 0 removed.

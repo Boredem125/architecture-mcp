@@ -35,6 +35,9 @@ def register(cli: click.Group) -> None:
 
     cli.add_command(retention_cmd)
     cli.add_command(alerts_cmd)
+    from sandbox.cli.keys_cmds import keys_group
+
+    cli.add_command(keys_group)
 
 
 @click.group("governance")
@@ -500,6 +503,9 @@ def approve_cmd(request_id: str, path: str, reason: str, remember: str, reviewer
     if status == "not_pending":
         click.echo(f"Could not claim {request_id} (already taken or not pending).")
         raise SystemExit(1)
+    if status == "key_unavailable":
+        click.echo(f"Refused: no signing key available, so nothing was approved or run: {outcome['reason']}")
+        raise SystemExit(1)
     if status == "same_reviewer":
         click.echo(f"Refused: {request_id} needs dual control and {reviewer} already approved it. "
                    "A different reviewer must give the second approval.")
@@ -670,6 +676,8 @@ def watch_cmd(path: str, reviewer: str | None, once: bool) -> None:
                 click.echo("  refused: reason too short; left pending")
             elif status == "not_pending":
                 click.echo("  (already taken)")
+            elif status == "key_unavailable":
+                click.echo(f"  refused: no signing key available ({outcome['reason']}); left pending")
             elif status == "same_reviewer":
                 click.echo("  refused: you gave the first approval; a different reviewer must give the second")
                 seen_awaiting.add(rid)

@@ -195,6 +195,8 @@ async def connector_approve(
     if status == "not_pending":
         raise HTTPException(status_code=409,
                             detail=f"Could not claim {request_id} (already taken or not pending).")
+    if status == "key_unavailable":  # ADR 0007 1.3: no key home, no signature, no approval
+        raise HTTPException(status_code=503, detail="No signing key available on the server; nothing was approved.")
     if status == "same_reviewer":
         raise HTTPException(status_code=409,
                             detail=f"{request_id} needs dual control; the API already gave the first approval.")
