@@ -1,6 +1,6 @@
 # ADR 0002: Postgres data model for the control plane
 
-Status: Proposed (17 Oct 2026, lead-architect). Needs security-engineer and qa-engineer review, then founder approval.
+Status: Accepted (18 Oct 2026) for M1, with the amendments at the bottom. Reviewed by security (SEC-07, `REVIEW_SECURITY.md`; S8-S9, `REVIEW_M1.md`) and QA; the founder approved M1, which builds it.
 
 ## Next action
 
@@ -91,3 +91,15 @@ Tenancy option 1 (shared schema + RLS). Alembic + SQLAlchemy 2.0 async with psyc
 1. Founder: is a single Postgres (customer-run HA) acceptable for the first enterprise design partner, or do they need active-active?
 2. Security: should the retention role exist at all in v1, or is audit deletion out of scope until a customer asks?
 3. QA: we need a Postgres in CI for these tests (service container). Confirm that is acceptable for CI time.
+
+## M1 amendments (18 Oct 2026)
+
+1. **Tables land with their first user.** M1 migrates `orgs`, `org_oidc_config`, `projects`, `users`, `role_bindings`, `web_sessions`, `setup_codes` and `admin_audit`. The rest arrive in M2/M3 as expand-only migrations, each with its own RLS and IDOR tests.
+2. **SEC-07, RLS hardening.**
+   - Roles: `agg_owner` owns the tables and runs `migrate`. `agg_app` is not the owner and has no `BYPASSRLS`. `agg_worker` is reserved.
+   - Every tenant table has `ENABLE` and `FORCE ROW LEVEL SECURITY`.
+   - The org is set with `set_config('app.org_id', ..., true)` inside each request transaction.
+   - Policies read `NULLIF(current_setting('app.org_id', true), '')::uuid`, so an unset org gives 0 rows.
+3. **Pre-auth org lookup.** One `SECURITY DEFINER` function returns only `(org_id, issuer, client_id)` by slug. It is created with `SET search_path = pg_catalog, pg_temp` and `REVOKE EXECUTE FROM PUBLIC`, `EXECUTE` is granted to `agg_app` only, and its owner is not a superuser.
+4. **`admin_audit` is append-only.** Row triggers reject UPDATE and DELETE, a `BEFORE TRUNCATE` trigger rejects truncation, and `TRUNCATE` is revoked. Stated limit: `agg_owner` can still drop the table. The external anchor is SEC-15 (M3). No retention role in v1.
+5. **Tests use Postgres 16 only, never SQLite** (CI service container, testcontainers locally). Open question 3 is answered: yes.

@@ -1,6 +1,6 @@
 # ADR 0005: Docker Compose packaging for the self-hosted control plane
 
-Status: Proposed (17 Oct 2026, lead-architect). Owner for implementation: devops-engineer.
+Status: Accepted (18 Oct 2026) for M1, with the amendments at the bottom. Owner for implementation: devops-engineer (M1 T11).
 
 ## Next action
 
@@ -75,3 +75,10 @@ Removed: `nats`, `opa`, `redis`, `executor`. Networks: `edge` (proxy only) and `
 
 1. Devops: do we keep a root `docker-compose.yml` for the OSS `sandbox serve` at all, or document `pip install` only?
 2. Founder: is "Compose now, Helm in M6" acceptable for the first enterprise design partner?
+
+## M1 amendments (18 Oct 2026)
+
+1. **Caddy** is the proxy. It also serves the static `ee/web` bundle under a strict CSP with no inline script (SEC-04 groundwork).
+2. **`worker` is deferred to M2,** because M1 has nothing to deliver. M1 services are `proxy`, `api`, `migrate` and `postgres`, plus a `demo` profile with Keycloak (pinned) and two demo orgs.
+3. **The setup code is printed by `migrate`** as one JSON line. It therefore appears in `docker logs`; the docs say so, and the code is dead after use or after 30 minutes.
+4. The root `docker-compose.yml` from M0 stays for the single-folder `sandbox serve`. The control-plane stack lives in `ee/deploy/`.
