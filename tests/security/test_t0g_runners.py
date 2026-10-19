@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 
 import pytest
 from click.testing import CliRunner
@@ -366,7 +367,9 @@ def test_ci_is_never_opt_in_eligible(tmp_path):
     "python -m pytest ../x", "python -m pytest /etc", "python -m pytest --junitxml=../x.xml",
     "python -m pytest --basetemp=../x", "pytest --rootdir=/", "pytest ../x/test_a.py::test_b",
     "python -m pytest tests/../../x", "pytest ~/x", "pytest -p x --junitxml=/tmp/r.xml",
-    "pytest C:/Windows/x",
+    pytest.param("pytest C:/Windows/x",
+                 marks=pytest.mark.skipif(sys.platform != "win32",
+                                          reason="C: drive letter is only absolute on Windows")),
 ])
 def test_pytest_opt_in_is_lost_when_a_path_leaves_the_root(tmp_path, command):
     lay = _folder(tmp_path)

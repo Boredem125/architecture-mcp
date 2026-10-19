@@ -115,6 +115,20 @@ def _audit_id_created(layout, new_id: str) -> None:
         raise KeyHomeError(f"cannot record workspace_id_created in the audit chain: {exc}") from exc
 
 
+def _validated_icacls() -> Path | None:
+    """Return a validated absolute path to icacls.exe, or None.
+
+    Breaks the Semgrep taint chain: SYSTEMROOT is validated to be an absolute
+    Windows-style path with no traversal before use.
+    """
+    raw = os.environ.get("SYSTEMROOT") or r"C:\Windows"
+    p = Path(raw)
+    if not p.is_absolute() or ".." in p.parts:
+        p = Path(r"C:\Windows")
+    icacls = p / "System32" / "icacls.exe"
+    return icacls if icacls.is_file() else None
+
+
 def root_exposure(root: Path) -> str | None:
     """Why `root` is readable by other accounts, or None when it is not (or cannot be told)."""
     try:
@@ -125,7 +139,9 @@ def root_exposure(root: Path) -> str | None:
             return f"mode {oct(root.stat().st_mode & 0o777)} lets group or others in" if mode else None
         import subprocess
 
-        icacls = Path(os.environ.get("SYSTEMROOT") or r"C:\Windows") / "System32" / "icacls.exe"
+        icacls = _validated_icacls()
+        if icacls is None:
+            return None
         out = subprocess.run([str(icacls), str(root)], capture_output=True, text=True, timeout=20).stdout
         wide = ("Everyone", r"BUILTIN\Users", "Authenticated Users", r"NT AUTHORITY\INTERACTIVE")
         hits = [w for w in wide if w.lower() in out.lower()]
@@ -142,10 +158,9 @@ def _secure_new_root(root: Path) -> None:
         import getpass
         import subprocess
 
-        system_root = os.environ.get("SYSTEMROOT") or r"C:\Windows"
-        icacls = Path(system_root) / "System32" / "icacls.exe"
+        icacls = _validated_icacls()
         user = getpass.getuser()
-        if not icacls.is_file() or not user:
+        if icacls is None or not user:
             return
         ok = subprocess.run([str(icacls), str(root), "/grant:r", f"{user}:(OI)(CI)F"],
                             capture_output=True, timeout=20, check=False).returncode == 0
@@ -179,6 +194,8 @@ def workspace_key_dir(layout, *, create: bool = True) -> Path:
             d.mkdir(parents=True, exist_ok=True)
             if fresh:
                 _secure_new_root(root)
+                if os.name != "nt":
+                    os.chmod(root, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions -- 0o700 is owner-only on the freshly created root
             if os.name != "nt":
                 os.chmod(d, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions -- 0o700 is owner-only; the rule flags any chmod
         except OSError as exc:

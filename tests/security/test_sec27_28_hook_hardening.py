@@ -305,11 +305,19 @@ def test_mcp_server_mismatched_origin_exits_2_before_stdio(root, tmp_path_factor
 
 
 def test_mcp_server_matching_origin_starts(root):
-    # The origin is where the subprocess actually imports `sandbox` from: the
-    # checkout's src locally, site-packages in the standalone CI jobs.
-    import sandbox
+    # The origin is where the *subprocess* imports `sandbox` from.  The test
+    # process may see a different location (conftest.py inserts src/ into
+    # sys.path) so we ask the subprocess interpreter directly.
+    r = subprocess.run(
+        [sys.executable, "-I", "-c",
+         "import sandbox; from pathlib import Path; "
+         "print(Path(sandbox.__file__).resolve().parent.parent)"],
+        capture_output=True, text=True, env=dict(ENV), timeout=30,
+    )
+    origin = r.stdout.strip()
+    assert origin, f"could not detect sandbox origin: {r.stderr}"
 
-    p = _mcp(root, str(Path(sandbox.__file__).resolve().parents[1]))
+    p = _mcp(root, origin)
     assert p.returncode != 2 and "origin mismatch" not in p.stderr, p.stderr[-300:]
 
 
