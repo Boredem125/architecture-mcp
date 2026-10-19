@@ -124,7 +124,6 @@ def key_home(tmp_path, monkeypatch):
 # ===========================================================================
 
 
-@RED_T4
 def test_domains_module_has_active_tags():
     """The 5 in-use domain tags must be defined in domains.py (ADR 0007 3.1)."""
     try:
@@ -144,7 +143,6 @@ def test_domains_module_has_active_tags():
              f"active tags missing from domains.py; expected {expected}, found {found}")
 
 
-@RED_T4
 def test_domains_module_has_reserved_tags():
     """The 4 reserved domain tags must be defined in domains.py (ADR 0007 3.1)."""
     try:
@@ -169,7 +167,6 @@ def test_domains_module_has_reserved_tags():
 # ===========================================================================
 
 
-@RED_T4
 def test_sign_record_carries_sig_v_1(tmp_path, key_home):
     """sign_record must set sig_v: 1 in the done-record (ADR 0007 3.2)."""
     lay = _ws(tmp_path / "ws")
@@ -181,7 +178,6 @@ def test_sign_record_carries_sig_v_1(tmp_path, key_home):
              f"done record missing sig_v: 1; got sig_v={done.get('sig_v')}")
 
 
-@RED_T4
 def test_sign_approval_carries_sig_v_1(tmp_path, key_home):
     """Individual approvals (from sign_approval) must carry sig_v: 1."""
     lay = _ws(tmp_path / "ws")
@@ -197,7 +193,6 @@ def test_sign_approval_carries_sig_v_1(tmp_path, key_home):
                  f"approval by {a.get('reviewer_id')} missing sig_v: 1")
 
 
-@RED_T4
 def test_signature_is_over_tag_separator_canonical_json(tmp_path, key_home):
     """After T4, the signature must be over tag || 0x00 || canonical JSON,
     not plain canonical JSON.  Verifying the old way (no tag prefix) must fail."""
@@ -223,7 +218,6 @@ def test_signature_is_over_tag_separator_canonical_json(tmp_path, key_home):
 # ===========================================================================
 
 
-@RED_T4
 def test_sec24_short_signed_fields_tampered_record_refused(tmp_path, key_home):
     """A record claiming signed_fields=["request_id"] with decision/command
     tampered must be refused by verify_record (SEC-24)."""
@@ -248,7 +242,6 @@ def test_sec24_short_signed_fields_tampered_record_refused(tmp_path, key_home):
              "and tampered command/decision (SEC-24 open)")
 
 
-@RED_T4
 def test_sec24_forgery_labelled_unverifiable_in_evidence(tmp_path, key_home):
     """A SEC-24 forgery (short signed_fields, tampered command) must be
     labelled 'unverifiable' in the evidence pack, not 'pinned'."""
@@ -288,7 +281,6 @@ def test_sec24_forgery_labelled_unverifiable_in_evidence(tmp_path, key_home):
 # ===========================================================================
 
 
-@RED_T4
 def test_cross_kind_approval_replayed_as_record(tmp_path, key_home):
     """An approval signature replayed as a done-record by claiming
     signed_fields equal to the approval fields must be refused.
@@ -328,17 +320,18 @@ def test_cross_kind_approval_replayed_as_record(tmp_path, key_home):
              "claimed signed_fields=_APPROVAL_FIELDS (cross-kind replay)")
 
 
-@RED_T4
 def test_cross_kind_record_replayed_as_tool_grant(tmp_path, key_home):
     """A record signature (over _SIGNED_FIELDS) presented as a tool_call
     grant must be refused by find_grant.
 
     'kind' is not in _SIGNED_FIELDS, so setting kind='tool_call' does
-    not change the canonical or the signature.  Today find_grant calls
-    verify_record which verifies the plain canonical; after T4 the
-    domain tag (agg/record/v1 != agg/grant/v1) refuses the replay.
+    not change the canonical or the signature.  After T4 the domain tag
+    (agg/record/v1 != agg/grant/v1) refuses the replay: verify_record
+    infers the tag from ``kind``, so the RECORD-tagged signature does
+    not verify when the record claims ``kind=tool_call`` (GRANT tag).
     """
     from sandbox.connector.tool_grants import find_grant, fingerprint as grant_fp
+    from sandbox.protocol.domains import RECORD
 
     lay = _ws(tmp_path / "ws")
     _approve_req(lay, _submit(lay), "alice")          # pin alice
@@ -347,7 +340,7 @@ def test_cross_kind_record_replayed_as_tool_grant(tmp_path, key_home):
     alice_key = SigningKey((wsdir / "alice.seed").read_bytes())
     alice_pub = bytes(alice_key.verify_key).hex()
     fp = grant_fp("stripe_refund", {"amount": 100})
-    # Build a done-record signed as a command (record path)
+    # Build a done-record signed as a command (RECORD domain tag)
     rec = {
         "request_id": f"replay-{os.urandom(8).hex()}",
         "kind": "command",       # signed as a record, not a grant
@@ -361,22 +354,24 @@ def test_cross_kind_record_replayed_as_tool_grant(tmp_path, key_home):
         "signed_fields": list(_SIGNED_FIELDS),
         "sig_v": 1,
     }
-    rec["signature"] = sign_message(_canonical(rec), alice_key)
-    assert verify_record(rec), "record signature should verify"
-    # Flip kind to tool_call (kind is not in _SIGNED_FIELDS, signature intact)
+    rec["signature"] = sign_message(
+        RECORD.encode() + b"\x00" + _canonical(rec), alice_key)
+    assert verify_record(rec), "record signature should verify with RECORD tag"
+    # Flip kind to tool_call (kind is not in _SIGNED_FIELDS, signature intact,
+    # but verify_record now infers the GRANT tag from kind=tool_call, so the
+    # RECORD-tagged signature no longer matches).
     rec["kind"] = "tool_call"
-    assert verify_record(rec), "signature should still verify after kind flip"
     lay.done_dir.mkdir(parents=True, exist_ok=True)
     (lay.done_dir / f"{rec['request_id']}.json").write_text(
         json.dumps(rec), encoding="utf-8")
     grant = find_grant(lay, fp)
-    _require(grant is None,
-             "find_grant accepted a record whose signature was made over "
-             "the record domain but presented as a tool_call grant "
-             "(cross-kind replay: kind is not in _SIGNED_FIELDS)")
+    assert grant is None, (
+        "find_grant accepted a record whose signature was made over "
+        "the record domain but presented as a tool_call grant "
+        "(cross-kind replay: kind is not in _SIGNED_FIELDS)"
+    )
 
 
-@RED_T4
 def test_cross_kind_approval_replayed_as_policy_change_acceptance(tmp_path, key_home):
     """A regular command approval replayed as a policy-change acceptance
     must be refused by verify_entry.
@@ -458,7 +453,6 @@ def test_guard_cross_kind_record_signature_not_valid_as_approval(tmp_path, key_h
 # ===========================================================================
 
 
-@RED_T4
 def test_no_downgrade_dual_control_rejects_untagged(tmp_path, key_home):
     """distinct_approvals must refuse hand-forged approvals that lack
     sig_v: 1, even when signed by pinned keys."""
@@ -490,7 +484,6 @@ def test_no_downgrade_dual_control_rejects_untagged(tmp_path, key_home):
              "distinct_approvals accepted approvals without sig_v: 1 (no-downgrade)")
 
 
-@RED_T4
 def test_no_downgrade_tool_grants_reject_missing_sig_v(tmp_path, key_home):
     """find_grant must refuse a tool_call done-record lacking sig_v: 1."""
     from sandbox.connector.tool_grants import find_grant, fingerprint as grant_fp
@@ -524,7 +517,6 @@ def test_no_downgrade_tool_grants_reject_missing_sig_v(tmp_path, key_home):
              "find_grant accepted a tool_call record without sig_v: 1 (no-downgrade)")
 
 
-@RED_T4
 def test_no_downgrade_policy_approve_change_requires_sig_v(tmp_path, key_home):
     """A policy proposal must carry sig_v: 1 after T4."""
     from sandbox.connector.policy_versions import _accept, propose
@@ -567,7 +559,6 @@ def test_guard_legacy_untagged_with_historical_fields_still_verifies(tmp_path, k
     )
 
 
-@RED_T4
 def test_legacy_arbitrary_claimed_subset_is_not_legacy(tmp_path, key_home):
     """An untagged record claiming signed_fields that is NOT one of the
     historical _SIGNED_FIELDS versions must not verify as legacy."""
@@ -636,7 +627,6 @@ def test_guard_legacy_record_under_chain_head_labelled_legacy(tmp_path, key_home
     )
 
 
-@RED_T4
 def test_adr0007_1_6_backdated_record_after_rotation_is_unverifiable(tmp_path, key_home):
     """A record signed with a retired key, with decided_at backdated to
     before rotation, must be 'unverifiable' because it is not covered by

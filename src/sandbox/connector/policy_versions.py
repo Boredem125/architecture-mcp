@@ -527,12 +527,15 @@ def _approval_subject(change_id: str, kind: str, base: str | None, new: str, gov
 
 
 def _sign_proposal(layout: FolderLayout, change: dict[str, Any]) -> None:
-    from sandbox.connector.signing import _canonical, _load_or_create_key
+    from sandbox.connector.signing import _canonical, _load_or_create_key, _tag_bytes
     from sandbox.crypto.signing import sign_message
+    from sandbox.protocol.domains import POLICY_CHANGE
 
     key = _load_or_create_key(layout, change["proposer"])
     change["proposer_public_key"] = bytes(key.verify_key).hex()
-    change["proposal_signature"] = sign_message(_canonical(change, _PROPOSAL_FIELDS), key)
+    change["sig_v"] = 1
+    data = _tag_bytes(POLICY_CHANGE) + b"\x00" + _canonical(change, _PROPOSAL_FIELDS)
+    change["proposal_signature"] = sign_message(data, key)
 
 
 def verify_proposal(change: dict[str, Any], layout: FolderLayout | None = None) -> bool:
@@ -540,14 +543,21 @@ def verify_proposal(change: dict[str, Any], layout: FolderLayout | None = None) 
     proposer's key is pinned when *layout* is given or derivable from the change."""
     from nacl.signing import VerifyKey
 
-    from sandbox.connector.signing import _canonical
+    from sandbox.connector.signing import _canonical, _tag_bytes
     from sandbox.crypto.signing import verify_signature
 
     try:
         vk = VerifyKey(bytes.fromhex(change.get("proposer_public_key", "")))
     except (ValueError, TypeError):
         return False
-    if not verify_signature(_canonical(change, _PROPOSAL_FIELDS), change.get("proposal_signature", ""), vk):
+    sig_v = change.get("sig_v")
+    if sig_v == 1:
+        from sandbox.protocol.domains import POLICY_CHANGE
+
+        data = _tag_bytes(POLICY_CHANGE) + b"\x00" + _canonical(change, _PROPOSAL_FIELDS)
+    else:
+        data = _canonical(change, _PROPOSAL_FIELDS)
+    if not verify_signature(data, change.get("proposal_signature", ""), vk):
         return False
     # SEC-25: the proposer's key must be pinned
     from sandbox.connector import keyhome
@@ -564,24 +574,31 @@ def verify_proposal(change: dict[str, Any], layout: FolderLayout | None = None) 
 
 
 def verify_entry(entry: dict[str, Any]) -> bool:
-    """A log entry's approval verifies and binds exactly this version."""
+    """A log entry's approval verifies and binds exactly this version.
+
+    ADR 0007 3.1: policy-change acceptances use the ``POLICY_CHANGE`` domain
+    tag, so a regular command approval cannot replay as a policy acceptance.
+    """
     from sandbox.connector.signing import verify_approval
+    from sandbox.protocol.domains import POLICY_CHANGE
 
     approval = entry.get("approval") or {}
     subject = _approval_subject(entry.get("change_id", ""), entry.get("kind", ""), entry.get("previous"),
                                 entry.get("sha256", ""), entry.get("governance_sha256"))
-    return (verify_approval(approval) and approval.get("reviewer_id") == entry.get("by")
+    return (verify_approval(approval, expected_tag=POLICY_CHANGE)
+            and approval.get("reviewer_id") == entry.get("by")
             and all(approval.get(k) == v for k, v in subject.items()))
 
 
 def verify_change(change: dict[str, Any]) -> bool:
     """An approved change: valid proposal, valid approval of exactly it, two different reviewers."""
     from sandbox.connector.signing import verify_approval
+    from sandbox.protocol.domains import POLICY_CHANGE
 
     approval = change.get("approval") or {}
     subject = _approval_subject(change["change_id"], change["kind"], change.get("base"),
                                 change["new_sha256"], change.get("governance_sha256"))
-    return (verify_proposal(change) and verify_approval(approval)
+    return (verify_proposal(change) and verify_approval(approval, expected_tag=POLICY_CHANGE)
             and all(approval.get(k) == v for k, v in subject.items())
             and approval.get("reviewer_id") != change.get("proposer")
             and approval.get("signer_public_key") != change.get("proposer_public_key"))
@@ -596,6 +613,7 @@ def _accept(layout: FolderLayout, kind: str, content: dict[str, Any], *, by: str
             governance_sha: str | None = None) -> dict[str, Any]:
     """Store *content* as the approved version of *kind* and log it."""
     from sandbox.connector.signing import sign_approval
+    from sandbox.protocol.domains import POLICY_CHANGE
 
     head = read_head(layout)
     previous = head.get(kind)
@@ -603,7 +621,8 @@ def _accept(layout: FolderLayout, kind: str, content: dict[str, Any], *, by: str
     change_id = change_id or f"{how}-{uuid.uuid4().hex[:8]}"
     now = time.time()
     if approval is None:
-        approval = sign_approval(layout, by, _approval_subject(change_id, kind, previous, sha, governance_sha), now)
+        approval = sign_approval(layout, by, _approval_subject(change_id, kind, previous, sha, governance_sha), now,
+                                 tag=POLICY_CHANGE)
     entry = {"kind": kind, "sha256": sha, "version": short(sha), "previous": previous, "by": by,
              "at": now, "reason": reason, "how": how, "change_id": change_id, "approval": approval}
     if governance_sha:
@@ -843,9 +862,12 @@ def approve_change(layout: FolderLayout, change_id: str, reviewer: str, reason: 
     now = time.time()
     # ADR 0007 2.4: sign_approval -> _pin_and_audit raises NotEnrolledError under
     # keys.enrol: explicit for an unpinned reviewer.  Release the claim on failure.
+    from sandbox.protocol.domains import POLICY_CHANGE as _PC_TAG
+
     try:
         approval = sign_approval(layout, reviewer,
-                                 _approval_subject(change_id, kind, change.get("base"), change["new_sha256"], gov_sha), now)
+                                 _approval_subject(change_id, kind, change.get("base"), change["new_sha256"], gov_sha), now,
+                                 tag=_PC_TAG)
     except NotEnrolledError as exc:
         try:
             os.rename(claimed, path)

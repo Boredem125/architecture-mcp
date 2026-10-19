@@ -58,6 +58,9 @@ def find_grant(layout: FolderLayout, fp: str, now: float | None = None) -> dict[
             continue
         if (used / f"{rec.get('request_id')}.used").exists():
             continue
+        # ADR 0007 3.3 (no downgrade): only sig_v: 1 records accepted as grants.
+        if rec.get("sig_v") != 1:
+            continue
         if not verify_record(rec) or rec.get("signer_public_key") != reviewer_public_key(layout, rec.get("reviewer_id", "cli")):
             continue
         if rec.get("requires_dual") and not distinct_approvals(rec.get("approvals") or [], layout=layout):
