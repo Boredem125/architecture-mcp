@@ -497,13 +497,18 @@ def build_pack(layout: FolderLayout, since: float | None = None, until: float | 
 
 
 def sign_manifest(layout: FolderLayout, files: dict[str, bytes], meta: dict[str, Any]) -> bytes:
-    from sandbox.connector.signing import _load_or_create_key
+    from sandbox.connector.signing import _load_or_create_key, _tag_bytes
     from sandbox.crypto.signing import sign_message
+    from sandbox.protocol.domains import EVIDENCE
 
     key = _load_or_create_key(layout, EXPORTER_KEY)
     body = {**meta, "format": FORMAT, "files": {p: _sha256(b) for p, b in sorted(files.items())},
-            "exporter_public_key": bytes(key.verify_key).hex()}
-    body["signature"] = sign_message(_canon({k: v for k, v in body.items() if k != "signature"}), key)
+            "exporter_public_key": bytes(key.verify_key).hex(),
+            "sig_v": 1}
+    # SEC-31: sign with EVIDENCE domain tag || 0x00 || canonical JSON.
+    unsigned = {k: v for k, v in body.items() if k != "signature"}
+    tagged_data = _tag_bytes(EVIDENCE) + b"\x00" + _canon(unsigned)
+    body["signature"] = sign_message(tagged_data, key)
     return _pretty(body)
 
 
@@ -713,8 +718,21 @@ def verify_evidence(path: str | Path, exporter_key: str | None = None) -> dict[s
     try:
         vk = VerifyKey(bytes.fromhex(str(pub)))
         body = {k: v for k, v in manifest.items() if k != "signature"}
-        if not verify_signature(_canon(body), str(manifest.get("signature", "")), vk):
-            failures.append(f"{MANIFEST}: signature does not verify (the manifest was changed after export)")
+        sig_v = manifest.get("sig_v")
+        if sig_v == 1:
+            # SEC-31: sig_v: 1 manifest must verify on the tagged path only (no downgrade).
+            from sandbox.connector.signing import _tag_bytes
+            from sandbox.protocol.domains import EVIDENCE
+
+            tagged_data = _tag_bytes(EVIDENCE) + b"\x00" + _canon(body)
+            if not verify_signature(tagged_data, str(manifest.get("signature", "")), vk):
+                failures.append(f"{MANIFEST}: signature does not verify (the manifest was changed after export)")
+            result["manifest_tagged"] = True
+        else:
+            # Legacy: untagged manifest (pre-T4 backward compatibility).
+            if not verify_signature(_canon(body), str(manifest.get("signature", "")), vk):
+                failures.append(f"{MANIFEST}: signature does not verify (the manifest was changed after export)")
+            result["manifest_tagged"] = False
     except (ValueError, TypeError):
         failures.append(f"{MANIFEST}: exporter_public_key is not a valid Ed25519 key")
     if exporter_key and str(pub).lower() != exporter_key.strip().lower():

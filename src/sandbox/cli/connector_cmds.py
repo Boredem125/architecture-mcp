@@ -1342,7 +1342,13 @@ def policy_history(path: str, as_json: bool) -> None:
             if e.get("how") == "change":
                 ch = pv.load_change(layout, e.get("change_id", ""))
                 if ch is not None:
-                    two = "two reviewers verified" if pv.verify_change(ch) else "CHANGE RECORD DOES NOT VERIFY"
+                    _ok, _lbl = pv.verify_change_history(ch)
+                    if _ok and _lbl == "legacy":
+                        two = "two reviewers verified (legacy)"
+                    elif _ok:
+                        two = "two reviewers verified"
+                    else:
+                        two = "CHANGE RECORD DOES NOT VERIFY"
                     who = f"proposed by {ch.get('proposer')}, approved by {e.get('by')} ({two})"
             click.echo(f"  {when}  {e.get('version')}  <- {pv.short(e.get('previous')) or 'none':<12}  "
                        f"{e.get('how'):<10} {who}  [{sig}]  {e.get('reason', '')}")

@@ -550,13 +550,13 @@ def verify_proposal(change: dict[str, Any], layout: FolderLayout | None = None) 
         vk = VerifyKey(bytes.fromhex(change.get("proposer_public_key", "")))
     except (ValueError, TypeError):
         return False
-    sig_v = change.get("sig_v")
-    if sig_v == 1:
-        from sandbox.protocol.domains import POLICY_CHANGE
+    # SEC-30: live paths (acceptance, verify_change) require domain-tagged
+    # proposals (sig_v: 1).  History paths use verify_entry, not this function.
+    if change.get("sig_v") != 1:
+        return False
+    from sandbox.protocol.domains import POLICY_CHANGE
 
-        data = _tag_bytes(POLICY_CHANGE) + b"\x00" + _canonical(change, _PROPOSAL_FIELDS)
-    else:
-        data = _canonical(change, _PROPOSAL_FIELDS)
+    data = _tag_bytes(POLICY_CHANGE) + b"\x00" + _canonical(change, _PROPOSAL_FIELDS)
     if not verify_signature(data, change.get("proposal_signature", ""), vk):
         return False
     # SEC-25: the proposer's key must be pinned
@@ -571,6 +571,74 @@ def verify_proposal(change: dict[str, Any], layout: FolderLayout | None = None) 
     if not _is_pinned(fake_approval, layout):
         return False
     return True
+
+
+def verify_proposal_history(change: dict[str, Any], layout: FolderLayout | None = None) -> tuple[bool, str]:
+    """Verify a proposal for display / history paths.  Returns ``(ok, label)``.
+
+    ``label`` is ``"tagged"`` for ``sig_v: 1`` proposals that verify on the
+    domain-tagged path, ``"legacy"`` for untagged proposals that verify on
+    the legacy (untagged) path, or ``"invalid"`` when neither succeeds.
+    Unlike :func:`verify_proposal` this never rejects a proposal just because
+    it lacks ``sig_v: 1``; that rejection is for live (acceptance) paths only.
+    """
+    from nacl.signing import VerifyKey
+
+    from sandbox.connector.signing import _canonical, _tag_bytes
+    from sandbox.crypto.signing import verify_signature
+
+    try:
+        vk = VerifyKey(bytes.fromhex(change.get("proposer_public_key", "")))
+    except (ValueError, TypeError):
+        return False, "invalid"
+    sig_v = change.get("sig_v")
+    if sig_v == 1:
+        from sandbox.protocol.domains import POLICY_CHANGE
+
+        data = _tag_bytes(POLICY_CHANGE) + b"\x00" + _canonical(change, _PROPOSAL_FIELDS)
+        if verify_signature(data, change.get("proposal_signature", ""), vk):
+            return True, "tagged"
+        return False, "invalid"
+    # Legacy: no tag prefix.
+    data = _canonical(change, _PROPOSAL_FIELDS)
+    if verify_signature(data, change.get("proposal_signature", ""), vk):
+        return True, "legacy"
+    return False, "invalid"
+
+
+def verify_change_history(change: dict[str, Any]) -> tuple[bool, str]:
+    """Verify an approved change for display / history paths.  Returns ``(ok, label)``.
+
+    ``label`` is ``"tagged"`` when both proposal and approval carry ``sig_v: 1``
+    and verify on their tagged paths, ``"legacy"`` when both verify on the
+    legacy (untagged) path, or ``"invalid"`` when either fails.
+
+    Unlike :func:`verify_change` this accepts legacy (untagged) changes, so
+    that ``policy log`` and other display paths keep showing old changes as
+    verified.  :func:`verify_change` is the live (acceptance) check.
+    """
+    from sandbox.connector.signing import verify_approval
+    from sandbox.protocol.domains import POLICY_CHANGE
+
+    proposal_ok, proposal_label = verify_proposal_history(change)
+    if not proposal_ok:
+        return False, "invalid"
+    approval = change.get("approval") or {}
+    subject = _approval_subject(change["change_id"], change["kind"], change.get("base"),
+                                change["new_sha256"], change.get("governance_sha256"))
+    if not (verify_approval(approval, expected_tag=POLICY_CHANGE)
+            and all(approval.get(k) == v for k, v in subject.items())
+            and approval.get("reviewer_id") != change.get("proposer")
+            and approval.get("signer_public_key") != change.get("proposer_public_key")):
+        return False, "invalid"
+    # Derive label from proposal (approval label follows the same pattern).
+    approval_label = "tagged" if approval.get("sig_v") == 1 else "legacy"
+    if proposal_label == "tagged" and approval_label == "tagged":
+        return True, "tagged"
+    if proposal_label == "legacy" and approval_label == "legacy":
+        return True, "legacy"
+    # Mixed: one tagged, one legacy.  Accept but mark legacy (the weaker label).
+    return True, "legacy"
 
 
 def verify_entry(entry: dict[str, Any]) -> bool:
@@ -596,6 +664,9 @@ def verify_change(change: dict[str, Any]) -> bool:
     from sandbox.protocol.domains import POLICY_CHANGE
 
     approval = change.get("approval") or {}
+    # SEC-30: live paths require domain-tagged signatures on both proposal and approval.
+    if approval.get("sig_v") != 1:
+        return False
     subject = _approval_subject(change["change_id"], change["kind"], change.get("base"),
                                 change["new_sha256"], change.get("governance_sha256"))
     return (verify_proposal(change) and verify_approval(approval, expected_tag=POLICY_CHANGE)
