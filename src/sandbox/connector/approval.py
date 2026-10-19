@@ -38,6 +38,10 @@ def _valid_for(approval: dict[str, Any], record: dict[str, Any], layout: FolderL
     if not (verify_approval(approval)
             and all(approval.get(k) == record.get(k) for k in ("request_id", "command", "fingerprint"))):
         return False
+    # SEC-30: live decision paths require domain-tagged signatures (sig_v: 1).
+    # A legacy (untagged) approval is rejected even when it crypto-verifies.
+    if approval.get("sig_v") != 1:
+        return False
     # ADR 0007 2.5: check approval against pinned key, not embedded key.
     # Derive layout from the record's root when not given explicitly.
     effective_layout = layout

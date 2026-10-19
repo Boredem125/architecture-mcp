@@ -74,6 +74,14 @@ Option 2 for enforcement, per-tool hashes for pinning.
 ### 6. Tool-poisoning text detection
 On first sight and on every definition change, the proxy runs the existing injection detector, and the optional semantic layer when enabled, over tool descriptions and schemas. A hit **adds scrutiny only**: the pin needs a human, and the finding is shown on the approval panel. A clean scan never auto-approves a pin. (Product principle 2.)
 
+### 7. Baseline code and PII engine (founder decision, 19 Oct 2026)
+1. **Baseline:** build the M4 proxy on [lasso-security/mcp-gateway](https://github.com/lasso-security/mcp-gateway) (MIT, Python; 396 stars and last commit 22 Jan 2026 when checked on 19 Oct 2026). Keep its licence and copyright notice in `NOTICE`. Pin an exact commit; we own fixes from there on (upstream looked inactive when checked).
+2. **What we take:** the proxy shell (it reads `mcp.json` / `claude_desktop_config.json`, manages the upstream servers, exposes `get_metadata` / `run_tool`), the plugin interface, and request/response interception.
+3. **What we drop or replace:** the Presidio plugin is replaced by [`depii`](https://pypi.org/project/depii/) (`pip install depii`, Apache-2.0, no core dependencies; repo https://github.com/Boredem125/piiredact; API `depii.scan`, `depii.redact`, `Redactor`, `Pseudonymizer`). The `lasso` guardrail plugin calls Lasso's hosted API, so it is never enabled by default (data leaves the customer's infra). `xetrack` tracing is not the audit trail: every proxied call still goes through sections 3 and 5 (policy decision, hash-chained audit, signed approvals).
+4. **What stays ours:** per-argument policy, pinning and drift (section 2), escalate/approve with signed dual control, and the evidence pack. The proxy is plumbing; the wedge is authorization plus evidence.
+5. **Gates before adoption (rule first, frozen set, one run):** (a) the upstream code is reviewed by security-engineer at the pinned commit, and Trivy/Semgrep/gitleaks are clean; (b) `depii` recall and false-positive rate are measured on a frozen PII corpus, and only those numbers are published; (c) a test proves a proxy crash or a `depii` error fails closed (call refused, not passed through unredacted); (d) SEC-19 (direct upstream bypass) is still handled by the local hooks, since the proxy cannot stop it.
+6. **When:** integration lands in M4. Nothing changes in M1.
+
 ## Consequences
 
 1. New OSS component (`connector/mcp_proxy/`) in the TCB, with its own fail-closed rule: if the proxy cannot evaluate, it returns a JSON-RPC error, never forwards.
