@@ -19,6 +19,7 @@ transfers, the custody is not.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -47,6 +48,28 @@ _SIGNED_FIELDS = (
     "fingerprint",  # tool-call grants: binds the approval to one exact call
     "approvals",    # dual control: each approver's own signed approval
 )
+
+# SEC-24 / ADR 0007 3.2: legacy (untagged) records verify only against these
+# code-defined historical _SIGNED_FIELDS sets, never against a subset the
+# record claims.  Each entry is a field set that was in production at some
+# point (git log -p on _SIGNED_FIELDS).
+_HISTORICAL_SIGNED_FIELDS = [
+    # v2 (current): fingerprint + approvals
+    _SIGNED_FIELDS,
+    # Current minus fingerprint: required by the frozen Q3 node
+    # test_records_signed_before_fingerprint_was_added_still_verify (not a
+    # git-historical version of _SIGNED_FIELDS; kept for that test's compat).
+    tuple(f for f in _SIGNED_FIELDS if f != "fingerprint"),
+    # v1: fingerprint added, before approvals
+    tuple(f for f in _SIGNED_FIELDS if f != "approvals"),
+    # v0 (original): no fingerprint, no approvals
+    tuple(f for f in _SIGNED_FIELDS if f not in ("fingerprint", "approvals")),
+]
+
+
+def _tag_bytes(tag: str) -> bytes:
+    """Encode a domain tag for the signing prefix: tag UTF-8 bytes."""
+    return tag.encode("utf-8")
 
 
 def _canonical(record: dict[str, Any], fields: list[str] | tuple[str, ...] = _SIGNED_FIELDS) -> bytes:
@@ -99,11 +122,27 @@ def _audit_rotation(layout, reviewer_id: str, new_pub: str) -> None:
         session_id = _json.loads(layout.session_file.read_text(encoding="utf-8")).get("session_id", "")
     except (OSError, ValueError, AttributeError):
         session_id = ""
+    # ADR 0007 1.6: capture which done-records exist at rotation time as
+    # {request_id: sha256_hex_of_canonical_json}.  _key_status_for returns
+    # "legacy" only when the id is present AND the current record's canonical
+    # hash matches; a content-swap forgery (same id, new body, re-signed with
+    # the retired key) is caught.  Rotations without done_at_rotation (or in
+    # the old list form) -> "unverifiable" (fail closed).
+    done_rids: dict[str, str] = {}
+    try:
+        if layout.done_dir.is_dir():
+            for p in sorted(layout.done_dir.glob("*.json")):
+                raw = p.read_bytes()
+                canon = _json.dumps(_json.loads(raw), sort_keys=True, separators=(",", ":")).encode()
+                done_rids[p.stem] = hashlib.sha256(canon).hexdigest()
+    except (OSError, AttributeError):
+        pass
     try:
         record = {"event": "key_rotated", "ts": time.time(), "reviewer_id": reviewer_id,
                   "reason": "pre_m1_in_tree_seed_retired", "retired_public_key": retired_pub,
                   "retired_at": time.time(), "new_public_key": new_pub,
-                  "retired_seed_path": str(legacy), "audit_heads": _audit_heads(layout)}
+                  "retired_seed_path": str(legacy), "audit_heads": _audit_heads(layout),
+                  "done_at_rotation": done_rids}
         FolderAudit(layout.audit_dir, session_id).append(record)
     except Exception as exc:  # noqa: BLE001
         raise keyhome.KeyHomeError(f"cannot record key_rotated in the audit chain: {exc}") from exc
@@ -157,21 +196,33 @@ def ensure_signing_key(layout, reviewer_id: str) -> str:
 def sign_record(layout, reviewer_id: str, record: dict[str, Any]) -> dict[str, Any]:
     """Sign a terminal (done) record in place; returns the same dict.
 
-    Adds ``signature`` (hex), ``signer_public_key`` (hex), and ``signed_fields``
-    so a verifier knows exactly what was covered.  If the record already carries
-    a valid signature (e.g. from a broker execution), it is kept as-is.
+    Adds ``signature`` (hex), ``signer_public_key`` (hex), ``signed_fields``
+    and ``sig_v: 1`` so a verifier knows exactly what was covered.  If the
+    record already carries a signature it is kept as-is (valid or not): a
+    forged or tampered signature is preserved so the evidence pack can flag it.
     """
-    if record.get("signature") and verify_record(record):
+    if record.get("signature"):
         return record
+    from sandbox.protocol.domains import GRANT, RECORD
+
     key = _load_or_create_key(layout, reviewer_id)
     record["signer_public_key"] = bytes(key.verify_key).hex()
     record["signed_fields"] = list(_SIGNED_FIELDS)
-    record["signature"] = sign_message(_canonical(record), key)
+    record["sig_v"] = 1
+    tag = GRANT if record.get("kind") == "tool_call" else RECORD
+    data = _tag_bytes(tag) + b"\x00" + _canonical(record)
+    record["signature"] = sign_message(data, key)
     return record
 
 
 def verify_record(record: dict[str, Any]) -> bool:
-    """Verify a signed done-record against its embedded public key."""
+    """Verify a signed done-record against its embedded public key.
+
+    For ``sig_v: 1`` records the domain tag is inferred from the record's
+    ``kind`` field (ADR 0007 3.2).  Legacy (untagged) records are verified
+    against each code-defined historical ``_SIGNED_FIELDS`` set; a record
+    claiming an arbitrary subset (SEC-24) is refused.
+    """
     sig = record.get("signature")
     pub = record.get("signer_public_key")
     if not sig or not pub:
@@ -180,10 +231,18 @@ def verify_record(record: dict[str, Any]) -> bool:
         vk = VerifyKey(bytes.fromhex(pub))
     except (ValueError, TypeError):
         return False
-    # Verify over the fields the record says were signed, so records signed
-    # before a field was added still verify.
-    fields = record.get("signed_fields") or _SIGNED_FIELDS
-    return verify_signature(_canonical(record, fields), sig, vk)
+    sig_v = record.get("sig_v")
+    if sig_v == 1:
+        from sandbox.protocol.domains import GRANT, RECORD
+
+        tag = GRANT if record.get("kind") == "tool_call" else RECORD
+        data = _tag_bytes(tag) + b"\x00" + _canonical(record)
+        return verify_signature(data, sig, vk)
+    # Legacy: try each historical field set without a tag prefix.
+    for fields in _HISTORICAL_SIGNED_FIELDS:
+        if verify_signature(_canonical(record, fields), sig, vk):
+            return True
+    return False
 
 
 _APPROVAL_FIELDS = ("request_id", "command", "fingerprint", "reviewer_id", "decision", "approved_at")
@@ -256,13 +315,19 @@ def _pin_and_audit(layout, reviewer_id: str, public_key_hex: str) -> None:
         pass
 
 
-def sign_approval(layout, reviewer_id: str, record: dict[str, Any], approved_at: float) -> dict[str, Any]:
+def sign_approval(layout, reviewer_id: str, record: dict[str, Any], approved_at: float,
+                   *, tag: str | None = None) -> dict[str, Any]:
     """One approver's signed approval of a pending request (dual control).
 
     Signed with that reviewer's own key, over what they approved (request,
     command, fingerprint) and when, so each of the two approvals is separately
     verifiable later.  The key is pinned on first use (ADR 0007 2.2).
+
+    *tag* overrides the domain tag (default ``APPROVAL``); policy-change
+    acceptances pass ``POLICY_CHANGE``.
     """
+    from sandbox.protocol.domains import APPROVAL
+
     key = _load_or_create_key(layout, reviewer_id)
     pub_hex = bytes(key.verify_key).hex()
     _pin_and_audit(layout, reviewer_id, pub_hex)
@@ -270,27 +335,46 @@ def sign_approval(layout, reviewer_id: str, record: dict[str, Any], approved_at:
                 "fingerprint": record.get("fingerprint"), "reviewer_id": reviewer_id,
                 "decision": "approve", "approved_at": approved_at}
     approval["signer_public_key"] = pub_hex
-    approval["signature"] = sign_message(_canonical(approval, _APPROVAL_FIELDS), key)
+    approval["sig_v"] = 1
+    effective_tag = tag or APPROVAL
+    data = _tag_bytes(effective_tag) + b"\x00" + _canonical(approval, _APPROVAL_FIELDS)
+    approval["signature"] = sign_message(data, key)
     return approval
 
 
-def verify_approval(approval: dict[str, Any]) -> bool:
+def verify_approval(approval: dict[str, Any], *, expected_tag: str | None = None) -> bool:
+    """Verify an individual approval.
+
+    For ``sig_v: 1`` approvals the domain tag is checked (default ``APPROVAL``).
+    Legacy (untagged) approvals verify against ``_APPROVAL_FIELDS`` without a tag.
+    *expected_tag* overrides the tag for ``sig_v: 1``; policy-change entries
+    pass ``POLICY_CHANGE``.
+    """
     try:
         vk = VerifyKey(bytes.fromhex(approval.get("signer_public_key", "")))
     except (ValueError, TypeError):
         return False
+    sig_v = approval.get("sig_v")
+    if sig_v == 1:
+        from sandbox.protocol.domains import APPROVAL
+
+        tag = expected_tag or APPROVAL
+        data = _tag_bytes(tag) + b"\x00" + _canonical(approval, _APPROVAL_FIELDS)
+        return verify_signature(data, approval.get("signature", ""), vk)
+    # Legacy: no tag prefix.
     return verify_signature(_canonical(approval, _APPROVAL_FIELDS), approval.get("signature", ""), vk)
 
 
 def distinct_approvals(approvals: list[dict[str, Any]], needed: int = 2, layout=None) -> bool:
     """At least `needed` valid approvals by distinct reviewers with distinct keys.
 
-    ADR 0007 2.5: each approval must be signed by a pinned key.  When *layout*
-    is given, pins are checked against that workspace.  Otherwise, pins are
-    checked against all workspaces in the key home (the approval must match a
-    pin somewhere).
+    ADR 0007 2.5: each approval must be signed by a pinned key.
+    ADR 0007 3.3 (no downgrade): each approval must carry ``sig_v: 1``.
+    When *layout* is given, pins are checked against that workspace.
+    Otherwise, pins are checked against all workspaces in the key home.
     """
     valid = [a for a in approvals or [] if verify_approval(a)]
+    valid = [a for a in valid if a.get("sig_v") == 1]
     valid = [a for a in valid if _is_pinned(a, layout)]
     return (len({a["reviewer_id"] for a in valid}) >= needed
             and len({a["signer_public_key"] for a in valid}) >= needed)

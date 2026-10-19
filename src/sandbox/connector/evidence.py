@@ -511,8 +511,8 @@ def _key_status_for(rec: dict[str, Any], layout: FolderLayout, audit_records: li
     """Determine the key_status for a done-record: 'pinned', 'legacy' or 'unverifiable'.
 
     - 'pinned': the signer's key is pinned for this reviewer in this workspace.
-    - 'legacy': the record was signed with a now-retired pre-M1 key AND it is covered
-      by the audit chain head recorded in the key_rotated event (ADR 0007 1.6).
+    - 'legacy': the record was signed with a now-retired pre-M1 key AND its
+      done-record file existed at rotation time (ADR 0007 1.6).
     - 'unverifiable': anything else.
     """
     from sandbox.connector import keyhome
@@ -531,22 +531,29 @@ def _key_status_for(rec: dict[str, Any], layout: FolderLayout, audit_records: li
             return "pinned"
     except keyhome.KeyHomeError:
         pass
-    # Check if legacy (signed by a retired key, covered by key_rotated chain head)
+    # Check if legacy (signed by a retired key, covered by done_at_rotation)
     rotation_events = [e for e in audit_records
                        if e.get("event") == "key_rotated" and e.get("reviewer_id") == reviewer_id]
     if rotation_events:
         for rot in rotation_events:
             if rot.get("retired_public_key") == pub:
-                # Check if the record's timestamp is before the rotation
-                rec_ts = rec.get("decided_at") or rec.get("approved_at") or rec.get("created_at") or 0
-                rot_ts = rot.get("ts") or 0
-                try:
-                    if float(rec_ts) <= float(rot_ts):
-                        return "legacy"
-                except (TypeError, ValueError):
-                    pass
-                # The record was created after rotation: forged with a retired key
-                return "unverifiable"
+                # ADR 0007 1.6: done_at_rotation is {request_id: sha256_hex}.
+                # "legacy" only if the id is present AND the canonical hash of
+                # the current record matches -- a content-swap re-signed with
+                # the retired key is caught.  Missing or list-form
+                # done_at_rotation -> "unverifiable" (fail closed).
+                done_at = rot.get("done_at_rotation")
+                if not isinstance(done_at, dict):
+                    return "unverifiable"
+                request_id = rec.get("request_id")
+                if not request_id or request_id not in done_at:
+                    return "unverifiable"
+                # Verify content hash
+                canon = json.dumps(rec, sort_keys=True, separators=(",", ":")).encode()
+                current_hash = hashlib.sha256(canon).hexdigest()
+                if current_hash != done_at[request_id]:
+                    return "unverifiable"
+                return "legacy"
     # Not pinned, no rotation record covering it
     return "unverifiable"
 
