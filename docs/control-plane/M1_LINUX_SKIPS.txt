@@ -19,3 +19,4 @@ tests/unit/test_containment.py::test_windows_exotic_paths_rejected[\\\\?\\C:\\Wi
 tests/unit/test_containment.py::test_windows_exotic_paths_rejected[\\\\server\\share\\x.txt]
 tests/unit/test_containment.py::test_windows_exotic_paths_rejected[file.txt:hidden]
 tests/unit/test_environment_classification.py::test_case_insensitive_on_windows
+tests/security/test_t0g_runners.py::test_pytest_opt_in_is_lost_when_a_path_leaves_the_root[pytest C:/Windows/x]
