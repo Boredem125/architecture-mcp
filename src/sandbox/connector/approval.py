@@ -32,11 +32,36 @@ def default_reviewer() -> str:
     return os.environ.get("SANDBOX_REVIEWER") or getpass.getuser() or "cli"
 
 
-def _valid_for(approval: dict[str, Any], record: dict[str, Any]) -> bool:
+def _valid_for(approval: dict[str, Any], record: dict[str, Any], layout: FolderLayout | None = None) -> bool:
     from sandbox.connector.signing import verify_approval
 
-    return (verify_approval(approval)
-            and all(approval.get(k) == record.get(k) for k in ("request_id", "command", "fingerprint")))
+    if not (verify_approval(approval)
+            and all(approval.get(k) == record.get(k) for k in ("request_id", "command", "fingerprint"))):
+        return False
+    # ADR 0007 2.5: check approval against pinned key, not embedded key.
+    # Derive layout from the record's root when not given explicitly.
+    effective_layout = layout
+    if effective_layout is None:
+        root = record.get("root")
+        if root:
+            from pathlib import Path
+
+            root_path = Path(root)
+            if root_path.is_dir() and (root_path / ".sandbox").is_dir():
+                effective_layout = FolderLayout(root_path)
+    if effective_layout is not None:
+        from sandbox.connector import keyhome
+
+        try:
+            reviewer_id = approval.get("reviewer_id")
+            pinned = keyhome.get_pinned_key(effective_layout, reviewer_id)
+            if pinned is None:
+                return False  # unpinned key: invalid
+            if approval.get("signer_public_key") != pinned:
+                return False  # key mismatch: invalid
+        except keyhome.KeyHomeError:
+            return False  # key home unavailable: fail closed
+    return True
 
 
 async def approve(layout: FolderLayout, request_id: str, reviewer_id: str, reason: str = "") -> dict[str, Any]:
@@ -56,12 +81,24 @@ async def approve(layout: FolderLayout, request_id: str, reviewer_id: str, reaso
     """
     from sandbox.connector.broker import FolderBroker
     from sandbox.connector.oversight import check_approval
-    from sandbox.connector.keyhome import KeyHomeError
-    from sandbox.connector.signing import ensure_signing_key, sign_approval
+    from sandbox.connector.keyhome import KeyHomeError, NotEnrolledError
+    from sandbox.connector.signing import _pin_and_audit, ensure_signing_key, sign_approval
 
     # Fail closed before anything is claimed or run: an approval that cannot be signed is invalid.
     try:
-        ensure_signing_key(layout, reviewer_id)
+        pub_hex = ensure_signing_key(layout, reviewer_id)
+    except KeyHomeError as exc:
+        return {"status": "key_unavailable", "reason": str(exc)}
+
+    # ADR 0007 2.2: pin the key on first use from a human surface (CLI/REST API approve).
+    # ADR 0007 2.4: _pin_and_audit raises NotEnrolledError under keys.enrol: explicit
+    # for an unpinned reviewer; that is the single enforcement point.
+    # Fail closed: if the audit record cannot be written, the pin is not created
+    # and the approval is refused (mirrors _audit_rotation).
+    try:
+        _pin_and_audit(layout, reviewer_id, pub_hex)
+    except NotEnrolledError as exc:
+        return {"status": "not_enrolled", "reason": str(exc)}
     except KeyHomeError as exc:
         return {"status": "key_unavailable", "reason": str(exc)}
 
@@ -82,7 +119,7 @@ async def approve(layout: FolderLayout, request_id: str, reviewer_id: str, reaso
 
     # Only approvals that verify AND are for exactly this request count: an
     # altered approval, or a request changed after it was approved, drops out.
-    approvals = [a for a in rec.get("approvals") or [] if _valid_for(a, rec)]
+    approvals = [a for a in rec.get("approvals") or [] if _valid_for(a, rec, layout)]
     if rec.get("requires_dual"):
         mine = sign_approval(layout, reviewer_id, rec, time.time())
         if any(a.get("reviewer_id") == reviewer_id or a.get("signer_public_key") == mine["signer_public_key"]

@@ -48,6 +48,8 @@ That is 21, equal to the measured Linux skip count (24 JUnit "skipped" at T1b-er
 | `tests/unit/test_evidence.py::test_pack_layout_and_no_private_keys`, `::test_pinned_exporter_key`; `tests/conftest.py` | T2 (D2, ADR 0007) | As on the named list: both tests read seeds from the key home (`SANDBOX_KEY_HOME`), the first asserts it found 3 or more and keeps the no-seed-bytes check; conftest gains one autouse fixture that sets only `SANDBOX_KEY_HOME` to a per-test tmp dir. Manifest lines for both files re-hashed | security signs off by node id at T2 |
 | `tests/security/test_m1_t2_key_home.py` (new M1 test, not in the frozen manifest) | T2 | The 18 strict xfail decorators (`RED_T2`) removed by the fix commit; assertions unchanged. 26/26 pass | n/a (the tests-first protocol) |
 
+| `tests/unit/test_evidence.py::test_export_then_verify_passes`, `::test_pack_has_aiuc1_index_tied_to_records`, `::test_alerts_are_in_the_pack` | T3 | `key_pinned` audit + alert from `approve()` adds 2 records, 2 alerts, 1 session ("default"): sessions 2 -> 3, E015.4 audit_records 3 -> 5, alerts count 1 -> 3. Manifest line re-hashed | signed off: security-engineer |
+
 Any other frozen test that fails: stop, list it, security decides.
 
 ## 3. New M1 tests, frozen per task (tests-first commits)

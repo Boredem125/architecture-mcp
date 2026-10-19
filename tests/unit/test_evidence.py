@@ -99,7 +99,7 @@ def test_export_then_verify_passes(folder, tmp_path):
     assert d["by_reviewer"] == {"alice": {"approved": 2}, "bob": {"approved": 1}, "carol": {"denied": 1}}
     assert d["dual_control"] == {"approved_requiring_dual": 1, "passing_all_checks": 1}
     assert d["dual_control_approvals_by_reviewer"] == {"alice": 1, "bob": 1}
-    assert s["audit"]["sessions"] == 2 and s["audit"]["all_chains_valid"]
+    assert s["audit"]["sessions"] == 3 and s["audit"]["all_chains_valid"]
 
     gov = s["governance"]
     clause = gov["by_clause"]["no_external_data"]
@@ -115,7 +115,7 @@ def test_export_then_verify_passes(folder, tmp_path):
 
     r = verify_evidence(out, s["exporter_public_key"])
     assert r["ok"], r["failures"]
-    assert r["decisions"] == 4 and r["sessions"] == 2
+    assert r["decisions"] == 4 and r["sessions"] == 3
 
 
 def test_pack_layout_and_no_private_keys(folder, tmp_path):
@@ -332,7 +332,7 @@ def test_pack_has_aiuc1_index_tied_to_records(folder, tmp_path):
     # The dual-control approval is B006.1 evidence; the governed tool call is C005.1.
     assert c["B006.1"]["evidence"]["decisions"] == 1
     assert c["C005.1"]["evidence"] == {"audit_records": 1, "decisions": 1, "alerts": 0}
-    assert c["E015.4"]["evidence"]["audit_records"] == 3 and "all valid" in c["E015.4"]["examples"][0]
+    assert c["E015.4"]["evidence"]["audit_records"] == 5 and "all valid" in c["E015.4"]["examples"][0]
     # Examples point at real files in the pack, and line numbers at the right record.
     ref = next(e for e in c["C005.1"]["examples"] if e.startswith("audit/"))
     path, line = ref.split(" ")[0].split("#L")
@@ -360,9 +360,9 @@ def test_alerts_are_in_the_pack(folder, tmp_path):
     alerts.emit(folder, "s1", {"event": "denied", "tool": "Write", "reason_code": "WRITE_OUTSIDE",
                                "target": "C:/Windows/x"})
     out, s = _export(folder, tmp_path)
-    assert s["alerts"]["count"] == 1 and (out / "alerts" / "alerts.jsonl").is_file()
+    assert s["alerts"]["count"] == 3 and (out / "alerts" / "alerts.jsonl").is_file()
     index = json.loads((out / "aiuc1" / "controls.json").read_text(encoding="utf-8"))
-    assert index["controls"]["B006.2"]["evidence"]["alerts"] == 1
+    assert index["controls"]["B006.2"]["evidence"]["alerts"] == 3
     assert verify_evidence(out, s["exporter_public_key"])["ok"]
 
 

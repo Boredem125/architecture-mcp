@@ -158,8 +158,11 @@ def sign_record(layout, reviewer_id: str, record: dict[str, Any]) -> dict[str, A
     """Sign a terminal (done) record in place; returns the same dict.
 
     Adds ``signature`` (hex), ``signer_public_key`` (hex), and ``signed_fields``
-    so a verifier knows exactly what was covered.
+    so a verifier knows exactly what was covered.  If the record already carries
+    a valid signature (e.g. from a broker execution), it is kept as-is.
     """
+    if record.get("signature") and verify_record(record):
+        return record
     key = _load_or_create_key(layout, reviewer_id)
     record["signer_public_key"] = bytes(key.verify_key).hex()
     record["signed_fields"] = list(_SIGNED_FIELDS)
@@ -186,18 +189,87 @@ def verify_record(record: dict[str, Any]) -> bool:
 _APPROVAL_FIELDS = ("request_id", "command", "fingerprint", "reviewer_id", "decision", "approved_at")
 
 
+def _pin_and_audit(layout, reviewer_id: str, public_key_hex: str) -> None:
+    """Pin the reviewer's key on first use (human surface only) and audit + alert.
+
+    Fail closed (mirrors ``_audit_rotation``): the ``key_pinned`` audit record is
+    written **before** the pin. If the audit cannot be written the caller gets
+    :class:`keyhome.KeyHomeError` and no pin file entry exists. The alert stays
+    best-effort.
+    """
+    # Already pinned: nothing to do.
+    if keyhome.get_pinned_key(layout, reviewer_id) is not None:
+        return
+
+    # ADR 0007 2.4: keys.enrol: explicit refuses unenrolled (unpinned) reviewers.
+    # Every pin path goes through here, so this is the single enforcement point.
+    from sandbox.connector.policy import load_policy as _load_pol
+
+    try:
+        from sandbox.connector.policy_versions import enforced_policy
+
+        _pol, _ = enforced_policy(layout)
+    except Exception:  # noqa: BLE001 - fall back to file on disk
+        _pol = _load_pol(layout.policy_file)
+    if getattr(getattr(_pol, "keys", None), "enrol", "first_use") == "explicit":
+        raise keyhome.NotEnrolledError(
+            f"reviewer {reviewer_id!r} is not enrolled; "
+            "keys.enrol is set to explicit (ADR 0007 2.4)"
+        )
+
+    import time as _time
+
+    from sandbox.connector.audit import FolderAudit
+
+    try:
+        session_id = json.loads(layout.session_file.read_text(encoding="utf-8")).get("session_id", "")
+    except (OSError, ValueError, AttributeError):
+        session_id = ""
+    record = {
+        "event": "key_pinned",
+        "ts": _time.time(),
+        "reviewer_id": reviewer_id,
+        "public_key": public_key_hex,
+        "workspace_root": str(layout.root),
+        "alert": True,
+    }
+    # Audit FIRST: no audit record -> no pin (fail closed, mirrors _audit_rotation).
+    try:
+        FolderAudit(layout.audit_dir, session_id).append(record)
+    except Exception as exc:  # noqa: BLE001
+        raise keyhome.KeyHomeError(f"cannot record key_pinned in the audit chain: {exc}") from exc
+
+    # Now write the pin; raise on failure so the caller refuses.
+    try:
+        new_pin = keyhome.write_pin(layout, reviewer_id, public_key_hex)
+    except Exception as exc:  # noqa: BLE001
+        raise keyhome.KeyHomeError(f"cannot write the pin for {reviewer_id!r}: {exc}") from exc
+    if not new_pin:
+        return  # race: another process pinned between our check and write
+
+    # Alert stays best-effort.
+    try:
+        from sandbox.connector import alerts
+
+        alerts.emit(layout, session_id, record)
+    except Exception:  # noqa: BLE001 - alerting never breaks the approval
+        pass
+
+
 def sign_approval(layout, reviewer_id: str, record: dict[str, Any], approved_at: float) -> dict[str, Any]:
     """One approver's signed approval of a pending request (dual control).
 
     Signed with that reviewer's own key, over what they approved (request,
     command, fingerprint) and when, so each of the two approvals is separately
-    verifiable later.
+    verifiable later.  The key is pinned on first use (ADR 0007 2.2).
     """
     key = _load_or_create_key(layout, reviewer_id)
+    pub_hex = bytes(key.verify_key).hex()
+    _pin_and_audit(layout, reviewer_id, pub_hex)
     approval = {"request_id": record.get("request_id"), "command": record.get("command"),
                 "fingerprint": record.get("fingerprint"), "reviewer_id": reviewer_id,
                 "decision": "approve", "approved_at": approved_at}
-    approval["signer_public_key"] = bytes(key.verify_key).hex()
+    approval["signer_public_key"] = pub_hex
     approval["signature"] = sign_message(_canonical(approval, _APPROVAL_FIELDS), key)
     return approval
 
@@ -210,11 +282,47 @@ def verify_approval(approval: dict[str, Any]) -> bool:
     return verify_signature(_canonical(approval, _APPROVAL_FIELDS), approval.get("signature", ""), vk)
 
 
-def distinct_approvals(approvals: list[dict[str, Any]], needed: int = 2) -> bool:
-    """At least `needed` valid approvals by distinct reviewers with distinct keys."""
+def distinct_approvals(approvals: list[dict[str, Any]], needed: int = 2, layout=None) -> bool:
+    """At least `needed` valid approvals by distinct reviewers with distinct keys.
+
+    ADR 0007 2.5: each approval must be signed by a pinned key.  When *layout*
+    is given, pins are checked against that workspace.  Otherwise, pins are
+    checked against all workspaces in the key home (the approval must match a
+    pin somewhere).
+    """
     valid = [a for a in approvals or [] if verify_approval(a)]
+    valid = [a for a in valid if _is_pinned(a, layout)]
     return (len({a["reviewer_id"] for a in valid}) >= needed
             and len({a["signer_public_key"] for a in valid}) >= needed)
+
+
+def _is_pinned(approval: dict[str, Any], layout=None) -> bool:
+    """Check if an approval's signer key is pinned for its reviewer id."""
+    reviewer_id = approval.get("reviewer_id")
+    pub = approval.get("signer_public_key")
+    if not reviewer_id or not pub:
+        return False
+    if layout is not None:
+        pinned = keyhome.get_pinned_key(layout, reviewer_id)
+        return pinned is not None and pub == pinned
+    # No layout: scan all workspaces in the key home
+    root = keyhome.key_home_root()
+    if root is None or not root.is_dir():
+        return False
+    for ws_dir in root.iterdir():
+        if not ws_dir.is_dir():
+            continue
+        pins_file = ws_dir / keyhome.PINS_FILE
+        if not pins_file.is_file():
+            continue
+        try:
+            pins = json.loads(pins_file.read_text(encoding="utf-8"))
+            entry = pins.get(reviewer_id)
+            if entry and not entry.get("retired_at") and entry.get("public_key") == pub:
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
 
 
 def reviewer_public_key(layout, reviewer_id: str = "cli") -> str | None:
