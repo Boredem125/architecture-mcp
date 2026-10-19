@@ -59,7 +59,7 @@ Each task's new tests are committed as strict xfail (`raises=<named exception>`)
 | T0c SEC-23 | `tests/security/test_sec23_money_floor.py` | 22 | 15 | 7 | `c22d8f4`, `9ba777e` |
 | T1 D1 | `tests/security/test_m1_t1_root_allowlist.py` | 21 | 0 (fix landed, markers removed) | 21 | tests first `de660f1`; fix in the T1 commit |
 | T2 D2 | to come | | | | |
-| T3 D3.1 | to come | | | | |
+| T3 D3.1 | `tests/security/test_m1_t3_pins.py` | 22 | 15 | 7 | tests first (this commit) |
 | T4 D3.2-4, SEC-24 | to come | | | | |
 
 **N** (the Phase A count in the M1 gate) = the sum of this table's "Tests" column once T1-T4 are written; written here before any fix runs.
