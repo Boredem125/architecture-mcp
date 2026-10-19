@@ -34,6 +34,10 @@ class KeyHomeError(RuntimeError):
     """The key home is unusable: no signing, no valid approval."""
 
 
+class NotEnrolledError(KeyHomeError):
+    """The reviewer is not enrolled and keys.enrol is set to explicit (ADR 0007 2.4)."""
+
+
 def key_home_root() -> Path | None:
     """The configured key home (absolute), or None when it cannot be resolved."""
     try:
@@ -335,3 +339,67 @@ def touches(text: str, base: str, *, search: bool = False, resolve: bool = True)
                     if search:
                         return "ancestor"
     return ""
+
+
+# --- pin management (ADR 0007 section 2) -------------------------------------------
+
+import json as _json
+from typing import Any as _Any
+
+PINS_FILE = "pins.json"
+
+
+def _pins_path(layout) -> Path:
+    """``<key home>/<workspace id>/pins.json``. Raises KeyHomeError if no key home."""
+    return workspace_key_dir(layout, create=True) / PINS_FILE
+
+
+def read_pins(layout) -> dict[str, _Any]:
+    """All pin entries for this workspace, keyed by reviewer id."""
+    try:
+        p = _pins_path(layout)
+    except KeyHomeError:
+        return {}
+    try:
+        return _json.loads(p.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_pin(layout, reviewer_id: str, public_key_hex: str) -> bool:
+    """Pin *reviewer_id* to *public_key_hex* if not already pinned.
+
+    Returns True if a new pin was written, False if the reviewer was already
+    pinned (existing pin is never overwritten -- ADR 0007 2.1).
+    """
+    pins = read_pins(layout)
+    if reviewer_id in pins:
+        return False
+    pins[reviewer_id] = {
+        "public_key": public_key_hex,
+        "workspace_root": str(layout.root),
+        "pinned_at": time.time(),
+        "retired_at": None,
+    }
+    p = _pins_path(layout)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_json.dumps(pins, indent=2), encoding="utf-8")
+    return True
+
+
+def get_pinned_key(layout, reviewer_id: str) -> str | None:
+    """The hex public key pinned for *reviewer_id*, or None if unpinned."""
+    pins = read_pins(layout)
+    entry = pins.get(reviewer_id)
+    if entry is None:
+        return None
+    if entry.get("retired_at"):
+        return None  # retired pins are not valid for new approvals
+    return entry.get("public_key")
+
+
+def pin_entry(layout, reviewer_id: str) -> dict[str, _Any] | None:
+    """The full pin entry for *reviewer_id*, or None."""
+    return read_pins(layout).get(reviewer_id)

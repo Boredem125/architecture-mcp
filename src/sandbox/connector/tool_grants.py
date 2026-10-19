@@ -60,7 +60,7 @@ def find_grant(layout: FolderLayout, fp: str, now: float | None = None) -> dict[
             continue
         if not verify_record(rec) or rec.get("signer_public_key") != reviewer_public_key(layout, rec.get("reviewer_id", "cli")):
             continue
-        if rec.get("requires_dual") and not distinct_approvals(rec.get("approvals") or []):
+        if rec.get("requires_dual") and not distinct_approvals(rec.get("approvals") or [], layout=layout):
             continue
         return rec
     return None

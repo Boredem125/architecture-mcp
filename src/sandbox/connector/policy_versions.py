@@ -298,6 +298,10 @@ def meet(approved: dict[str, Any], other: dict[str, Any]) -> dict[str, Any]:
     if ok:
         keys = {(t.get("path"), t.get("sha256")) for t in a}
         _set(out, ("semantic", "trusted_files"), [t for t in b if (t.get("path"), t.get("sha256")) in keys])
+    # ADR 0007 2.4: keys.enrol "explicit" is stricter than "first_use".
+    a_e, b_e, ok_e = both(("keys", "enrol"))
+    if ok_e:
+        _set(out, ("keys", "enrol"), "explicit" if a_e == "explicit" or b_e == "explicit" else a_e)
     return normalize_folder(out)
 
 
@@ -531,7 +535,9 @@ def _sign_proposal(layout: FolderLayout, change: dict[str, Any]) -> None:
     change["proposal_signature"] = sign_message(_canonical(change, _PROPOSAL_FIELDS), key)
 
 
-def verify_proposal(change: dict[str, Any]) -> bool:
+def verify_proposal(change: dict[str, Any], layout: FolderLayout | None = None) -> bool:
+    """Verify a proposal's crypto signature, and (ADR 0007 2.5) check that the
+    proposer's key is pinned when *layout* is given or derivable from the change."""
     from nacl.signing import VerifyKey
 
     from sandbox.connector.signing import _canonical
@@ -541,7 +547,20 @@ def verify_proposal(change: dict[str, Any]) -> bool:
         vk = VerifyKey(bytes.fromhex(change.get("proposer_public_key", "")))
     except (ValueError, TypeError):
         return False
-    return verify_signature(_canonical(change, _PROPOSAL_FIELDS), change.get("proposal_signature", ""), vk)
+    if not verify_signature(_canonical(change, _PROPOSAL_FIELDS), change.get("proposal_signature", ""), vk):
+        return False
+    # SEC-25: the proposer's key must be pinned
+    from sandbox.connector import keyhome
+    from sandbox.connector.signing import _is_pinned
+
+    proposer = change.get("proposer")
+    pub = change.get("proposer_public_key")
+    if not proposer or not pub:
+        return False
+    fake_approval = {"reviewer_id": proposer, "signer_public_key": pub}
+    if not _is_pinned(fake_approval, layout):
+        return False
+    return True
 
 
 def verify_entry(entry: dict[str, Any]) -> bool:
@@ -713,11 +732,30 @@ def _approved_governance_ref(layout: FolderLayout) -> str:
 
 
 def propose(layout: FolderLayout, kind: str, content: dict[str, Any], proposer: str, reason: str) -> dict[str, Any]:
-    """Create a signed change request for a new version of *kind*."""
+    """Create a signed change request for a new version of *kind*.
+
+    Raises :class:`~sandbox.connector.keyhome.NotEnrolledError` when
+    ``keys.enrol`` is ``"explicit"`` and the proposer is not pinned.
+    """
     if kind not in KINDS:
         raise ValueError(f"unknown policy kind {kind!r}")
     if not reason.strip():
         raise ValueError("a reason is required")
+
+    # ADR 0007 2.4: under explicit enrol, an unpinned proposer is refused early
+    # (the proposal would never verify anyway since verify_proposal checks pins).
+    from sandbox.connector import keyhome
+
+    if keyhome.get_pinned_key(layout, proposer) is None:
+        try:
+            _pol, _ = enforced_policy(layout)
+        except Exception:  # noqa: BLE001 - fall back to file on disk
+            _pol = load_policy(layout.policy_file)
+        if getattr(getattr(_pol, "keys", None), "enrol", "first_use") == "explicit":
+            raise keyhome.NotEnrolledError(
+                f"proposer {proposer!r} is not enrolled; "
+                "keys.enrol is set to explicit (ADR 0007 2.4)"
+            )
     content = normalize_folder(content) if kind == FOLDER else normalize_governance(content)
     head = read_head(layout)
     base = head.get(kind)
@@ -770,13 +808,14 @@ def propose(layout: FolderLayout, kind: str, content: dict[str, Any], proposer: 
 def approve_change(layout: FolderLayout, change_id: str, reviewer: str, reason: str = "") -> dict[str, Any]:
     """Apply a change request with a reviewer's signed approval.
 
-    Returns {"status": ...}: applied | not_open | same_reviewer | stale | changed.
+    Returns {"status": ...}: applied | not_open | same_reviewer | stale | changed | not_enrolled.
     """
+    from sandbox.connector.keyhome import NotEnrolledError
     from sandbox.connector.signing import reviewer_public_key, sign_approval
 
     path = _change_path(layout, change_id)
     change = load_change(layout, change_id)
-    if change is None or change.get("status") != "open" or not verify_proposal(change):
+    if change is None or change.get("status") != "open" or not verify_proposal(change, layout):
         return {"status": "not_open"}
     change_id = change["change_id"]  # sign and record only the stored id
     if reviewer == change["proposer"] or reviewer_public_key(layout, reviewer) == change["proposer_public_key"]:
@@ -802,8 +841,17 @@ def approve_change(layout: FolderLayout, change_id: str, reviewer: str, reason: 
     except OSError:
         return {"status": "not_open"}
     now = time.time()
-    approval = sign_approval(layout, reviewer,
-                             _approval_subject(change_id, kind, change.get("base"), change["new_sha256"], gov_sha), now)
+    # ADR 0007 2.4: sign_approval -> _pin_and_audit raises NotEnrolledError under
+    # keys.enrol: explicit for an unpinned reviewer.  Release the claim on failure.
+    try:
+        approval = sign_approval(layout, reviewer,
+                                 _approval_subject(change_id, kind, change.get("base"), change["new_sha256"], gov_sha), now)
+    except NotEnrolledError as exc:
+        try:
+            os.rename(claimed, path)
+        except OSError:
+            pass
+        return {"status": "not_enrolled", "reason": str(exc)}
     if kind == FOLDER:
         save_policy(FolderPolicy.model_validate(content), layout.policy_file)
     else:

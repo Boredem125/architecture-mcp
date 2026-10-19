@@ -254,6 +254,22 @@ class GovernanceControls(BaseModel):
     money_floor: bool = True
 
 
+_ENROL_VALUES = ("first_use", "explicit")
+
+
+class KeysPolicy(BaseModel):
+    # ADR 0007 2.4: when "explicit", only already-pinned reviewers can approve.
+    # Tighten-only: setting it back to "first_use" is a loosening change under
+    # change control. Default "first_use" preserves the pin-on-first-use behaviour.
+    enrol: str = "first_use"
+
+    @field_validator("enrol", mode="before")
+    @classmethod
+    def _enrol(cls, v: object) -> str:
+        val = str(v or "").strip().lower()
+        return val if val in _ENROL_VALUES else "first_use"
+
+
 class FolderPolicy(BaseModel):
     version: int = 1
     mode: str = "enforce"
@@ -279,6 +295,7 @@ class FolderPolicy(BaseModel):
     alerts: AlertPolicy = Field(default_factory=AlertPolicy)
     limits: LimitPolicy = Field(default_factory=LimitPolicy)
     governance: GovernanceControls = Field(default_factory=GovernanceControls)
+    keys: KeysPolicy = Field(default_factory=KeysPolicy)
     # dev | staging | prod, or None (unset: today's behaviour, SANDBOX_ENV still
     # read by the risk score). See docs/DATA_AND_ENVIRONMENT.md.
     environment: str | None = None

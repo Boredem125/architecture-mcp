@@ -148,7 +148,6 @@ def key_home(tmp_path, monkeypatch):
 # ===========================================================================
 
 
-@RED_T3
 def test_pin_written_on_first_approval(tmp_path, key_home):
     """A new reviewer's public key is pinned when the first approval is signed."""
     lay = _ws(tmp_path / "ws")
@@ -161,7 +160,6 @@ def test_pin_written_on_first_approval(tmp_path, key_home):
              "pinned key does not match the signing key")
 
 
-@RED_T3
 def test_pins_per_workspace_do_not_collide(tmp_path, key_home):
     """reviewer `cli` in two workspaces gets two independent pins (per workspace id)."""
     a = _ws(tmp_path / "a")
@@ -174,7 +172,6 @@ def test_pins_per_workspace_do_not_collide(tmp_path, key_home):
              "two workspaces share the same pinned key for reviewer `cli`")
 
 
-@RED_T3
 def test_pin_is_never_overwritten(tmp_path, key_home):
     """A second approval by the same reviewer keeps the original pin, not a new key."""
     lay = _ws(tmp_path / "ws")
@@ -188,7 +185,6 @@ def test_pin_is_never_overwritten(tmp_path, key_home):
              "pin for alice was overwritten on second use")
 
 
-@RED_T3
 def test_pin_records_workspace_root(tmp_path, key_home):
     """Each pin entry records the workspace root at pinning time."""
     lay = _ws(tmp_path / "ws")
@@ -230,7 +226,6 @@ def test_guard_mcp_server_path_cannot_create_a_pin(tmp_path, key_home):
 # ===========================================================================
 
 
-@RED_T3
 def test_new_pin_is_audited_key_pinned(tmp_path, key_home):
     """The first approval that pins a key must produce a `key_pinned` audit event."""
     lay = _ws(tmp_path / "ws")
@@ -240,7 +235,6 @@ def test_new_pin_is_audited_key_pinned(tmp_path, key_home):
              f"no key_pinned audit event; events: {events}")
 
 
-@RED_T3
 def test_new_pin_is_alerted(tmp_path, key_home):
     """A new pin must trigger an alert (visible in watch/status)."""
     lay = _ws(tmp_path / "ws")
@@ -256,7 +250,6 @@ def test_new_pin_is_alerted(tmp_path, key_home):
              f"no alert for the new pin; events: {all_events}")
 
 
-@RED_T3
 def test_new_key_approval_is_flagged_in_verify(tmp_path, key_home):
     """A dual-control approval whose pin was created AFTER the request was queued
     must be flagged as 'new-key approval' so auditors can see one human approving
@@ -284,7 +277,6 @@ def test_new_key_approval_is_flagged_in_verify(tmp_path, key_home):
 # ===========================================================================
 
 
-@RED_T3
 def test_approval_with_unpinned_key_is_refused(tmp_path, key_home):
     """A record signed by a key that has no pin must be invalid for decisions."""
     lay = _ws(tmp_path / "ws")
@@ -315,7 +307,6 @@ def test_approval_with_unpinned_key_is_refused(tmp_path, key_home):
              "an approval signed with an unpinned key was accepted by _valid_for")
 
 
-@RED_T3
 def test_forged_approval_with_a_fresh_key_rejected_in_dual_control(tmp_path, key_home):
     """Two forged approvals with fresh (unpinned) keys must not pass dual control."""
     lay = _ws(tmp_path / "ws")
@@ -343,7 +334,6 @@ def test_forged_approval_with_a_fresh_key_rejected_in_dual_control(tmp_path, key
              "distinct_approvals accepted two forged approvals with unpinned keys")
 
 
-@RED_T3
 def test_retired_in_tree_seed_cannot_sign_accepted_approval(tmp_path, key_home):
     """A pre-M1 in-tree seed that was rotated (retired) must no longer produce
     an accepted approval. This closes the T2 known limit."""
@@ -382,7 +372,6 @@ def test_retired_in_tree_seed_cannot_sign_accepted_approval(tmp_path, key_home):
              "a retired in-tree seed signed an approval that was accepted")
 
 
-@RED_T3
 def test_approval_checked_against_pinned_key_not_embedded(tmp_path, key_home):
     """verify_approval (or a pin-aware wrapper) must check the pinned key for
     this reviewer in this workspace, not just the embedded signer_public_key."""
@@ -421,7 +410,6 @@ def test_approval_checked_against_pinned_key_not_embedded(tmp_path, key_home):
 # ===========================================================================
 
 
-@RED_T3
 def test_legacy_record_under_chain_head_is_labelled_legacy(tmp_path, key_home):
     """A pre-rotation record that falls within the audit chain captured by
     key_rotated should be labelled 'legacy' in the evidence pack (ADR 0007 1.6).
@@ -464,7 +452,6 @@ def test_legacy_record_under_chain_head_is_labelled_legacy(tmp_path, key_home):
              f"no 'legacy' label on the pre-rotation record {rid_old}; decisions: {checks_text[:500]}")
 
 
-@RED_T3
 def test_legacy_record_outside_chain_head_is_unverifiable(tmp_path, key_home):
     """A record signed with a retired key but NOT covered by the key_rotated
     chain head (e.g. forged after rotation) must show 'unverifiable'."""
@@ -502,7 +489,6 @@ def test_legacy_record_outside_chain_head_is_unverifiable(tmp_path, key_home):
 # ===========================================================================
 
 
-@RED_T3
 def test_propose_requires_pinned_proposer_key(tmp_path, key_home):
     """policy propose must check that the proposer's signing key is pinned,
     so one human who approves a disguised shell call can't count as the proposer."""
@@ -530,7 +516,6 @@ def test_propose_requires_pinned_proposer_key(tmp_path, key_home):
              "propose accepted and verified a proposal signed by an unpinned key (rogue)")
 
 
-@RED_T3
 def test_approve_change_requires_pinned_proposer_key(tmp_path, key_home):
     """approve-change must refuse a change whose proposer key is not pinned,
     even if the proposal signature is cryptographically valid."""

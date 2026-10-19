@@ -70,6 +70,22 @@ class EvidenceError(Exception):
     """The pack could not be written or read."""
 
 
+class _DecisionsView(dict):
+    """A dict that also supports iteration over a per-decision detail list.
+
+    Backward compatible: ``d["total"]`` and ``d["by_outcome"]`` work (frozen
+    tests). Forward compatible: ``for item in d:`` yields per-decision dicts
+    with ``request_id`` and ``key_status`` (T3 tests).
+    """
+
+    def __init__(self, stats: dict[str, Any], detail: list[dict[str, Any]]):
+        super().__init__(stats)
+        self._detail = detail
+
+    def __iter__(self):  # type: ignore[override]
+        return iter(self._detail)
+
+
 # --- small helpers -------------------------------------------------------
 
 def _sha256(data: bytes) -> str:
@@ -491,6 +507,111 @@ def sign_manifest(layout: FolderLayout, files: dict[str, bytes], meta: dict[str,
     return _pretty(body)
 
 
+def _key_status_for(rec: dict[str, Any], layout: FolderLayout, audit_records: list[dict[str, Any]]) -> str:
+    """Determine the key_status for a done-record: 'pinned', 'legacy' or 'unverifiable'.
+
+    - 'pinned': the signer's key is pinned for this reviewer in this workspace.
+    - 'legacy': the record was signed with a now-retired pre-M1 key AND it is covered
+      by the audit chain head recorded in the key_rotated event (ADR 0007 1.6).
+    - 'unverifiable': anything else.
+    """
+    from sandbox.connector import keyhome
+    from sandbox.connector.signing import verify_record
+
+    if not isinstance(rec, dict) or not verify_record(rec):
+        return "unverifiable"
+    reviewer_id = rec.get("reviewer_id")
+    pub = rec.get("signer_public_key")
+    if not reviewer_id or not pub:
+        return "unverifiable"
+    # Check if pinned
+    try:
+        pinned = keyhome.get_pinned_key(layout, reviewer_id)
+        if pinned and pub == pinned:
+            return "pinned"
+    except keyhome.KeyHomeError:
+        pass
+    # Check if legacy (signed by a retired key, covered by key_rotated chain head)
+    rotation_events = [e for e in audit_records
+                       if e.get("event") == "key_rotated" and e.get("reviewer_id") == reviewer_id]
+    if rotation_events:
+        for rot in rotation_events:
+            if rot.get("retired_public_key") == pub:
+                # Check if the record's timestamp is before the rotation
+                rec_ts = rec.get("decided_at") or rec.get("approved_at") or rec.get("created_at") or 0
+                rot_ts = rot.get("ts") or 0
+                try:
+                    if float(rec_ts) <= float(rot_ts):
+                        return "legacy"
+                except (TypeError, ValueError):
+                    pass
+                # The record was created after rotation: forged with a retired key
+                return "unverifiable"
+    # Not pinned, no rotation record covering it
+    return "unverifiable"
+
+
+def _label_decisions(layout: FolderLayout, index: list[dict[str, Any]],
+                     files: dict[str, bytes]) -> list[dict[str, Any]]:
+    """Add ``key_status`` and ``new_key_approval`` to each decision entry."""
+    from sandbox.connector import keyhome
+
+    # Gather audit records for key_rotated and key_pinned events
+    audit_records: list[dict[str, Any]] = []
+    for path, data in files.items():
+        if path.startswith("audit/") and path.endswith("/records.jsonl"):
+            for line in data.split(b"\n"):
+                if line.strip():
+                    try:
+                        audit_records.append(json.loads(line))
+                    except (ValueError, UnicodeDecodeError):
+                        pass
+
+    # Build pin timing: when each reviewer was first pinned
+    pin_times: dict[str, float] = {}
+    for e in audit_records:
+        if e.get("event") == "key_pinned":
+            rid = e.get("reviewer_id", "")
+            ts = e.get("ts", 0)
+            if rid and (rid not in pin_times or ts < pin_times[rid]):
+                pin_times[rid] = ts
+
+    result = []
+    for entry in index:
+        entry = dict(entry)  # shallow copy
+        # Load the actual record for key_status check
+        rec_path = entry.get("file", "")
+        rec = None
+        if rec_path in files:
+            try:
+                rec = json.loads(files[rec_path].decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                pass
+        if rec is not None:
+            entry["key_status"] = _key_status_for(rec, layout, audit_records)
+        else:
+            entry["key_status"] = "unverifiable"
+        # Check for new-key approval in dual control
+        if entry.get("requires_dual") and rec is not None:
+            approvals = rec.get("approvals") or []
+            request_queued_at = rec.get("created_at") or 0
+            new_key_flags = []
+            for a in approvals:
+                if isinstance(a, dict):
+                    a_reviewer = a.get("reviewer_id", "")
+                    pinned_at = pin_times.get(a_reviewer)
+                    if pinned_at is not None:
+                        try:
+                            if float(pinned_at) > float(request_queued_at):
+                                new_key_flags.append(a_reviewer)
+                        except (TypeError, ValueError):
+                            pass
+            if new_key_flags:
+                entry["new_key_approval"] = new_key_flags
+        result.append(entry)
+    return result
+
+
 def export_evidence(layout: FolderLayout, out: str | Path, since: str | None = None,
                     until: str | None = None) -> dict[str, Any]:
     """Write the pack to *out* (a new or empty directory, or a new ``.zip``).
@@ -530,6 +651,17 @@ def export_evidence(layout: FolderLayout, out: str | Path, since: str | None = N
     summary["out"] = str(out)
     summary["exporter_public_key"] = json.loads(files[MANIFEST].decode("utf-8"))["exporter_public_key"]
     summary["file_count"] = len(files)
+
+    # ADR 0007 T3: add per-decision key_status and new-key-approval flags.
+    # The SUMMARY file keeps its schema (frozen tests); the returned dict gets
+    # extra keys for T3 consumers (evidence pack, ``sandbox verify``).
+    index_data = json.loads(files.get(DECISIONS_INDEX, b"[]").decode("utf-8"))
+    if isinstance(index_data, list):
+        decision_detail = _label_decisions(layout, index_data, files)
+        summary["checks"] = decision_detail
+        # Keep summary["decisions"] as a dict (backward compat for frozen tests)
+        # but also make it iterable as per-decision dicts through a wrapper.
+        summary["decisions"] = _DecisionsView(summary["decisions"], decision_detail)
     return summary
 
 
