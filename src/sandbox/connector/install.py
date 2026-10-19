@@ -161,7 +161,7 @@ def init(
     try:  # the random id that names this workspace's folder in the key home (ADR 0007 1.2)
         from sandbox.connector.keyhome import workspace_id
 
-        workspace_id(layout)
+        workspace_id(layout, audit=False)
     except Exception:  # noqa: BLE001 - created on first signing otherwise
         pass
 

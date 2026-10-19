@@ -32,10 +32,16 @@ def keys_status(path: str) -> None:
         click.echo(f"Reviewer seeds there: {len(list(d.glob('*.seed'))) if d.is_dir() else 0}")
     except keyhome.KeyHomeError as exc:
         click.echo(f"Key home unavailable (nothing can be signed): {exc}")
+    root = keyhome.key_home_root()
+    exposed = keyhome.root_exposure(root) if root else None
+    if exposed:
+        click.echo(f"WARNING: the key home {root} is readable by others: {exposed}. "
+                   "Restrict it to your account (keys are only tightened on a folder this tool creates).")
     legacy = sorted((layout.state_dir / "keys").glob("*.seed")) if (layout.state_dir / "keys").is_dir() else []
     if legacy:
         click.echo(f"{len(legacy)} retired pre-M1 seed(s) still in {layout.state_dir / 'keys'} "
-                   "(inert, but readable to anything that can search the folder). "
+                   "(retired, but still readable to anything that can search the folder, and not yet "
+                   "refused as signers: remove them). "
                    "Remove them with `sandbox keys purge-legacy`.")
     else:
         click.echo("No retired in-tree seeds.")

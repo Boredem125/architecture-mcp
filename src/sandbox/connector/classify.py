@@ -186,6 +186,68 @@ def classify(
     )
 
 
+def _under(comps: list[str], root: list[str]) -> bool:
+    return comps[:len(root)] == root
+
+
+def _outside_root_args(command: str, shell: str, root: str, cwd: str, prefixes: list[str]) -> list[str]:
+    """SEC-29: the path arguments of an allowlisted command that do not resolve inside the
+    governed root (or an allowed read prefix). Network paths are never looked up; once the
+    lookup budget is spent every remaining path counts as outside, so it escalates."""
+    try:
+        lexed = shellwords.lex(command, shell, time.monotonic() + 5 * shellwords.DEADLINE_SECONDS)
+    except Exception:  # noqa: BLE001 — fail closed
+        return ["<unparsable>"]
+    forms: list[list[str]] = []
+    real_forms: list[list[str]] = []
+    for r in [root, *prefixes]:
+        p = r if os.path.isabs(r) else os.path.join(cwd or root, r)
+        forms.append(keyhome._comps(p))
+        try:
+            real_forms.append(keyhome._comps(os.path.realpath(p)))
+        except (OSError, ValueError):
+            pass
+    forms += real_forms
+    scan = _KeyHomeScan([cwd or root])
+    out: list[str] = []
+    for seg in lexed.segments:
+        if seg.words and shellwords.bases(seg.words[0].raw) & {"echo"}:
+            continue
+        for w in seg.words[1:] + [t for op, t in seg.redirs if not _fd_dup(op, t)]:
+            raw = w.raw
+            if raw.startswith("-"):
+                raw = raw.split("=", 1)[1] if "=" in raw else ""
+            if not raw:
+                continue
+            if w.tilde or raw.startswith("~"):
+                raw = os.path.expanduser(raw)
+            if keyhome.is_network_path(raw):
+                out.append(raw)
+                continue
+            p = keyhome.strip_device(raw)
+            parts = p.split("/")
+            g = next((i for i, c in enumerate(parts) if any(ch in c for ch in "*?[")), len(parts))
+            literal = "/".join(parts[:g]) or ("/" if p.startswith("/") else ".")
+            rest = [keyhome._norm(c) for c in parts[g:] if c and c != "."]
+            joined = literal if keyhome._is_abs(literal) else os.path.join(cwd or root, literal)
+            lexical = keyhome._comps(joined) + rest
+            if not any(_under(lexical, f) for f in forms):
+                out.append(raw)  # leaves the root on paper: no lookup needed
+                continue
+            if len(raw) > scan.MAX_WORD or scan.spent >= scan.MAX_SPENT:
+                out.append(raw)
+                continue
+            t = time.monotonic()
+            try:
+                real = keyhome._comps(os.path.realpath(joined)) + rest
+            except (OSError, ValueError):
+                real = None
+            scan.spent += time.monotonic() - t
+            if real is None or not any(_under(real, f) for f in real_forms or forms):
+                out.append(raw)
+    return out
+
+
 def _classify_shell(
     tool_input: dict[str, Any], policy: FolderPolicy, blocklist: Any, shell: str = "bash",
     root: str = "", cwd: str = "",
@@ -277,6 +339,15 @@ def _classify_shell(
     # `;` `&&` `||` `|` `&` newline separated segment matches the allowlist.
     # An anchored pattern like ^ls\b would otherwise allow `ls && deploy`.
     if command_allowlisted(command, policy.shell.allow_patterns):
+        # SEC-29: the allowlist matches the command word; a path argument that leaves the
+        # governed root (or an allowed read prefix) needs a human.
+        outside = _outside_root_args(command, shell, root, cwd, list(policy.read.allow_prefixes)) if root else []
+        if outside:
+            return Classification(
+                "escalate", "shell",
+                reason=f"reads outside the governed folder ({', '.join(outside[:3])}); read it before approving",
+                reason_code="READ_OUTSIDE", command=command, metadata={"outside_root": outside[:8]},
+            )
         return Classification("allow", "shell", reason="allowlisted",
                               reason_code="ALLOW", command=command)
 
@@ -906,6 +977,7 @@ class _KeyHomeScan:
     is marked unresolvable, so it can be escalated but never allowed silently."""
 
     MAX_LOOKUPS = 48
+    MAX_SPENT = 2.0  # seconds of filesystem lookups per command, in total
     MAX_WORD = 1024
 
     def __init__(self, bases: list[str]) -> None:
@@ -937,7 +1009,12 @@ def _key_home_hit(seg: shellwords.Segment, deadline: float, scan: _KeyHomeScan,
                 key = (cand, base, search)
                 kind = scan.seen.get(key)
                 if kind is None:
-                    resolve = len(cand) <= scan.MAX_WORD and scan.lookups < scan.MAX_LOOKUPS
+                    if keyhome.is_network_path(cand):  # never looked up: a dead host blocks for many seconds
+                        reasons.add("network_path")
+                        resolve = False
+                    else:
+                        resolve = (len(cand) <= scan.MAX_WORD and scan.lookups < scan.MAX_LOOKUPS
+                                   and scan.spent < scan.MAX_SPENT)
                     if resolve:
                         scan.lookups += 1
                     else:
@@ -949,8 +1026,8 @@ def _key_home_hit(seg: shellwords.Segment, deadline: float, scan: _KeyHomeScan,
 
 
 def _track_cd(seg: shellwords.Segment, scan: _KeyHomeScan) -> None:
-    bases = scan.bases
     """After a `cd X`, later relative words may be resolved against X as well."""
+    bases = scan.bases
     if not seg.words or not (shellwords.bases(seg.words[0].raw) & _CD_CMDS):
         return
     for w in seg.words[1:]:

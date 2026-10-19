@@ -62,7 +62,7 @@ def _new_workspace_id() -> str:
     return os.urandom(16).hex()
 
 
-def workspace_id(layout, *, create: bool = True) -> str:
+def workspace_id(layout, *, create: bool = True, audit: bool = True) -> str:
     """The workspace's random id (``.sandbox/workspace_id``). Created on first use for
     workspaces initialised before M1. An unreadable or malformed id fails closed."""
     path = layout.base / WORKSPACE_ID_FILE
@@ -78,16 +78,56 @@ def workspace_id(layout, *, create: bool = True) -> str:
         return text
     if not create:
         raise KeyHomeError("this workspace has no id yet")
+    new_id = _new_workspace_id()
+    if audit:  # a missing id means a new key folder: a deleted id must leave a trace
+        _audit_id_created(layout, new_id)
     try:
         layout.base.mkdir(parents=True, exist_ok=True)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(_new_workspace_id() + "\n")
+            f.write(new_id + "\n")
     except FileExistsError:
         pass
     except OSError as exc:
         raise KeyHomeError(f"cannot write the workspace id: {exc}") from exc
     return workspace_id(layout, create=False)
+
+
+def _audit_id_created(layout, new_id: str) -> None:
+    import json
+    import time
+
+    from sandbox.connector.audit import FolderAudit
+
+    try:
+        session_id = json.loads(layout.session_file.read_text(encoding="utf-8")).get("session_id", "")
+    except (OSError, ValueError, AttributeError):
+        session_id = ""
+    try:
+        FolderAudit(layout.audit_dir, session_id).append(
+            {"event": "workspace_id_created", "ts": time.time(), "workspace_id": new_id,
+             "note": "a new id means a new key folder; reviewer keys start over for this workspace"})
+    except Exception as exc:  # noqa: BLE001
+        raise KeyHomeError(f"cannot record workspace_id_created in the audit chain: {exc}") from exc
+
+
+def root_exposure(root: Path) -> str | None:
+    """Why `root` is readable by other accounts, or None when it is not (or cannot be told)."""
+    try:
+        if not root.exists():
+            return None
+        if os.name != "nt":
+            mode = root.stat().st_mode & 0o077
+            return f"mode {oct(root.stat().st_mode & 0o777)} lets group or others in" if mode else None
+        import subprocess
+
+        icacls = Path(os.environ.get("SYSTEMROOT") or r"C:\Windows") / "System32" / "icacls.exe"
+        out = subprocess.run([str(icacls), str(root)], capture_output=True, text=True, timeout=20).stdout
+        wide = ("Everyone", r"BUILTIN\Users", "Authenticated Users", r"NT AUTHORITY\INTERACTIVE")
+        hits = [w for w in wide if w.lower() in out.lower()]
+        return f"the ACL grants access to {', '.join(hits)}" if hits else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _secure_new_root(root: Path) -> None:
@@ -136,7 +176,7 @@ def workspace_key_dir(layout, *, create: bool = True) -> Path:
             if fresh:
                 _secure_new_root(root)
             if os.name != "nt":
-                os.chmod(d, 0o700)
+                os.chmod(d, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions -- 0o700 is owner-only; the rule flags any chmod
         except OSError as exc:
             raise KeyHomeError(f"the key home is not writable: {exc}") from exc
     return d
@@ -151,12 +191,30 @@ def _norm(c: str) -> str:
     return c
 
 
+def strip_device(path: str) -> str:
+    """Separators unified to ``/`` and the Windows device prefixes removed: the UNC form
+    (backslash-backslash-?-backslash-UNC-backslash host) becomes ``//host``; the
+    ``?``, ``.`` and NT ``??`` prefixes are dropped. Done before any glob split: the
+    ``?`` in a prefix is not a glob."""
+    p = path.replace("\\", "/")
+    low = p.lower()
+    for prefix in ("//?/unc/", "//./unc/", "/??/unc/"):
+        if low.startswith(prefix):
+            return "//" + p[len(prefix):]
+    for prefix in ("//?/", "//./", "/??/"):
+        if p.startswith(prefix):
+            return p[len(prefix):]
+    return p
+
+
+def is_network_path(path: str) -> bool:
+    """A UNC path. Never looked up: a dead host blocks for many seconds."""
+    return os.name == "nt" and strip_device(path).startswith("//")
+
+
 def _comps(path: str) -> list[str]:
     """Normalised components: case-folded, separators unified, ``.``/``..`` folded."""
-    p = path.replace("\\", "/")
-    for prefix in ("//?/", "//./"):
-        if p.startswith(prefix):
-            p = p[len(prefix):]
+    p = strip_device(path)
     out: list[str] = []
     for c in p.split("/"):
         if not c or c == ".":
@@ -233,7 +291,7 @@ def _match(pat: str, name: str) -> bool:
 
 
 def _reading_comps(cand: str, base: str, resolve: bool = True) -> list[list[str]]:
-    p = cand.replace("\\", "/")
+    p = strip_device(cand)
     parts = [c for c in p.split("/")]
     g = next((i for i, c in enumerate(parts) if any(ch in c for ch in _GLOB_CHARS)), len(parts))
     literal = "/".join(parts[:g]) or ("/" if p.startswith("/") else "")
@@ -265,6 +323,8 @@ def touches(text: str, base: str, *, search: bool = False, resolve: bool = True)
     roots = protected_roots()
     if not roots or not text:
         return ""
+    if is_network_path(text):
+        resolve = False
     for cand in _expand(text):
         for full in _reading_comps(cand, base, resolve):
             for root in roots:

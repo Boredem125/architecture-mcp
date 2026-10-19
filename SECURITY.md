@@ -132,3 +132,7 @@ Shell commands are now lexed against a static subset; anything outside it (expan
 ## Release note: test and script runs escalate (T0g, ADR 0009, existing users)
 
 `python -m pytest`, `pytest`, `npm|pnpm|yarn|bun run|test|ci|install|exec` and similar now escalate in every folder, new or existing, including folders whose `policy.json` still lists the old allow patterns. They run code the agent can write, so a silent allow let it run anything (keys, the approver CLI, deploys) in two calls. Every test run now needs a human until a team opts in with an approved, two-reviewer change to `shell.allow_runners`. `--remember` does not cover runners. `sandbox doctor` lists the now-inert patterns and does not change `policy.json`. See `docs/CONNECTOR.md`.
+
+## Known limit: retired pre-M1 signing seeds (M1 T2)
+
+From M1 T2 new signing keys live outside the workspace. A seed from an older version stays in `.sandbox/state/keys/` until you run `sandbox keys purge-legacy`; it is no longer used to sign, but it is still readable to anything that can search the folder, and until pinned keys and the legacy-record rule (M1 T3/T4) land, records signed with it are not yet refused. Run `purge-legacy` after upgrading.
