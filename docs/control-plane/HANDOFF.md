@@ -1,0 +1,30 @@
+# M1 hand-off (19 Oct 2026)
+
+**Now:** M1 Phase A, task T3 (pinned reviewer keys). Tests are pushed (`4f33e63`: `tests/security/test_m1_t3_pins.py`, 22 tests, 15 strict xfail, N=22 in `M1_BASELINE.md`). A backend worker is implementing the fix: uncommitted, not reviewed.
+
+**Uncommitted (T3 fix in progress, backend worker):** `src/sandbox/connector/{alerts,approval,evidence,keyhome,policy_versions,signing}.py`. Unknown how complete. Check with `git diff` and the T3 test file before trusting it.
+
+**Verified (pushed, security signed off):** T0c SEC-23 money floor (`bcb81d8`), T0d (`97c2643`), T0e SEC-25 CLI deny (`5ce9df8`), SEC-27/28 hook hardening (`eac889d`..`5595cb4`), T1 `?root=` + SEC-26 (`81adc55`), T0f lexer + git flag allowlist + `.git/**` (`e0041df`, 427-case corpus), T0g runners (`6a7c0e9`), T2 key home (`da58fc3`, pushed before review) plus follow-up (`200c8ab`, signed off). Last full Windows suite: 1583 passed, 1 skipped, 15 xfailed (at `4f33e63`).
+
+**Next 3 steps:**
+1. Finish T3: the 15 RED tests pass; remove only their xfail markers; full suite green. Label decision (orchestrator): each approval in the evidence pack and `sandbox verify` gets `key_status` = `pinned` | `legacy` (retired pre-M1 key AND under the `key_rotated` chain head) | `unverifiable`. Only pinned/legacy count as verified.
+2. Security diff review of T3 (worker tier). Commit + push via git-ops with the exact file list. Update REVIEW_SECURITY: SEC-25 closed (proposer signature), the T2 "retired seed" known limit closed, ADR 0007 section 1.6 done.
+3. T4 (domain-tagged signatures, SEC-24 `verify_record` trusts the record's `signed_fields`), then Phase B (`ee/`) per `M1_PLAN.md`.
+
+**Open conditions not yet in M1_PLAN/M1_BASELINE:**
+- `root_exposure` (icacls) misses domain-local groups (`DOMAIN\Domain Users`): fix before multi-user control plane.
+- CI "key-home-empty" check (LOCALAPPDATA/HOME at an empty temp dir, assert it stays empty) is not done (devops, `tests.yml`).
+- Shell recursion into a dir above the key home is denied only for recognised forms: publish as a limit.
+- Docker Desktop is not running and its disk image is on C:. M1 T6/T11/T14 need it on E: (founder).
+- Founder: make `tests`, `security`, `image` required checks on `main`. Azure student credits for a VM at T11 (see memory).
+- CI state after `200c8ab`/`4f33e63` not re-checked.
+
+**Rules learned (put in every worker brief):**
+- Model tiers: see TEAM.md "Model hierarchy". Leaders `model:"opus"`; workers/support/git-ops omit `model`; effort high (workers) / medium (support, git-ops). Verified ids: workers `claude-opus-4-6`, git-ops `claude-sonnet-4-6`.
+- Run pytest via Bash (`.venv/Scripts/python -m pytest -q -p no:logging ... | tail -40`) or PowerShell **without** `2>&1` (PS 5.1 turns stderr into errors, output is lost). Exit 1 while tests are red is expected.
+- git-ops order: `git add -- <exact files>`, commit, `git pull --rebase --autostash origin main`, push. Never pull before committing.
+- Workers never commit security-sensitive work before sign-off; say so explicitly in every brief (a cut-off brief caused the unsigned `da58fc3` push).
+- Unfixed Critical findings: keep repro out of public docs/commits; hold all pushes until tests + fix ship together.
+- Class C / frozen tests: change only with a named sign-off by node id; re-hash `M1_FROZEN_MANIFEST.sha256` and record the exception in `M1_BASELINE.md`. M0_* files are history; don't edit them.
+- E: drive env vars in every shell (`TMP`/`TEMP`/`PIP_CACHE_DIR`/`HF_HOME` under `E:\caterpillar\jev-os\.cache`). No Co-Authored-By. Never stash, reset or force-push.
+- Writing a founder quote relayed by another session into the repo can be blocked by the classifier; the main session records those.
