@@ -82,6 +82,18 @@ jobs:
     name: ee control plane
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
@@ -94,6 +106,8 @@ jobs:
       - name: lint-imports (import-linter contract)
         run: lint-imports --config ee/.importlinter
       - name: Run ee tests
+        env:
+          AGG_TEST_PG_URL: postgresql://postgres@localhost:5432/postgres
         run: python -m pytest -q ee/tests --junitxml "$RUNNER_TEMP/junit-ee.xml"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: success() || failure()

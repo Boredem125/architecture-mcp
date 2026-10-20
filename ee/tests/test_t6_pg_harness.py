@@ -24,26 +24,6 @@ from pathlib import Path
 
 import pytest
 
-
-# ---------------------------------------------------------------------------
-# Named exception for the xfail marker (M0 T1b / T5 pattern)
-# ---------------------------------------------------------------------------
-
-class T6Pending(Exception):
-    """T6 Postgres/Alembic harness is not built yet."""
-
-
-def _require(cond: bool, msg: str) -> None:
-    if not cond:
-        raise T6Pending(msg)
-
-
-RED_T6 = pytest.mark.xfail(
-    raises=(T6Pending, ImportError, ModuleNotFoundError),
-    strict=True,
-    reason="M1 T6: Postgres/Alembic harness not yet built",
-)
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -53,34 +33,17 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _import_db():
-    """Import agg_cp.db; raises T6Pending / ImportError if missing."""
-    try:
-        from agg_cp import db
-        return db
-    except (ImportError, ModuleNotFoundError, AttributeError) as exc:
-        raise T6Pending(f"agg_cp.db not importable: {exc}") from exc
+    """Import agg_cp.db."""
+    from agg_cp import db
+    return db
 
 
 def _get_app_with_db(pg_url: str):
     """Return a TestClient wired to a real DB."""
-    try:
-        from agg_cp.app import create_app
-    except (ImportError, ModuleNotFoundError) as exc:
-        raise T6Pending(f"agg_cp.app not importable: {exc}") from exc
-    try:
-        from starlette.testclient import TestClient
-    except ImportError as exc:
-        raise T6Pending(f"starlette not available: {exc}") from exc
+    from agg_cp.app import create_app
+    from starlette.testclient import TestClient
 
-    # create_app must accept settings/db_url; T6 implementation decides shape
-    # Try passing db_url as keyword; fall back to a settings object
-    try:
-        app = create_app(db_url=pg_url)
-    except TypeError:
-        raise T6Pending(
-            "create_app does not accept db_url keyword; "
-            "T6 needs create_app(settings) or create_app(db_url=...)"
-        )
+    app = create_app(db_url=pg_url)
     return TestClient(app)
 
 
@@ -88,30 +51,25 @@ def _get_app_with_db(pg_url: str):
 # 2. PG_IMAGE digest matches CI workflow
 # ---------------------------------------------------------------------------
 
-@RED_T6
 def test_ci_workflow_pg_image_matches():
     """The postgres service image in .github/workflows/tests.yml ee job
     equals PG_IMAGE from ee/tests/pg_image.py."""
     from .pg_image import PG_IMAGE
 
     workflow = REPO_ROOT / ".github" / "workflows" / "tests.yml"
-    _require(workflow.is_file(), f"CI workflow not found: {workflow}")
+    assert workflow.is_file(), f"CI workflow not found: {workflow}"
 
     text = workflow.read_text(encoding="utf-8")
 
     # The ee job should have a services: postgres: image: line
-    _require(
-        "postgres:" in text,
-        "No 'postgres:' service found in tests.yml",
-    )
+    assert "postgres:" in text, "No 'postgres:' service found in tests.yml"
 
     # Extract the image value after 'image:' in the ee job's services block
     # Simple text search: the digest should appear
     digest = PG_IMAGE.split("@")[1] if "@" in PG_IMAGE else PG_IMAGE
-    _require(
-        digest in text,
+    assert digest in text, (
         f"PG_IMAGE digest {digest} not found in tests.yml ee job; "
-        f"the postgres service must use the pinned image {PG_IMAGE}",
+        f"the postgres service must use the pinned image {PG_IMAGE}"
     )
 
 
@@ -119,7 +77,6 @@ def test_ci_workflow_pg_image_matches():
 # 3. Async engine: select 1
 # ---------------------------------------------------------------------------
 
-@RED_T6
 @pytest.mark.pg
 @pytest.mark.asyncio
 async def test_make_engine_select_1(pg_url: str):
@@ -132,7 +89,7 @@ async def test_make_engine_select_1(pg_url: str):
         async with engine.connect() as conn:
             result = await conn.execute(text("SELECT 1"))
             row = result.scalar()
-            _require(row == 1, f"SELECT 1 returned {row}")
+            assert row == 1, f"SELECT 1 returned {row}"
     finally:
         await engine.dispose()
 
@@ -141,25 +98,19 @@ async def test_make_engine_select_1(pg_url: str):
 # 4. Alembic
 # ---------------------------------------------------------------------------
 
-@RED_T6
 @pytest.mark.pg
 def test_alembic_config_loadable(pg_url: str):
     """``agg_cp.db.alembic_config(url)`` returns an Alembic Config object
     pointing at the migrations directory."""
     db = _import_db()
-    _require(
-        hasattr(db, "alembic_config"),
-        "agg_cp.db has no alembic_config function",
-    )
+    assert hasattr(db, "alembic_config"), "agg_cp.db has no alembic_config function"
     cfg = db.alembic_config(pg_url)
     from alembic.config import Config
-    _require(
-        isinstance(cfg, Config),
-        f"alembic_config returned {type(cfg)}, expected alembic.config.Config",
+    assert isinstance(cfg, Config), (
+        f"alembic_config returned {type(cfg)}, expected alembic.config.Config"
     )
 
 
-@RED_T6
 @pytest.mark.pg
 def test_alembic_round_trip(pg_url: str):
     """Alembic up/down round trip: upgrade head, snapshot, downgrade base,
@@ -262,24 +213,21 @@ def test_alembic_round_trip(pg_url: str):
     # After downgrade: only alembic_version or nothing left
     insp = inspect(sync_engine)
     remaining = set(insp.get_table_names(schema="public"))
-    _require(
-        remaining <= {"alembic_version"},
-        f"After downgrade to base, unexpected tables remain: {remaining - {'alembic_version'}}",
+    assert remaining <= {"alembic_version"}, (
+        f"After downgrade to base, unexpected tables remain: {remaining - {'alembic_version'}}"
     )
 
     # Upgrade again
     alembic_cmd.upgrade(cfg, "head")
     snap2 = _snapshot(sync_engine)
 
-    _require(
-        snap1 == snap2,
-        f"Round-trip snapshots differ.\nFirst: {snap1}\nSecond: {snap2}",
+    assert snap1 == snap2, (
+        f"Round-trip snapshots differ.\nFirst: {snap1}\nSecond: {snap2}"
     )
 
     sync_engine.dispose()
 
 
-@RED_T6
 def test_alembic_every_revision_has_downgrade():
     """Every Alembic revision has a non-empty downgrade() body, or is the
     empty baseline (no operations in upgrade either).
@@ -287,13 +235,10 @@ def test_alembic_every_revision_has_downgrade():
     Uses AST/inspect to check, so no DB needed.
     """
     migrations_dir = EE_SRC / "migrations" / "versions"
-    _require(
-        migrations_dir.is_dir(),
-        f"Migrations directory not found: {migrations_dir}",
-    )
+    assert migrations_dir.is_dir(), f"Migrations directory not found: {migrations_dir}"
 
     version_files = sorted(migrations_dir.glob("*.py"))
-    _require(len(version_files) > 0, "No migration files found")
+    assert len(version_files) > 0, "No migration files found"
 
     for vf in version_files:
         source = vf.read_text(encoding="utf-8")
@@ -309,10 +254,7 @@ def test_alembic_every_revision_has_downgrade():
                 elif node.name == "downgrade":
                     downgrade_body = node.body
 
-        _require(
-            downgrade_body is not None,
-            f"{vf.name}: missing downgrade() function",
-        )
+        assert downgrade_body is not None, f"{vf.name}: missing downgrade() function"
 
         # Check if downgrade body is non-empty (not just `pass`)
         is_pass_only = (
@@ -335,10 +277,9 @@ def test_alembic_every_revision_has_downgrade():
                     or (isinstance(upgrade_body[0], ast.Expr) and isinstance(upgrade_body[0].value, ast.Constant))
                 )
             )
-            _require(
-                upgrade_is_empty,
+            assert upgrade_is_empty, (
                 f"{vf.name}: downgrade() is empty (pass-only) but upgrade() "
-                f"has operations -- every non-baseline revision needs a real downgrade",
+                f"has operations -- every non-baseline revision needs a real downgrade"
             )
 
 
@@ -346,7 +287,6 @@ def test_alembic_every_revision_has_downgrade():
 # 5. /ready endpoint
 # ---------------------------------------------------------------------------
 
-@RED_T6
 @pytest.mark.pg
 def test_ready_200_when_db_reachable_and_at_head(pg_url: str):
     """/ready returns 200 {"status": "ok"} when DB reachable AND schema at
@@ -360,12 +300,11 @@ def test_ready_200_when_db_reachable_and_at_head(pg_url: str):
 
     client = _get_app_with_db(pg_url)
     resp = client.get("/ready")
-    _require(resp.status_code == 200, f"/ready returned {resp.status_code}, expected 200")
+    assert resp.status_code == 200, f"/ready returned {resp.status_code}, expected 200"
     body = resp.json()
-    _require(body.get("status") == "ok", f"/ready body: {body}")
+    assert body.get("status") == "ok", f"/ready body: {body}"
 
 
-@RED_T6
 @pytest.mark.pg
 def test_ready_503_behind_head(pg_url: str):
     """/ready returns 503 when schema is behind Alembic head."""
@@ -378,47 +317,34 @@ def test_ready_503_behind_head(pg_url: str):
 
     client = _get_app_with_db(pg_url)
     resp = client.get("/ready")
-    _require(
-        resp.status_code == 503,
-        f"/ready returned {resp.status_code} when behind head, expected 503",
+    assert resp.status_code == 503, (
+        f"/ready returned {resp.status_code} when behind head, expected 503"
     )
     body = resp.json()
-    _require("status" in body, f"/ready 503 body missing 'status': {body}")
+    assert "status" in body, f"/ready 503 body missing 'status': {body}"
     # Should mention being behind head (non-secret reason)
     body_str = str(body).lower()
-    _require(
-        "behind" in body_str or "head" in body_str or "migration" in body_str,
-        f"/ready 503 body should mention being behind head: {body}",
+    assert "behind" in body_str or "head" in body_str or "migration" in body_str, (
+        f"/ready 503 body should mention being behind head: {body}"
     )
 
 
-@RED_T6
 def test_ready_503_unreachable_db():
     """/ready returns 503 when DB is unreachable (bad port). Non-pg test."""
-    try:
-        from agg_cp.app import create_app
-    except (ImportError, ModuleNotFoundError) as exc:
-        raise T6Pending(f"agg_cp.app not importable: {exc}") from exc
-    try:
-        from starlette.testclient import TestClient
-    except ImportError as exc:
-        raise T6Pending(f"starlette not available: {exc}") from exc
+    from agg_cp.app import create_app
+    from starlette.testclient import TestClient
 
     # Use a DB URL pointing to a port that nothing listens on
     bad_url = "postgresql+psycopg://user:pass@127.0.0.1:1/nonexistent"
-    try:
-        app = create_app(db_url=bad_url)
-    except TypeError:
-        raise T6Pending("create_app does not accept db_url keyword")
+    app = create_app(db_url=bad_url)
 
     client = TestClient(app)
     resp = client.get("/ready")
-    _require(
-        resp.status_code == 503,
-        f"/ready returned {resp.status_code} with unreachable DB, expected 503",
+    assert resp.status_code == 503, (
+        f"/ready returned {resp.status_code} with unreachable DB, expected 503"
     )
     body = resp.json()
-    _require("status" in body, f"/ready 503 body missing 'status': {body}")
+    assert "status" in body, f"/ready 503 body missing 'status': {body}"
 
 
 def test_health_stays_200_without_db():

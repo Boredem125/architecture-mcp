@@ -12,10 +12,16 @@ T6 additions:
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 
 import pytest
+
+# psycopg 3 cannot use the ProactorEventLoop on Windows.
+# Set the policy before any psycopg / SQLAlchemy connection is created.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 # Ensure src/ is importable (for the sandbox package) when running
 # ee/tests in isolation.

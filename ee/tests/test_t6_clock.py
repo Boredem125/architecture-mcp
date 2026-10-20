@@ -21,20 +21,6 @@ from pathlib import Path
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Named exception
-# ---------------------------------------------------------------------------
-
-class T6Pending(Exception):
-    """T6 clock module is not built yet."""
-
-
-RED_T6 = pytest.mark.xfail(
-    raises=(T6Pending, ImportError, ModuleNotFoundError),
-    strict=True,
-    reason="M1 T6: agg_cp.clock not yet built",
-)
-
 EE_SRC = Path(__file__).resolve().parents[1] / "src" / "agg_cp"
 
 
@@ -210,24 +196,16 @@ def test_positive_control_from_time_import_time_flagged():
 # Clock module existence tests (xfail until T6 builds it)
 # ---------------------------------------------------------------------------
 
-@RED_T6
 def test_clock_module_exists():
     """agg_cp.clock module exists and is importable."""
-    try:
-        from agg_cp import clock
-    except (ImportError, ModuleNotFoundError) as exc:
-        raise T6Pending(f"agg_cp.clock not importable: {exc}") from exc
+    from agg_cp import clock
     assert hasattr(clock, "Clock"), "agg_cp.clock missing Clock protocol"
     assert hasattr(clock, "SystemClock"), "agg_cp.clock missing SystemClock"
 
 
-@RED_T6
 def test_system_clock_returns_utc():
     """SystemClock.now() returns a tz-aware UTC datetime."""
-    try:
-        from agg_cp.clock import SystemClock
-    except (ImportError, ModuleNotFoundError, AttributeError) as exc:
-        raise T6Pending(f"SystemClock not importable: {exc}") from exc
+    from agg_cp.clock import SystemClock
 
     import datetime as dt
     clock = SystemClock()
