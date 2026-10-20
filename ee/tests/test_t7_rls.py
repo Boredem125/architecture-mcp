@@ -106,6 +106,19 @@ def _seed_two_orgs(owner_url: str) -> tuple:
     conninfo = _conninfo(owner_url)
 
     try:
+        # Check if data from a prior run already exists (idempotent seeding)
+        with psycopg.connect(conninfo) as conn:
+            existing_a = conn.execute(
+                "SELECT id FROM orgs WHERE slug = 'org-a-rls'",
+            ).fetchone()
+            existing_b = conn.execute(
+                "SELECT id FROM orgs WHERE slug = 'org-b-rls'",
+            ).fetchone()
+        if existing_a and existing_b:
+            _VIS["a"] = existing_a[0]
+            _VIS["b"] = existing_b[0]
+            return _VIS["a"], _VIS["b"]
+
         for org_id, slug in [(org_a, "org-a-rls"), (org_b, "org-b-rls")]:
             with psycopg.connect(conninfo) as conn:
                 conn.execute(
@@ -160,9 +173,12 @@ def _seed_two_orgs(owner_url: str) -> tuple:
                 )
                 conn.execute(
                     "INSERT INTO web_sessions "
-                    "(id, org_id, user_id, created_at, expires_at) "
-                    "VALUES (%s, %s, %s, now(), now() + interval '1 hour')",
-                    [uuid.uuid4(), org_id, user_id],
+                    "(id, org_id, user_id, token_hash, csrf_hash, "
+                    "last_seen_at, created_at, expires_at) "
+                    "VALUES (%s, %s, %s, %s, %s, now(), now(), "
+                    "now() + interval '1 hour')",
+                    [uuid.uuid4(), org_id, user_id,
+                     uuid.uuid4().hex, uuid.uuid4().hex],
                 )
                 conn.execute(
                     "INSERT INTO setup_codes "

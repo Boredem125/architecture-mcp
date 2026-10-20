@@ -23,9 +23,10 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+from agg_cp.auth import csrf_token_for
+
 from .t8p2_helpers import (
     T8P2Pending,
-    RED_T8P2,
     require_t8p2,
     FakeClock,
     FakeIdP,
@@ -131,6 +132,12 @@ def _extract_session_cookie_header(resp):
     return None
 
 
+def _csrf_from_session_cookie(session_val: str) -> str:
+    """Derive the CSRF token from the session cookie value using the helper."""
+    token = session_val.split(".", 1)[1] if "." in session_val else session_val
+    return csrf_token_for(token)
+
+
 def _build_env(pg_url, owner_url, *, slug=None, sub=None,
                email="user@example.com", seed_user_flag=True):
     """Build a full test environment.
@@ -178,7 +185,7 @@ def _build_env(pg_url, owner_url, *, slug=None, sub=None,
 # ===================================================================
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_callback_happy_path_session_cookie(pg_url, app_url, owner_url, pg_roles):
     """Happy-path callback sets __Host-agg_session with correct attributes."""
@@ -205,7 +212,7 @@ def test_callback_happy_path_session_cookie(pg_url, app_url, owner_url, pg_roles
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_callback_clears_agg_login(pg_url, app_url, owner_url, pg_roles):
     """Callback clears the agg_login cookie."""
@@ -233,7 +240,7 @@ def test_callback_clears_agg_login(pg_url, app_url, owner_url, pg_roles):
 # ===================================================================
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_callback_replay_refused(pg_url, app_url, owner_url, pg_roles):
     """Replaying the same callback (same code/state/cookie) is refused."""
@@ -279,7 +286,7 @@ def test_callback_replay_refused(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_callback_wrong_state_refused(pg_url, app_url, owner_url, pg_roles):
     """Callback with wrong state is refused."""
@@ -312,7 +319,7 @@ def test_callback_wrong_state_refused(pg_url, app_url, owner_url, pg_roles):
     assert cb.status_code >= 400, f"Wrong state should be refused, got {cb.status_code}"
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_callback_expired_transaction_refused(pg_url, app_url, owner_url, pg_roles):
     """Callback after 11 minutes (transaction expired at 10 min) is refused."""
@@ -351,7 +358,7 @@ def test_callback_expired_transaction_refused(pg_url, app_url, owner_url, pg_rol
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_callback_missing_cookie_refused(pg_url, app_url, owner_url, pg_roles):
     """Callback without the agg_login cookie is refused."""
@@ -371,7 +378,8 @@ def test_callback_missing_cookie_refused(pg_url, app_url, owner_url, pg_roles):
 
     code = idp_ext.issue_code(nonce=nonce, code_challenge=code_challenge, sub=sub)
 
-    # No cookie
+    # httpx jar re-sends agg_login; the test means "no cookie"
+    client.cookies.clear()
     cb = client.get("/api/v1/auth/callback",
                     params={"code": code, "state": state},
                     follow_redirects=False)
@@ -380,7 +388,7 @@ def test_callback_missing_cookie_refused(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_callback_wrong_nonce_refused(pg_url, app_url, owner_url, pg_roles):
     """id_token with wrong nonce is refused."""
@@ -421,7 +429,7 @@ def test_callback_wrong_nonce_refused(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_callback_pkce_mismatch_refused(pg_url, app_url, owner_url, pg_roles):
     """PKCE verifier mismatch at the token endpoint is refused."""
@@ -485,7 +493,7 @@ def test_callback_pkce_mismatch_refused(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_callback_unknown_user_403_not_provisioned(pg_url, app_url, owner_url, pg_roles):
     """Unknown (iss,sub) -> 403 not_provisioned even when a user with same email exists."""
@@ -533,7 +541,7 @@ def test_callback_unknown_user_403_not_provisioned(pg_url, app_url, owner_url, p
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_callback_session_id_differs_across_logins(pg_url, app_url, owner_url, pg_roles):
     """Session id differs across two logins of the same user."""
@@ -554,7 +562,7 @@ def test_callback_session_id_differs_across_logins(pg_url, app_url, owner_url, p
     assert session1 != session2, "Session tokens must differ between logins"
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_callback_admin_audit_login_row(pg_url, app_url, owner_url, pg_roles):
     """admin_audit gets a 'login' row after successful callback."""
@@ -588,7 +596,7 @@ def test_callback_admin_audit_login_row(pg_url, app_url, owner_url, pg_roles):
 # ===================================================================
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_session_valid_cookie_passes(pg_url, app_url, owner_url, pg_roles):
     """A valid session cookie passes require_session (via logout route existence check)."""
@@ -615,7 +623,7 @@ def test_session_valid_cookie_passes(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_session_idle_30min_refused(pg_url, app_url, owner_url, pg_roles):
     """Session idle for 30 minutes is refused."""
@@ -642,7 +650,7 @@ def test_session_idle_30min_refused(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_session_absolute_12h_refused(pg_url, app_url, owner_url, pg_roles):
     """Absolute 12h expiry is enforced even with activity."""
@@ -672,7 +680,7 @@ def test_session_absolute_12h_refused(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_session_revoked_refused(pg_url, app_url, owner_url, pg_roles):
     """A revoked session is refused."""
@@ -715,7 +723,7 @@ def test_session_revoked_refused(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_session_forged_org_id_refused(pg_url, app_url, owner_url, pg_roles):
     """A forged org_id in the session cookie finds no row."""
@@ -743,7 +751,7 @@ def test_session_forged_org_id_refused(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_session_token_not_stored_plaintext(pg_url, app_url, owner_url, pg_roles):
     """The session token is never stored in plaintext; DB has only sha256."""
@@ -787,7 +795,7 @@ def test_session_token_not_stored_plaintext(pg_url, app_url, owner_url, pg_roles
 # ===================================================================
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_csrf_logout_no_header_403(pg_url, app_url, owner_url, pg_roles):
     """POST /logout without X-CSRF-Token header returns 403."""
@@ -810,7 +818,7 @@ def test_csrf_logout_no_header_403(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_csrf_logout_wrong_header_403(pg_url, app_url, owner_url, pg_roles):
     """POST /logout with wrong X-CSRF-Token returns 403."""
@@ -834,12 +842,10 @@ def test_csrf_logout_wrong_header_403(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_csrf_logout_correct_header_204(pg_url, app_url, owner_url, pg_roles):
     """POST /logout with correct X-CSRF-Token returns 204."""
-    import psycopg
-
     client, idp_ext, org_id, clock, slug, user_id, sub = _build_env(pg_url, owner_url)
 
     cb_resp, _, _, _ = _full_login_flow(client, idp_ext, slug, sub=sub)
@@ -849,45 +855,8 @@ def test_csrf_logout_correct_header_204(pg_url, app_url, owner_url, pg_roles):
     session_val = _extract_session_cookie(cb_resp)
     assert session_val is not None
 
-    # Extract the CSRF token: it is the pre-image of csrf_hash stored in the session
-    # The token is returned at login (in the callback response body or via /me).
-    # Since /me is T9, we read the csrf token from DB.
-    token = session_val.split(".", 1)[1] if "." in session_val else session_val
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
-
-    with psycopg.connect(_conninfo(app_url)) as conn:
-        conn.execute("SELECT set_config('app.org_id', %s, false)", [str(org_id)])
-        row = conn.execute(
-            "SELECT csrf_hash FROM web_sessions WHERE token_hash = %s",
-            [token_hash],
-        ).fetchone()
-        require_t8p2(row is not None, "Session not found in DB")
-        csrf_hash = row[0]
-
-    # We need the CSRF token whose SHA-256 equals csrf_hash.
-    # The implementation generates it at login. We need to find it.
-    # Strategy: check if the callback response has a body with csrf_token,
-    # or extract from the DB by finding the pre-image.
-    # Since we cannot reverse a hash, the CSRF token must be communicated
-    # to the client somehow. Check the callback response body.
-    try:
-        body = cb_resp.json()
-        csrf_token = body.get("csrf_token")
-    except Exception:
-        csrf_token = None
-
-    if csrf_token is None:
-        # The CSRF token might be in a response header or
-        # we might need to call GET /me. For now, we'll read it from
-        # the session: the build should store csrf_token alongside csrf_hash
-        # or return it. Let's try to find it from the raw session data.
-        # This is a test constraint: we need the CSRF token.
-        # Since we can't reverse hash, and /me is T9, the callback
-        # must return the csrf_token.
-        raise T8P2Pending(
-            "Cannot determine CSRF token: callback response "
-            "does not contain csrf_token field"
-        )
+    # CSRF token derived from session token via helper
+    csrf_token = _csrf_from_session_cookie(session_val)
 
     resp = client.post(
         "/api/v1/auth/logout",
@@ -900,12 +869,10 @@ def test_csrf_logout_correct_header_204(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_logout_session_refused_after(pg_url, app_url, owner_url, pg_roles):
     """After logout the session is refused."""
-    import psycopg
-
     client, idp_ext, org_id, clock, slug, user_id, sub = _build_env(pg_url, owner_url)
 
     cb_resp, _, _, _ = _full_login_flow(client, idp_ext, slug, sub=sub)
@@ -915,15 +882,7 @@ def test_logout_session_refused_after(pg_url, app_url, owner_url, pg_roles):
     session_val = _extract_session_cookie(cb_resp)
     assert session_val is not None
 
-    # Get CSRF token from callback response
-    try:
-        body = cb_resp.json()
-        csrf_token = body.get("csrf_token")
-    except Exception:
-        csrf_token = None
-
-    if csrf_token is None:
-        raise T8P2Pending("Cannot determine CSRF token from callback")
+    csrf_token = _csrf_from_session_cookie(session_val)
 
     # Logout
     resp = client.post(
@@ -946,7 +905,7 @@ def test_logout_session_refused_after(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_logout_clears_cookie(pg_url, app_url, owner_url, pg_roles):
     """Logout clears the __Host-agg_session cookie."""
@@ -959,14 +918,7 @@ def test_logout_clears_cookie(pg_url, app_url, owner_url, pg_roles):
     session_val = _extract_session_cookie(cb_resp)
     assert session_val is not None
 
-    try:
-        body = cb_resp.json()
-        csrf_token = body.get("csrf_token")
-    except Exception:
-        csrf_token = None
-
-    if csrf_token is None:
-        raise T8P2Pending("Cannot determine CSRF token from callback")
+    csrf_token = _csrf_from_session_cookie(session_val)
 
     resp = client.post(
         "/api/v1/auth/logout",

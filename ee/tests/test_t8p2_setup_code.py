@@ -25,7 +25,6 @@ import pytest
 
 from .t8p2_helpers import (
     T8P2Pending,
-    RED_T8P2,
     require_t8p2,
     FakeClock,
     FakeIdP,
@@ -145,7 +144,7 @@ def _build_env_for_setup(pg_url, owner_url, *, slug=None):
 # ===================================================================
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_migrate_prints_setup_code_json(pg_url, app_url, owner_url, pg_roles):
     """migrate main() prints exactly one JSON line with event/org/code/expires_at."""
@@ -186,7 +185,7 @@ def test_migrate_prints_setup_code_json(pg_url, app_url, owner_url, pg_roles):
     assert "expires_at" in data, "JSON line missing 'expires_at'"
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_migrate_code_stored_as_sha256(pg_url, app_url, owner_url, pg_roles):
     """DB stores only sha256 of the setup code, not the plaintext."""
@@ -239,7 +238,7 @@ def test_migrate_code_stored_as_sha256(pg_url, app_url, owner_url, pg_roles):
     assert code not in hashes, "Plaintext code found in DB -- must store only sha256"
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_migrate_code_length_128_bits(pg_url, app_url, owner_url, pg_roles):
     """Setup code has >= 128-bit entropy (token_urlsafe(24) -> 192 bits)."""
@@ -283,7 +282,7 @@ def test_migrate_code_length_128_bits(pg_url, app_url, owner_url, pg_roles):
 # ===================================================================
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_setup_wrong_code_increments_failures(pg_url, app_url, owner_url, pg_roles):
     """Wrong code increments failed_attempts."""
@@ -339,7 +338,7 @@ def test_setup_wrong_code_increments_failures(pg_url, app_url, owner_url, pg_rol
         assert row[0] >= 1, f"failed_attempts should be >= 1, got {row[0]}"
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_setup_5_failures_kills_code(pg_url, app_url, owner_url, pg_roles):
     """5 wrong code attempts kill the code."""
@@ -402,7 +401,7 @@ def test_setup_5_failures_kills_code(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_setup_expired_code_refused(pg_url, app_url, owner_url, pg_roles):
     """Expired setup code (clock +31 min) is refused."""
@@ -458,7 +457,7 @@ def test_setup_expired_code_refused(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_setup_bootstrap_creates_user_admin_audit(pg_url, app_url, owner_url, pg_roles):
     """Valid code + bootstrap callback creates user + admin binding + audit."""
@@ -467,6 +466,7 @@ def test_setup_bootstrap_creates_user_admin_audit(pg_url, app_url, owner_url, pg
     slug = _unique_slug("setupboot")
     issuer = "https://idp.example.com"
     client_id = "test-client-id"
+    bootstrap_sub = f"bootstrap-admin-{_uuid.uuid4().hex[:8]}"
 
     ensure_at_head(pg_url)
     org_id = seed_org_with_oidc(
@@ -527,7 +527,7 @@ def test_setup_bootstrap_creates_user_admin_audit(pg_url, app_url, owner_url, pg
     code = idp_ext.issue_code(
         nonce=nonce,
         code_challenge=code_challenge,
-        sub="bootstrap-admin",
+        sub=bootstrap_sub,
         email="admin@example.com",
     )
 
@@ -562,7 +562,7 @@ def test_setup_bootstrap_creates_user_admin_audit(pg_url, app_url, owner_url, pg
                 code = idp_ext.issue_code(
                     nonce=nonce,
                     code_challenge=code_challenge,
-                    sub="bootstrap-admin",
+                    sub=bootstrap_sub,
                     email="admin@example.com",
                 )
 
@@ -585,7 +585,7 @@ def test_setup_bootstrap_creates_user_admin_audit(pg_url, app_url, owner_url, pg
         user = conn.execute(
             "SELECT id, email, status FROM users "
             "WHERE oidc_issuer = %s AND oidc_subject = %s",
-            [issuer, "bootstrap-admin"],
+            [issuer, bootstrap_sub],
         ).fetchone()
         assert user is not None, "Bootstrap user not created"
         assert user[1] == "admin@example.com"
@@ -607,7 +607,7 @@ def test_setup_bootstrap_creates_user_admin_audit(pg_url, app_url, owner_url, pg
         assert audit is not None, "bootstrap_admin audit row not created"
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_setup_code_reused_after_success_refused(pg_url, app_url, owner_url, pg_roles):
     """Code reused after successful bootstrap is refused."""
@@ -672,7 +672,7 @@ def test_setup_code_reused_after_success_refused(pg_url, app_url, owner_url, pg_
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_setup_second_bootstrap_when_admin_exists_409(pg_url, app_url, owner_url, pg_roles):
     """Second bootstrap when an admin already exists -> 409."""
@@ -736,7 +736,7 @@ def test_setup_second_bootstrap_when_admin_exists_409(pg_url, app_url, owner_url
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_setup_non_json_content_type_refused(pg_url, app_url, owner_url, pg_roles):
     """POST /setup with non-JSON content type is refused."""
@@ -763,7 +763,7 @@ def test_setup_non_json_content_type_refused(pg_url, app_url, owner_url, pg_role
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_migrate_no_code_when_admin_exists(pg_url, app_url, owner_url, pg_roles):
     """migrate run again with an admin present prints no setup code."""
