@@ -37,11 +37,6 @@ def _require(cond: bool, msg: str) -> None:
         raise T7Pending(msg)
 
 
-RED_T7 = pytest.mark.xfail(
-    raises=(T7Pending,),
-    strict=True,
-    reason="M1 T7: tables, roles, RLS not yet built",
-)
 
 M1_TABLES = frozenset(
     {
@@ -236,7 +231,6 @@ def test_guard_agg_worker_nologin(pg_url):
 # ===================================================================
 
 
-@RED_T7
 @pytest.mark.pg
 def test_rls_enabled_and_forced(pg_url, app_url, pg_roles):
     """Every table in public (except alembic_version) has RLS enabled
@@ -263,7 +257,6 @@ def test_rls_enabled_and_forced(pg_url, app_url, pg_roles):
             assert rls_forced, f"{relname}: RLS not FORCED"
 
 
-@RED_T7
 @pytest.mark.pg
 def test_table_owner_is_agg_owner(pg_url, app_url, pg_roles):
     """Every table is owned by agg_owner, not agg_app."""
@@ -288,7 +281,6 @@ def test_table_owner_is_agg_owner(pg_url, app_url, pg_roles):
             )
 
 
-@RED_T7
 @pytest.mark.pg
 def test_every_table_has_at_least_one_policy(pg_url, app_url, pg_roles):
     """Every table has at least one RLS policy."""
@@ -318,7 +310,6 @@ def test_every_table_has_at_least_one_policy(pg_url, app_url, pg_roles):
 # ===================================================================
 
 
-@RED_T7
 @pytest.mark.pg
 def test_secdef_prosecdef(pg_url, app_url, pg_roles):
     """org_login_config is SECURITY DEFINER."""
@@ -336,7 +327,6 @@ def test_secdef_prosecdef(pg_url, app_url, pg_roles):
         assert row[0] is True, "org_login_config must be SECURITY DEFINER"
 
 
-@RED_T7
 @pytest.mark.pg
 def test_secdef_search_path(pg_url, app_url, pg_roles):
     """org_login_config has SET search_path = pg_catalog, pg_temp."""
@@ -361,7 +351,6 @@ def test_secdef_search_path(pg_url, app_url, pg_roles):
         )
 
 
-@RED_T7
 @pytest.mark.pg
 def test_secdef_no_public_execute(pg_url, app_url, pg_roles):
     """EXECUTE on org_login_config is revoked from PUBLIC."""
@@ -382,9 +371,10 @@ def test_secdef_no_public_execute(pg_url, app_url, pg_roles):
             acl is not None,
             "org_login_config has NULL ACL (default = PUBLIC execute)",
         )
-        acl_str = str(acl)
+        # psycopg 3 returns aclitem[] as a Python list of strings
+        acl_list = acl if isinstance(acl, list) else str(acl).strip("{}").split(",")
         # In PG ACL format, PUBLIC execute appears as "=X/owner"
-        for entry in acl_str.strip("{}").split(","):
+        for entry in acl_list:
             entry = entry.strip()
             if "=" not in entry:
                 continue
@@ -396,7 +386,6 @@ def test_secdef_no_public_execute(pg_url, app_url, pg_roles):
                 )
 
 
-@RED_T7
 @pytest.mark.pg
 def test_secdef_agg_app_execute(pg_url, app_url, pg_roles):
     """agg_app has EXECUTE on org_login_config."""
@@ -413,10 +402,11 @@ def test_secdef_agg_app_execute(pg_url, app_url, pg_roles):
         _require(row is not None, "Function org_login_config not found")
         acl = row[0]
         _require(acl is not None, "org_login_config has NULL ACL")
-        acl_str = str(acl)
+        # psycopg 3 returns aclitem[] as a Python list of strings
+        acl_list = acl if isinstance(acl, list) else str(acl).strip("{}").split(",")
         # Look for "agg_app=X/..." in the ACL list
         found = False
-        for entry in acl_str.strip("{}").split(","):
+        for entry in acl_list:
             entry = entry.strip()
             if entry.startswith("agg_app=") and "X" in entry.split("=")[1].split("/")[0]:
                 found = True
@@ -426,7 +416,6 @@ def test_secdef_agg_app_execute(pg_url, app_url, pg_roles):
         )
 
 
-@RED_T7
 @pytest.mark.pg
 def test_secdef_owner_not_superuser(pg_url, app_url, pg_roles):
     """Owner of org_login_config is not a superuser."""
@@ -453,7 +442,6 @@ def test_secdef_owner_not_superuser(pg_url, app_url, pg_roles):
 # ===================================================================
 
 
-@RED_T7
 @pytest.mark.pg
 def test_visibility_org_a_sees_own(pg_url, app_url, owner_url, pg_roles):
     """Org A with app.org_id set sees only A's rows (count > 0)."""
@@ -475,7 +463,6 @@ def test_visibility_org_a_sees_own(pg_url, app_url, owner_url, pg_roles):
             )
 
 
-@RED_T7
 @pytest.mark.pg
 def test_visibility_org_unset_zero(pg_url, app_url, owner_url, pg_roles):
     """With no org set, agg_app sees 0 rows in every table."""
@@ -495,7 +482,6 @@ def test_visibility_org_unset_zero(pg_url, app_url, owner_url, pg_roles):
             )
 
 
-@RED_T7
 @pytest.mark.pg
 def test_visibility_org_empty_zero(pg_url, app_url, owner_url, pg_roles):
     """With org set to '' (empty string), agg_app sees 0 rows (no error)."""
@@ -517,7 +503,6 @@ def test_visibility_org_empty_zero(pg_url, app_url, owner_url, pg_roles):
             )
 
 
-@RED_T7
 @pytest.mark.pg
 def test_visibility_org_b_never_sees_a(pg_url, app_url, owner_url, pg_roles):
     """Org B never sees org A's rows."""
@@ -544,7 +529,6 @@ def test_visibility_org_b_never_sees_a(pg_url, app_url, owner_url, pg_roles):
                 )
 
 
-@RED_T7
 @pytest.mark.pg
 def test_insert_wrong_org_refused(pg_url, app_url, owner_url, pg_roles):
     """INSERT with another org's id is refused by WITH CHECK policy."""
@@ -576,7 +560,6 @@ def test_insert_wrong_org_refused(pg_url, app_url, owner_url, pg_roles):
 # ===================================================================
 
 
-@RED_T7
 @pytest.mark.pg
 def test_pooled_no_leak(pg_url, app_url, owner_url, pg_roles):
     """A pooled connection does not leak org context between txns.

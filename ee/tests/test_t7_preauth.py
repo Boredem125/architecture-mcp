@@ -31,11 +31,6 @@ def _require(cond: bool, msg: str) -> None:
         raise T7Pending(msg)
 
 
-RED_T7 = pytest.mark.xfail(
-    raises=(T7Pending,),
-    strict=True,
-    reason="M1 T7: pre-auth function / migration not yet built",
-)
 
 M1_TABLES = frozenset(
     {
@@ -131,7 +126,6 @@ def _seed_preauth(owner_url: str) -> tuple:
 # ===================================================================
 
 
-@RED_T7
 @pytest.mark.pg
 def test_preauth_known_slug(pg_url, app_url, owner_url, pg_roles):
     """agg_app (no org set) calls org_login_config(slug) and gets
@@ -158,7 +152,6 @@ def test_preauth_known_slug(pg_url, app_url, owner_url, pg_roles):
         )
 
 
-@RED_T7
 @pytest.mark.pg
 def test_preauth_unknown_slug(pg_url, app_url, owner_url, pg_roles):
     """org_login_config for an unknown slug returns nothing."""
@@ -179,7 +172,6 @@ def test_preauth_unknown_slug(pg_url, app_url, owner_url, pg_roles):
         )
 
 
-@RED_T7
 @pytest.mark.pg
 def test_preauth_no_direct_oidc(pg_url, app_url, owner_url, pg_roles):
     """agg_app with no org set cannot SELECT org_oidc_config directly
@@ -206,7 +198,6 @@ def test_preauth_no_direct_oidc(pg_url, app_url, owner_url, pg_roles):
 # ===================================================================
 
 
-@RED_T7
 @pytest.mark.pg
 def test_downgrade_removes_objects(pg_url, pg_roles):
     """Downgrading the T7 revision removes its tables, roles' grants,

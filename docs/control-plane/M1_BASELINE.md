@@ -73,7 +73,7 @@ Each task's new tests are committed as strict xfail (`raises=<named exception>`)
 | T6 module-state lint | `ee/tests/test_t6_module_state.py` (ee) | 12 | 0 | 12 | tests first (this commit) |
 | T6 CI-skip rule | `ee/tests/test_t6_ci_skip.py` (ee) | 2 | 0 | 2 | tests first (this commit) |
 | T7 RLS/catalog/visibility | `ee/tests/test_t7_rls.py` (ee) | 16 | 14 | 2 | tests first (this commit) |
-| T7 admin_audit chain | `ee/tests/test_t7_audit.py` (ee) | 9 | 9 | 0 | tests first (this commit) |
+| T7 admin_audit chain | `ee/tests/test_t7_audit.py` (ee) | 11 | 9 | 0 | tests first (this commit); 2 added in build per ADR 0002 item 6 |
 | T7 pre-auth + downgrade | `ee/tests/test_t7_preauth.py` (ee) | 4 | 4 | 0 | tests first (this commit) |
 
 **N** (the Phase A count in the M1 gate) = the sum of this table's "Tests" column once T1-T4 are written; written here before any fix runs.
@@ -191,9 +191,8 @@ ee/tests/test_t6_ci_skip.py::test_non_ci_skip_pg_is_ok
 `ee/tests/test_t7_preauth.py`: 4 tests (4 strict xfail, 0 guards).
 `ee/tests/conftest.py`: T7 additions -- `_replace_url_credentials` helper, `pg_roles` fixture (creates agg_owner/agg_app/agg_worker with test passwords), `app_url` and `owner_url` session fixtures.
 
-Total T7: 29 new tests (27 strict xfail, 2 guards/passing).
-- Hash chain convention: SHA-256 of canonical JSON (sorted keys, compact separators) of non-chain columns; genesis = `"0" * 64` (matching `chain.py:_GENESIS_HASH`); type serialisation: UUID -> str, datetime -> isoformat, jsonb -> dict.
-- ADR gap noted: the exact serialisation of DB column types for the record_hash is implied by reference to the connector's `audit.py` pattern (ADR 0002 -> ADR 0001 s5), not spelled out for admin_audit.  The test defines the convention; the implementation must match.
+Total T7: 31 tests (29 from tests-first commit: 27 strict xfail, 2 guards; plus 2 added in build per ADR 0002 item 6: `test_audit_client_fields_overwritten`, `test_audit_concurrent_inserts`).
+- Hash chain convention (ADR 0002 item 6): record_hash = SHA-256 of `admin_audit_canonical(row)::text` (a SQL function that builds a jsonb object of every column except record_hash, with UUIDs as text and timestamps as `to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`); genesis = `"0" * 64`; chain computed by a BEFORE INSERT trigger with per-org advisory xact lock; client-supplied chain fields are overwritten.
 
 Frozen `ee/` node-id list (T5 + T6 + T7, Q7c):
 ```
@@ -264,12 +263,16 @@ ee/tests/test_t7_audit.py::test_audit_truncate_rejected_agg_owner
 ee/tests/test_t7_audit.py::test_audit_insert_select_agg_app
 ee/tests/test_t7_audit.py::test_audit_chain_verifiable
 ee/tests/test_t7_audit.py::test_audit_chain_flipped_byte
+ee/tests/test_t7_audit.py::test_audit_client_fields_overwritten
+ee/tests/test_t7_audit.py::test_audit_concurrent_inserts
 ee/tests/test_t7_preauth.py::test_preauth_known_slug
 ee/tests/test_t7_preauth.py::test_preauth_unknown_slug
 ee/tests/test_t7_preauth.py::test_preauth_no_direct_oidc
 ee/tests/test_t7_preauth.py::test_downgrade_removes_objects
 ```
 
-**ee/ suite at this commit (local Windows):** 71 collected, 44 passed, 27 xfailed, 0 failed. The 27 xfailed are all T7 RED tests (T7 migration not yet built). The 2 T7 guards (test_guard_agg_app_connection, test_guard_agg_worker_nologin) pass now because the conftest fixture creates the roles.
+**ee/ suite at tests-first commit (local Windows):** 71 collected, 44 passed, 27 xfailed, 0 failed. The 27 xfailed are all T7 RED tests (T7 migration not yet built). The 2 T7 guards (test_guard_agg_app_connection, test_guard_agg_worker_nologin) pass now because the conftest fixture creates the roles.
+
+**ee/ suite after T7 build (local Windows):** 73 collected, 73 passed, 0 xfailed, 0 skipped, 0 failed. Same with CI=true. The 2 new tests (`test_audit_client_fields_overwritten`, `test_audit_concurrent_inserts`) are included. T6 `test_alembic_round_trip` and `test_ready_200_when_db_reachable_and_at_head` gained `pg_roles` dependency (T7 migration references the roles).
 
 **Root suite at this commit (local Windows):** 1760 passed, 1 skipped (symlink), 0 failed -- unchanged from T6.
