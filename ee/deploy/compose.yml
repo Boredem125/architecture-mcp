@@ -1,0 +1,236 @@
+# ee/deploy/compose.yml -- Self-hosted control-plane stack (ADR 0005).
+#
+# Usage:
+#   docker compose --profile init run --rm init-secrets   # first time only
+#   docker compose up -d
+#   docker compose logs migrate                           # read the setup code
+#   docker compose --profile demo up -d                   # adds Keycloak
+#
+# Every image is pinned by digest.  No secrets in environment variables;
+# all sensitive values come from compose secrets (mounted files) and the
+# *_FILE env-var convention.
+
+# ---------------------------------------------------------------------------
+# Secrets (files under ./secrets/, created by init-secrets)
+# ---------------------------------------------------------------------------
+secrets:
+  pg_owner_password:
+    file: ./secrets/pg_owner_password
+  pg_app_password:
+    file: ./secrets/pg_app_password
+  pg_superuser_password:
+    file: ./secrets/pg_superuser_password
+  pg_owner_url:
+    file: ./secrets/pg_owner_url
+  pg_app_url:
+    file: ./secrets/pg_app_url
+  oidc_client_secret:
+    file: ./secrets/oidc_client_secret
+  server_signing_key:
+    file: ./secrets/server_signing_key
+
+# ---------------------------------------------------------------------------
+# Networks
+# ---------------------------------------------------------------------------
+networks:
+  edge:
+    driver: bridge
+  internal:
+    driver: bridge
+    internal: true
+
+# ---------------------------------------------------------------------------
+# Volumes
+# ---------------------------------------------------------------------------
+volumes:
+  pg-data:
+  caddy-data:
+  caddy-config:
+
+# ---------------------------------------------------------------------------
+# Services
+# ---------------------------------------------------------------------------
+services:
+
+  # --- init-secrets (one-shot, profile "init") ----------------------------
+  init-secrets:
+    profiles: ["init"]
+    image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1  # python:3.12-slim
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    user: "65534:65534"  # nobody
+    volumes:
+      - ./init-secrets.sh:/opt/init-secrets.sh:ro
+      - ./secrets:/opt/secrets
+    entrypoint: ["python3", "/opt/init-secrets.sh"]
+
+  # --- postgres -----------------------------------------------------------
+  postgres:
+    image: postgres:16@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d  # postgres:16
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+      - /run/postgresql:noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # No cap_add: running as uid 999 from the start, so the entrypoint
+    # never needs setuid/chown.  Needs Docker verification.
+    user: "999:999"  # default postgres uid/gid inside the image
+    networks:
+      - internal
+    # No published ports -- only reachable on the internal network.
+    environment:
+      POSTGRES_DB: agg
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_superuser_password
+    secrets:
+      - pg_superuser_password
+      - pg_owner_password
+      - pg_app_password
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./init/00-roles.sh:/docker-entrypoint-initdb.d/00-roles.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d agg"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # --- migrate (one-shot) -------------------------------------------------
+  migrate:
+    build:
+      context: ../..
+      dockerfile: ee/deploy/api.Dockerfile
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    user: "10001:10001"
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    secrets:
+      - pg_owner_url
+    environment:
+      # migrate connects as agg_owner
+      AGG_DATABASE_URL_FILE: /run/secrets/pg_owner_url
+    command: ["python", "-m", "agg_cp.migrate"]
+
+  # --- api ----------------------------------------------------------------
+  api:
+    build:
+      context: ../..
+      dockerfile: ee/deploy/api.Dockerfile
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    user: "10001:10001"
+    networks:
+      - internal
+      - edge
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    secrets:
+      - pg_app_url
+      - oidc_client_secret
+      - server_signing_key
+    environment:
+      # api connects as agg_app (no BYPASSRLS)
+      AGG_DATABASE_URL_FILE: /run/secrets/pg_app_url
+      AGG_OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_client_secret
+      AGG_SIGNING_KEY_FILE: /run/secrets/server_signing_key
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # --- proxy (Caddy) ------------------------------------------------------
+  proxy:
+    image: caddy:2@sha256:685ae3d7c34d9b5f8caeddc5d14051db7bbd88ff1f5a2fa0c16bd8ca328fb7af  # caddy:2
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # No cap_add: Caddy listens on high ports (8080/8443) so
+    # NET_BIND_SERVICE is not needed.
+    user: "65532:65532"  # nonroot
+    ports:
+      - "127.0.0.1:443:8443"
+      - "127.0.0.1:80:8080"
+    networks:
+      - edge
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+      # Mount the built web bundle (ee/web/dist or similar)
+      - ../web/dist:/srv/web:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -qO- https://127.0.0.1:8443/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # --- Keycloak (demo profile) --------------------------------------------
+  keycloak:
+    profiles: ["demo"]
+    image: keycloak/keycloak:26.0.0@sha256:db0d0f2c2eee8618a37a50e04affb69823e56687b4d1b676a847a4b85de62178  # keycloak/keycloak:26.0.0
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=128m
+      # Keycloak writes to /opt/keycloak/data at runtime
+      - /opt/keycloak/data:noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    user: "1000:1000"  # default keycloak uid
+    networks:
+      - internal
+    environment:
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_PORT: "8080"
+      KC_HOSTNAME_STRICT: "false"
+      # Demo-only admin credentials -- NOT for production.
+      # Keycloak has no _FILE convention for admin credentials;
+      # this is acceptable because: internal network only, demo profile only.
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    volumes:
+      - ./keycloak/demo-realm.json:/opt/keycloak/data/import/demo-realm.json:ro
+    command:
+      - start-dev
+      - --import-realm
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && echo -e 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\n\r\n' >&3 && head -1 <&3 | grep -q 200"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
