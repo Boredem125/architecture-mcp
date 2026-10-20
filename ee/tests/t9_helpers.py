@@ -156,6 +156,19 @@ def seed_session(
     expires = now + dt.timedelta(hours=12)
 
     conninfo = _conninfo(owner_url)
+    # Before T8 part 2 (migration 0003) web_sessions lacks these columns:
+    # that is "not built yet", so it must surface as the named exception.
+    try:
+        _insert_session(psycopg, conninfo, org_id, user_id, session_id,
+                        token_hash, csrf_hash, now, expires)
+    except (psycopg.errors.UndefinedColumn, psycopg.errors.UndefinedTable) as exc:
+        raise T9Pending(f"web_sessions schema not at T8 part 2: {exc}") from exc
+
+    return session_token, csrf_token, session_id
+
+
+def _insert_session(psycopg, conninfo, org_id, user_id, session_id,
+                    token_hash, csrf_hash, now, expires) -> None:
     with psycopg.connect(conninfo) as conn:
         conn.execute(
             "SELECT set_config('app.org_id', %s, false)", [str(org_id)]
@@ -169,8 +182,6 @@ def seed_session(
              now, expires, now],
         )
         conn.commit()
-
-    return session_token, csrf_token, session_id
 
 
 def make_session_cookie(org_id: uuid.UUID, session_token: str) -> str:
@@ -265,6 +276,8 @@ def make_t9_app(
             resolve=safe_resolve,
             oidc_allow_hosts="idp.example.com",
         )
+    except T8P2Pending as exc:
+        raise T9Pending(str(exc)) from exc
     except Exception as exc:
         guard_import_t9(exc)
         raise
