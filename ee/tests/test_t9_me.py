@@ -67,7 +67,6 @@ def _build_me_env(pg_url, owner_url):
 # ===================================================================
 
 
-@RED_T9
 @pytest.mark.pg
 def test_me_without_session_401(pg_url, app_url, owner_url, pg_roles):
     """/me without a session cookie returns 401."""
@@ -83,7 +82,6 @@ def test_me_without_session_401(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T9
 @pytest.mark.pg
 def test_me_returns_documented_shape(pg_url, app_url, owner_url, pg_roles):
     """/me with session returns {user_id, display_name, org, roles, csrf_token}."""
@@ -126,7 +124,6 @@ def test_me_returns_documented_shape(pg_url, app_url, owner_url, pg_roles):
         assert "scope_id" in rb, f"Missing scope_id in role binding: {rb}"
 
 
-@RED_T9
 @pytest.mark.pg
 def test_me_csrf_token_hash_matches_stored(pg_url, app_url, owner_url, pg_roles):
     """sha256 of the csrf_token from /me equals the stored csrf_hash."""
@@ -168,7 +165,6 @@ def test_me_csrf_token_hash_matches_stored(pg_url, app_url, owner_url, pg_roles)
     )
 
 
-@RED_T9
 @pytest.mark.pg
 def test_me_csrf_works_on_post(pg_url, app_url, owner_url, pg_roles):
     """Positive control: csrf_token from GET /me works on a POST route."""
@@ -205,7 +201,6 @@ def test_me_csrf_works_on_post(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T9
 @pytest.mark.pg
 def test_me_wrong_csrf_403(pg_url, app_url, owner_url, pg_roles):
     """Wrong CSRF token on a POST returns 403."""

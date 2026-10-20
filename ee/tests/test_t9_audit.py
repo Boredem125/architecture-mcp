@@ -96,7 +96,6 @@ def _count_audit_action(app_url, org_id, action):
 # ===================================================================
 
 
-@RED_T9
 @pytest.mark.pg
 def test_audit_project_created(pg_url, app_url, owner_url, pg_roles):
     """POST /projects appends admin_audit action 'project_created'."""
@@ -120,7 +119,6 @@ def test_audit_project_created(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T9
 @pytest.mark.pg
 def test_audit_role_granted(pg_url, app_url, owner_url, pg_roles):
     """POST /projects/{id}/members appends admin_audit action 'role_granted'."""
@@ -162,7 +160,6 @@ def test_audit_role_granted(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T9
 @pytest.mark.pg
 def test_audit_role_revoked(pg_url, app_url, owner_url, pg_roles):
     """DELETE /projects/{id}/members/{user_id}/{role} appends 'role_revoked'."""
@@ -211,7 +208,6 @@ def test_audit_role_revoked(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T9
 @pytest.mark.pg
 def test_audit_user_added(pg_url, app_url, owner_url, pg_roles):
     """POST /org/users appends admin_audit action 'user_added'."""
@@ -241,7 +237,6 @@ def test_audit_user_added(pg_url, app_url, owner_url, pg_roles):
 # ===================================================================
 
 
-@RED_T9
 @pytest.mark.pg
 def test_audit_verify_auditor_passes(pg_url, app_url, owner_url, pg_roles):
     """GET /org/audit/verify: auditor gets 200 with {ok: true} (+)."""
@@ -273,7 +268,6 @@ def test_audit_verify_auditor_passes(pg_url, app_url, owner_url, pg_roles):
     assert body.get("ok") is True, f"Expected ok: true, got {body}"
 
 
-@RED_T9
 @pytest.mark.pg
 def test_audit_verify_viewer_fails(pg_url, app_url, owner_url, pg_roles):
     """GET /org/audit/verify: viewer gets 404 or 403."""
@@ -308,9 +302,8 @@ def test_audit_verify_viewer_fails(pg_url, app_url, owner_url, pg_roles):
 # ===================================================================
 
 
-@RED_T9
 @pytest.mark.pg
-def test_cli_audit_verify_exits_0(pg_url, app_url, owner_url, pg_roles):
+def test_cli_audit_verify_exits_0(pg_url, app_url, owner_url, pg_roles, monkeypatch):
     """CLI audit verify prints one JSON line and exits 0."""
     clock = FakeClock()
     slug = unique_slug("cliaud")
@@ -338,6 +331,9 @@ def test_cli_audit_verify_exits_0(pg_url, app_url, owner_url, pg_roles):
     except ImportError as exc:
         raise T9Pending(f"agg_cp.cli not importable: {exc}") from exc
 
+    # CLI reads AGG_DATABASE_URL, not the test fixture directly
+    monkeypatch.setenv("AGG_DATABASE_URL", pg_url)
+
     # Run the CLI in-process
     import io
     from contextlib import redirect_stdout
@@ -360,9 +356,8 @@ def test_cli_audit_verify_exits_0(pg_url, app_url, owner_url, pg_roles):
     assert parsed["ok"] is True, f"Expected ok=true, got {parsed}"
 
 
-@RED_T9
 @pytest.mark.pg
-def test_cli_audit_verify_tampered_exits_1(pg_url, app_url, owner_url, pg_roles):
+def test_cli_audit_verify_tampered_exits_1(pg_url, app_url, owner_url, pg_roles, monkeypatch):
     """After flipping one byte in detail, CLI exits 1; other org still verifies (+)."""
     clock = FakeClock()
 
@@ -407,6 +402,9 @@ def test_cli_audit_verify_tampered_exits_1(pg_url, app_url, owner_url, pg_roles)
         from agg_cp.cli import main as cli_main
     except ImportError as exc:
         raise T9Pending(f"agg_cp.cli not importable: {exc}") from exc
+
+    # CLI reads AGG_DATABASE_URL, not the test fixture directly
+    monkeypatch.setenv("AGG_DATABASE_URL", pg_url)
 
     import io
     from contextlib import redirect_stdout

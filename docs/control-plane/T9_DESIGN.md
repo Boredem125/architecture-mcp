@@ -21,12 +21,13 @@ Unique index on `role_bindings (org_id, user_id, scope_type, scope_id, role)` so
 | `GET /projects/{id}/members` | read on project | `[{user_id, display_name, role}]` |
 | `POST /projects/{id}/members` | org `admin` or project `admin` | `{user_id, role}`; idempotent; audit `role_granted` |
 | `DELETE /projects/{id}/members/{user_id}/{role}` | org `admin` or project `admin` | audit `role_revoked`; 204 |
+| `DELETE /org/members/{user_id}/{role}` | org `admin` | audit `role_revoked`; 204; last org admin -> 409 under per-org advisory lock |
 | `GET /org/users` | org `admin` | |
 | `POST /org/users` | org `admin` | `{oidc_subject, email}`; issuer = the org's configured issuer; audit `user_added` |
 | `POST /org/members` | org `admin` | `{user_id, role}` org-scope grant; audit `role_granted` |
 | `GET /org/audit/verify` | org `auditor` or `admin` | `{ok, reason}` from `audit.verify_chain` |
 
-Rules: an object in another org, or one the caller cannot read, is **404** (never 403, so ids are not an oracle); a caller who can read but not write gets 403. Bodies are validated (unknown fields refused, `role`/`environment` enums, uuids). The last org `admin` cannot be revoked (409).
+Rules: an object in another org, or one the caller cannot read, is **404** (never 403, so ids are not an oracle); a caller who can read but not write gets 403. Bodies are validated (unknown fields refused, `role`/`environment` enums, uuids). The last org `admin` cannot be revoked (409); this guard lives on `DELETE /org/members/{user_id}/{role}` under a per-org advisory lock, not on the project member delete route (which only touches project-scope bindings).
 
 ## RBAC declaration
 Every route under `/api` is registered through one helper that records its requirement on the route (`route.openapi_extra["x-agg-rbac"] = {"role": ..., "scope": ...}` or an equivalent attribute). A test walks `app.routes`: every `/api` route except `/api/v1/auth/{login,callback,setup}` declares one, and the walked `(method, path)` set equals the frozen list in the test.

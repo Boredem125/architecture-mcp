@@ -84,7 +84,6 @@ def _two_org_env(pg_url, owner_url):
 # ===================================================================
 
 
-@RED_T9
 @pytest.mark.pg
 def test_idor_org_b_404_on_org_a_project_get(pg_url, app_url, owner_url, pg_roles):
     """Org B admin gets 404 when reading org A's project."""
@@ -100,7 +99,6 @@ def test_idor_org_b_404_on_org_a_project_get(pg_url, app_url, owner_url, pg_role
     )
 
 
-@RED_T9
 @pytest.mark.pg
 def test_idor_org_a_admin_reads_own_project(pg_url, app_url, owner_url, pg_roles):
     """Positive control: org A admin reads org A's project."""
@@ -116,7 +114,6 @@ def test_idor_org_a_admin_reads_own_project(pg_url, app_url, owner_url, pg_roles
     )
 
 
-@RED_T9
 @pytest.mark.pg
 def test_idor_org_b_404_on_org_a_project_members(pg_url, app_url, owner_url, pg_roles):
     """Org B admin gets 404 when reading org A project members."""
@@ -132,7 +129,6 @@ def test_idor_org_b_404_on_org_a_project_members(pg_url, app_url, owner_url, pg_
     )
 
 
-@RED_T9
 @pytest.mark.pg
 def test_idor_org_b_404_on_org_a_post_member(pg_url, app_url, owner_url, pg_roles):
     """Org B admin gets 404 when POSTing a member to org A project."""
@@ -150,7 +146,6 @@ def test_idor_org_b_404_on_org_a_post_member(pg_url, app_url, owner_url, pg_role
     )
 
 
-@RED_T9
 @pytest.mark.pg
 def test_idor_org_b_404_on_org_a_delete_member(pg_url, app_url, owner_url, pg_roles):
     """Org B admin gets 404 when DELETEing a member from org A project."""
@@ -173,7 +168,6 @@ def test_idor_org_b_404_on_org_a_delete_member(pg_url, app_url, owner_url, pg_ro
     )
 
 
-@RED_T9
 @pytest.mark.pg
 def test_idor_org_a_admin_deletes_own_member(pg_url, app_url, owner_url, pg_roles):
     """Positive control: org A admin deletes a member from org A project."""
@@ -201,7 +195,6 @@ def test_idor_org_a_admin_deletes_own_member(pg_url, app_url, owner_url, pg_role
 # ===================================================================
 
 
-@RED_T9
 @pytest.mark.pg
 def test_idor_project_viewer_cannot_read_other_project(pg_url, app_url, owner_url, pg_roles):
     """Project-scoped viewer in org A gets 404 on another project in org A."""
@@ -240,7 +233,6 @@ def test_idor_project_viewer_cannot_read_other_project(pg_url, app_url, owner_ur
     )
 
 
-@RED_T9
 @pytest.mark.pg
 def test_idor_project_viewer_reads_own_project(pg_url, app_url, owner_url, pg_roles):
     """Positive control: project-scoped viewer in org A reads their own project."""
@@ -281,7 +273,6 @@ def test_idor_project_viewer_reads_own_project(pg_url, app_url, owner_url, pg_ro
 # ===================================================================
 
 
-@RED_T9
 @pytest.mark.pg
 def test_idor_forged_org_id_cookie_401(pg_url, app_url, owner_url, pg_roles):
     """Forged org id in the session cookie gives 401."""

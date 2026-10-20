@@ -28,5 +28,8 @@ dev = [
     "testcontainers[postgres]>=4.0.0",
 ]
 
+[project.scripts]
+agg-cp = "agg_cp.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/agg_cp"]
