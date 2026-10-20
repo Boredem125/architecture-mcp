@@ -63,6 +63,6 @@ Optional intent-aware layer: `pip install -e ".[semantic]"`, then `jevos serve` 
 
 ## Licence
 
-Everything outside `ee/` is licensed under the [MIT License](LICENSE). The `ee/` directory is the home of the self-hosted control plane and is licensed under the [Elastic License 2.0](ee/LICENSE). Today it holds an early skeleton (health and readiness endpoints and a database test harness).
+Everything outside `ee/` is licensed under the [MIT License](LICENSE). The `ee/` directory is the home of the self-hosted control plane and is licensed under the [Elastic License 2.0](ee/LICENSE). Today it holds an early skeleton (health and readiness endpoints and a database test harness). The web UI at `ee/web/` is part of `ee/` and so is under the Elastic License 2.0 as well.
 
 The connector (everything outside `ee/`) never imports `ee/`. The import-linter contract in `ee/.importlinter` forbids it, and CI runs it (`lint-imports --config ee/.importlinter`).
