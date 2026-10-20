@@ -369,3 +369,5 @@ ee/tests/test_t8_oidc_fetch.py::TestFetchDiscovery::test_discovery_issuer_mismat
 ee/tests/test_t8_oidc_fetch.py::TestFetchDiscovery::test_jwks_uri_http_rejected
 ee/tests/test_t8_oidc_fetch.py::TestFetchDiscovery::test_jwks_uri_private_address_rejected
 ```
+
+**T8 part 1 build:** the 68 strict xfail markers are removed (79 pass). Added in build for the security review (`ee/tests/test_t8_oidc_review.py`, 13 tests incl. positive controls): empty resolver answer refused, discovery without a usable `jwks_uri` refused, Entra `tenant_id` must be a canonical GUID. ee suite (Linux cloud, native Postgres 16, `CI=true`): 236 passed, 0 skipped.
