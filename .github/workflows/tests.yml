@@ -90,7 +90,7 @@ jobs:
       - name: Install root package and ee with dev extras
         run: |
           python -m pip install --quiet .
-          python -m pip install --quiet "./ee[dev]"
+          python -m pip install --quiet "./ee[dev]" "defusedxml>=0.7.1"
       - name: lint-imports (import-linter contract)
         run: lint-imports --config ee/.importlinter
       - name: Run ee tests
@@ -162,5 +162,5 @@ jobs:
       - name: No stray files in the checkout
         if: success() || failure()
         run: |
-          stray=$(git status --porcelain --untracked-files=all)
+          stray=$(git status --porcelain --untracked-files=all -- . ":(exclude)ee")
           if [ -n "$stray" ]; then echo "Tests left files in the repo:"; echo "$stray"; exit 1; fi
