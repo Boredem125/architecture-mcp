@@ -1,4 +1,6 @@
 """Allow ``python -m agg_cp`` -- delegates to migrate.main()."""
+import sys
+
 from agg_cp.migrate import main
 
-main()
+sys.exit(main())

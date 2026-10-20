@@ -1,5 +1,55 @@
 # M1 hand-off (19 Oct 2026)
 
+## Cloud session status (20 Oct 2026, night)
+
+**Next action (laptop, Docker):** run the 4 laptop blocks below in order, fill `docs/control-plane/M1_DEMO.md`, then approve M1 or send back what failed.
+
+**Merged to `main` from the cloud** (each PR green in CI, rebase-merged unless noted):
+1. T15 docs `273926d` (#1). T12 web `dd9201e` + `938c089` (#6).
+2. T8 part 1: tests `66969c2` (#2), build `eee3ebd` (#4). T8 part 2: tests `74b18b8` (#5, squash: branch had a merge commit), build `b0a708d` (#9).
+3. T9: tests `3a0f565` + `2441cae` (#7), build `2a543fa` (#10). T10 `211151a` (#11).
+4. T11 compose files `5de6f49` (#3), Keycloak behind Caddy `df75fed` (#8).
+5. Wrap-up PR (this commit): T13 review findings F1/F2 fixed (slug can never become a path: `is_valid_slug`, `org_secret_path`, CHECK in revision `0006`), CI `ee` job gains the coverage gate (`--fail-under=85`), `ee/deploy/demo.py` (T14 script, not run), `M1_DEMO.md` template, `M1_SECURITY_SIGNOFF.md` (T13).
+
+**Security:** every security-sensitive merge had a `security-engineer` diff review and was fixed until signed off (T8 parts 1-2, T9: 2-3 rounds each; T11 twice). T13 hostile review: APPROVE WITH CONDITIONS, no Critical/High; F1 Medium and F2 Low fixed in the wrap-up PR; F3 Low (demo Keycloak `admin/admin` in `compose.yml`, demo profile only) stays as a stated limit.
+
+**Measured here (Linux cloud, native Postgres 16, `CI=true`):** ee suite 412 passed, 0 skipped (incl. the T14 static tests); branch coverage of `ee/src/agg_cp` 87%. The connector suite was not re-run in full here; CI runs it on every PR (green).
+
+**Open items:**
+1. Everything that needs Docker (blocks below) is unverified: stack up, `/ready` 200, Trivy, ZAP on the proxy, the Keycloak login, `demo.py` steps 1-3 and 5. `demo.py --step 4` (connector, no Docker) ran in the cloud: 7/7 PASS (listed root 200, unlisted 403, key-home Grep denied by the hook, forged unpinned approval refused).
+2. `security / zap-api` (connector API) once reported `zap-10062-pii-disclosure` on #11 and passed on re-run: a content-matching false positive is likely; check the ZAP report if it recurs.
+3. Each request opens 1-3 Postgres connections (no pool yet): fine for M1, revisit before load.
+4. `claude/cool-mayer-3l0bi1` holds pre-rebase copies of early commits; everything on it is on `main`. Safe to delete.
+5. Branch-protection required checks on `main` (founder, unchanged from before).
+
+**Laptop work (Docker machine), exact commands, from the repo root on `main`:**
+```
+# 1. stack up and ready
+cd ee/deploy
+docker compose --profile init run --rm init-secrets
+(cd ../web && npm ci && npm run build)
+docker compose up -d --build
+docker compose logs migrate            # migrations ran
+curl -sk https://localhost/ready       # expect 200
+
+# 2. scanners (gate item 4)
+docker compose build api
+trivy image $(docker compose images api -q) --severity HIGH,CRITICAL   # expect 0
+(cd ../.. && trivy fs . --severity HIGH,CRITICAL)                       # expect 0
+# ZAP baseline on the proxy: the exact docker run line is in ee/deploy/README.md ("ZAP")
+
+# 3. demo stack (Keycloak, orgs acme + globex)
+docker compose down
+AGG_OIDC_ALLOW_HOSTS=idp.localhost docker compose --profile demo up -d --build
+docker compose logs migrate-demo | grep setup_code   # one JSON line
+# globex bootstrap: the docker compose run line in ee/deploy/README.md ("Globex")
+
+# 4. T14 demo, all 5 steps, headless
+cd ../.. && python ee/deploy/demo.py      # or: --step N
+```
+Then record each step's result in `docs/control-plane/M1_DEMO.md` (template only, nothing claimed yet).
+
+
 **Cloud session start (20 Oct 2026, evening):** next task is the **T7 build**. Tests are pushed (`c2dd954`: 27 strict xfail + 2 guards in `ee/tests/test_t7_rls.py`, `test_t7_audit.py`, `test_t7_preauth.py`). A local build attempt was stopped unfinished and is NOT pushed; start from `c2dd954`.
 
 T7 build brief (give it to a `backend-engineer` worker, effort high; security-sensitive, so **no commit before security review**):

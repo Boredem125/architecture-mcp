@@ -505,3 +505,7 @@ ee/tests/test_t10_multiworker.py::test_audit_chain_valid_after_concurrent_writes
 ee/tests/test_t10_multiworker.py::test_check_db_ready_as_agg_app
 ee/tests/test_t10_multiworker.py::test_module_state_lint_scans_key_files
 ```
+
+### M1 wrap-up (T13 findings, T14 script, coverage gate)
+
+`ee/tests/test_m1_t13_review.py` (T13 F1/F2): valid and invalid slugs, `org_secret_path` never leaves the secrets dir (incl. a symlink), the `orgs_slug_format` CHECK (revision `0006`) refuses `../x` with a positive control. `ee/tests/test_t14_demo_static.py` (13): `demo.py` compiles, `--help`, no `verify=False`, Keycloak form parser, steps 4-5 call subprocess, with positive controls. CI `ee` job now runs under `coverage --branch` with `--fail-under=85` (measured here: 87%). ee suite (Linux cloud, native Postgres 16, `CI=true`): 412 passed, 0 skipped.
