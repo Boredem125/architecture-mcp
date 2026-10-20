@@ -1,0 +1,12 @@
+[importlinter]
+root_packages =
+    sandbox
+    agg_cp
+
+[importlinter:contract:no-ee-in-connector]
+name = Connector must not import control plane
+type = forbidden
+source_modules =
+    sandbox
+forbidden_modules =
+    agg_cp

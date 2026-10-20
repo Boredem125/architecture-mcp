@@ -29,11 +29,6 @@ class EESkeletonOpen(Exception):
     """The ee/ skeleton is not built yet (M1 T5)."""
 
 
-RED_T5 = pytest.mark.xfail(
-    raises=EESkeletonOpen, strict=True,
-    reason="M1 T5: ee/ skeleton not yet built",
-)
-
 
 def _require(cond: bool, msg: str) -> None:
     if not cond:
@@ -47,6 +42,10 @@ def _require(cond: bool, msg: str) -> None:
 # The shipped contract config: the one file CI's ``ee`` job runs. Tests read
 # it rather than an inline copy, so the tested contract cannot drift from it.
 _SHIPPED = EE / ".importlinter"
+
+# import-linter ships no ``__main__``; call the ``lint-imports`` console
+# script's entry point (``importlinter.cli:lint_imports_command``) directly.
+_LINT_IMPORTS = "from importlinter.cli import lint_imports_command; lint_imports_command()"
 
 
 def _contract_ini() -> str:
@@ -62,7 +61,6 @@ def _contract_ini() -> str:
     return text
 
 
-@RED_T5
 def test_import_linter_contract_passes():
     """``lint-imports`` exits 0 with the sandbox->agg_cp forbidden contract.
 
@@ -85,7 +83,7 @@ def test_import_linter_contract_passes():
         cfg.write_text(_contract_ini(), encoding="utf-8")
 
         result = subprocess.run(
-            [sys.executable, "-m", "importlinter", "--config", str(cfg)],
+            [sys.executable, "-c", _LINT_IMPORTS, "--config", str(cfg)],
             capture_output=True,
             text=True,
             timeout=120,
@@ -98,7 +96,6 @@ def test_import_linter_contract_passes():
         )
 
 
-@RED_T5
 def test_import_linter_positive_control_catches_violation(tmp_path: Path):
     """Positive control: a planted ``from agg_cp import x`` inside a fake
     sandbox module is caught by the forbidden contract.
@@ -130,7 +127,7 @@ def test_import_linter_positive_control_catches_violation(tmp_path: Path):
     cfg.write_text(_contract_ini(), encoding="utf-8")
 
     result = subprocess.run(
-        [sys.executable, "-m", "importlinter", "--config", str(cfg)],
+        [sys.executable, "-c", _LINT_IMPORTS, "--config", str(cfg)],
         capture_output=True,
         text=True,
         timeout=120,
@@ -153,7 +150,6 @@ def test_import_linter_positive_control_catches_violation(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-@RED_T5
 def test_ee_package_has_pyproject():
     """``ee/pyproject.toml`` exists."""
     _require(
@@ -162,7 +158,6 @@ def test_ee_package_has_pyproject():
     )
 
 
-@RED_T5
 def test_ee_has_license():
     """``ee/LICENSE`` exists and mentions Elastic License."""
     license_file = EE / "LICENSE"
