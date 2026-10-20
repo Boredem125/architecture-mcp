@@ -1,5 +1,6 @@
 # IDE & Claude Code
-.claude/
+.claude/*
+!.claude/agents/
 .vscode/
 .idea/
 
