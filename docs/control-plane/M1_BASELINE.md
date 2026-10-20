@@ -65,6 +65,9 @@ Each task's new tests are committed as strict xfail (`raises=<named exception>`)
 | T4 D3.2-4, SEC-24 | `tests/security/test_m1_t4_domains.py` | 22 | 15 | 7 | tests first (this commit) |
 | T4b SEC-30, SEC-31 | `tests/security/test_m1_t4b_downgrade.py` | 14 | 10 | 4 | tests first (this commit) |
 | T4c evidence legacy | `tests/security/test_m1_t4c_evidence_legacy.py` | 16 | 9 | 7 | tests first; +6 follow-ups (dual control per approval, export=verify, shared hash, intact-chain not_covered); suite 1668 passed, 1 skipped |
+| T5 `ee/` skeleton | `tests/unit/test_m1_t5_standalone.py` (root) | 92 | 0 | 92 | tests first (this commit) |
+| T5 `ee/` skeleton | `ee/tests/test_health.py` (ee) | 6 | 6 | 0 | tests first (this commit) |
+| T5 `ee/` skeleton | `ee/tests/test_import_contract.py` (ee) | 4 | 4 | 0 | tests first (this commit) |
 
 **N** (the Phase A count in the M1 gate) = the sum of this table's "Tests" column once T1-T4 are written; written here before any fix runs.
 
@@ -85,3 +88,29 @@ Corpus size per class: glob_command_word 10, substitution 17, variable_command 1
 ### T2 (ADR 0007 section 1)
 
 `tests/security/test_m1_t2_keys_extra.py`: 14 tests added with the fix (workspace id, key home inside the workspace or relative refused, `key_rotated` carries the retired key and the audit heads, `sandbox keys purge-legacy`, the agent cannot run `sandbox keys`, Write/Edit and recursive-search-from-above denies, `cd` into the key home). Not frozen in the manifest. Connector node ids: 0 renamed, 0 removed.
+
+### T5 (`ee/` skeleton, ADR 0004)
+
+**Root suite** (`tests/unit/test_m1_t5_standalone.py`): 92 tests, all passing (guards).
+- 4 static grep tests: no `import agg_cp` / `from agg_cp` in `src/sandbox/`; 3 positive controls (planted import detected, bare import detected, comment ignored).
+- 88 parametrized runtime-isolation tests: one per `sandbox` sub-module, imported in a subprocess with `agg_cp` blocked by a meta-path finder (``-I`` flag, ``PYTHONPATH=src/``).
+- Not frozen in the manifest (new file). Connector node ids: 0 renamed, 0 removed.
+
+**`ee/` suite** (`ee/tests/test_health.py`, `ee/tests/test_import_contract.py`): 10 tests, all strict xfail (`raises=EESkeletonOpen`).
+- `test_health.py` (6): `/health` 200, JSON, `status` field; `/ready` exists, JSON, `status` field.
+- `test_import_contract.py` (4): `lint-imports` contract passes; positive control flags planted violation; `ee/pyproject.toml` exists; `ee/LICENSE` mentions Elastic License.
+- Frozen `ee/` node-id list (Q7c):
+  ```
+  ee/tests/test_health.py::test_health_returns_200
+  ee/tests/test_health.py::test_health_returns_json
+  ee/tests/test_health.py::test_health_has_status_field
+  ee/tests/test_health.py::test_ready_route_exists
+  ee/tests/test_health.py::test_ready_returns_json
+  ee/tests/test_health.py::test_ready_has_status_field
+  ee/tests/test_import_contract.py::test_import_linter_contract_passes
+  ee/tests/test_import_contract.py::test_import_linter_positive_control_catches_violation
+  ee/tests/test_import_contract.py::test_ee_package_has_pyproject
+  ee/tests/test_import_contract.py::test_ee_has_license
+  ```
+
+**Full suite at this commit (local Windows):** 1760 passed, 1 skipped (symlink), 0 failed. The 92 T5 root-suite tests are included in the 1760. The 10 ee/ xfail tests are not in the root suite's `testpaths` and ran separately: 10 xfailed.
