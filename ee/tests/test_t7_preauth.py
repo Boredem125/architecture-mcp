@@ -98,6 +98,17 @@ def _seed_preauth(owner_url: str) -> tuple:
     conninfo = _conninfo(owner_url)
     try:
         with psycopg.connect(conninfo) as conn:
+            # Idempotent: check if data from a prior run exists
+            existing = conn.execute(
+                "SELECT id FROM orgs WHERE slug = %s", [slug],
+            ).fetchone()
+            if existing:
+                _PA.update(
+                    org_id=existing[0], slug=slug,
+                    issuer=issuer, client_id=client_id,
+                )
+                return existing[0], slug, issuer, client_id
+
             conn.execute(
                 "SELECT set_config('app.org_id', %s, false)",
                 [str(org_id)],
@@ -218,11 +229,13 @@ def test_downgrade_removes_objects(pg_url, pg_roles):
         "Only baseline revision exists (T7 migration not added)",
     )
 
-    # Downgrade one step from head to the prior revision
-    head_id = script.get_current_head()
-    head_rev = script.get_revision(head_id)
-    prev_rev = head_rev.down_revision
-    _require(prev_rev is not None, "Head revision has no down_revision")
+    # Downgrade past the T7 revision (0002) to its predecessor.
+    # With later revisions (e.g. 0003) at head, "one step down" would
+    # only undo the latest, not the T7 tables.
+    t7_rev = script.get_revision("000000000002")
+    _require(t7_rev is not None, "T7 revision 000000000002 not found")
+    prev_rev = t7_rev.down_revision
+    _require(prev_rev is not None, "T7 revision has no down_revision")
 
     alembic_cmd.downgrade(cfg, prev_rev)
 

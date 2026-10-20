@@ -16,7 +16,6 @@ import pytest
 
 from .t8p2_helpers import (
     T8P2Pending,
-    RED_T8P2,
     require_t8p2,
     _conninfo,
     ensure_at_head,
@@ -55,7 +54,7 @@ def _table_exists(conn, table: str) -> bool:
 # ===================================================================
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_web_sessions_has_token_hash(pg_url, app_url, pg_roles):
     """web_sessions has a token_hash column after 0003."""
@@ -66,7 +65,7 @@ def test_web_sessions_has_token_hash(pg_url, app_url, pg_roles):
                       "web_sessions.token_hash column missing")
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_web_sessions_has_csrf_hash(pg_url, app_url, pg_roles):
     """web_sessions has a csrf_hash column after 0003."""
@@ -77,7 +76,7 @@ def test_web_sessions_has_csrf_hash(pg_url, app_url, pg_roles):
                       "web_sessions.csrf_hash column missing")
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_web_sessions_has_last_seen_at(pg_url, app_url, pg_roles):
     """web_sessions has a last_seen_at column after 0003."""
@@ -88,7 +87,7 @@ def test_web_sessions_has_last_seen_at(pg_url, app_url, pg_roles):
                       "web_sessions.last_seen_at column missing")
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_web_sessions_has_revoked_at(pg_url, app_url, pg_roles):
     """web_sessions has a revoked_at column after 0003."""
@@ -104,7 +103,7 @@ def test_web_sessions_has_revoked_at(pg_url, app_url, pg_roles):
 # ===================================================================
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_setup_codes_has_used_at(pg_url, app_url, pg_roles):
     """setup_codes has a used_at column after 0003."""
@@ -115,7 +114,7 @@ def test_setup_codes_has_used_at(pg_url, app_url, pg_roles):
                       "setup_codes.used_at column missing")
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_setup_codes_has_failed_attempts(pg_url, app_url, pg_roles):
     """setup_codes has a failed_attempts column after 0003."""
@@ -131,7 +130,7 @@ def test_setup_codes_has_failed_attempts(pg_url, app_url, pg_roles):
 # ===================================================================
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_login_transactions_table_exists(pg_url, app_url, pg_roles):
     """login_transactions table exists after 0003."""
@@ -142,7 +141,7 @@ def test_login_transactions_table_exists(pg_url, app_url, pg_roles):
                       "login_transactions table missing")
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_login_transactions_rls_enabled_forced(pg_url, app_url, pg_roles):
     """login_transactions has RLS ENABLED + FORCED."""
@@ -160,7 +159,7 @@ def test_login_transactions_rls_enabled_forced(pg_url, app_url, pg_roles):
         assert row[1] is True, "login_transactions: RLS not FORCED"
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_login_transactions_has_policy(pg_url, app_url, pg_roles):
     """login_transactions has at least one RLS policy."""
@@ -177,7 +176,7 @@ def test_login_transactions_has_policy(pg_url, app_url, pg_roles):
         assert cnt > 0, "login_transactions: no RLS policies"
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_login_transactions_owner_is_agg_owner(pg_url, app_url, pg_roles):
     """login_transactions is owned by agg_owner."""
@@ -197,7 +196,7 @@ def test_login_transactions_owner_is_agg_owner(pg_url, app_url, pg_roles):
         )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_login_transactions_cross_org_isolation(pg_url, app_url, owner_url, pg_roles):
     """agg_app cannot see another org's login_transactions rows."""
@@ -272,7 +271,7 @@ def test_login_transactions_cross_org_isolation(pg_url, app_url, owner_url, pg_r
 # ===================================================================
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_downgrade_0003_removes_login_transactions(pg_url, pg_roles):
     """Downgrading from 0003 to 0002 removes login_transactions and new columns."""
