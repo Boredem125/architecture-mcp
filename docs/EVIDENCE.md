@@ -68,8 +68,8 @@ no unlisted file added, and optionally that the exporter key is the one you expe
 
 ## Limits
 
-- **Keys, not people.** Reviewer and exporter keys live in the control plane
-  (`.sandbox/state/keys/`, see [TCB.md](TCB.md)). The pack proves integrity relative to
+- **Keys, not people.** Reviewer and exporter keys live in the per-user key home
+  outside the workspace (see [TCB.md](TCB.md)). The pack proves integrity relative to
   those keys. It does not prove which human held a key, or that two reviewer ids were two
   people.
 - **Pin the exporter key.** The manifest is signed with a key from the same control plane,

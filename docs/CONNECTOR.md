@@ -74,6 +74,7 @@ versa (`check_request`).
 └── .sandbox/
     ├── policy.json              # human-editable per-folder policy
     ├── session.json             # {session_id, root, python, package_src}
+    ├── workspace_id             # random 32-hex id; names this workspace's folder in the key home
     ├── hooks/                   # pretooluse.py, posttooluse.py, sessionstart.py
     ├── state/
     │   └── remembered.json      # per-session remembered decisions
@@ -236,8 +237,9 @@ the approver token. WebSocket connections are closed before accept with code
 1008: there are no WebSocket routes.
 
 When the API server is running (`sandbox serve` / uvicorn), a thin, read-through
-view over any folder's `.sandbox/` is mounted at `/api/v1/connector`. It holds
-**no** in-memory state — every call reads the folder fresh:
+view over the `.sandbox/` of each folder listed with `--root` (next section) is
+mounted at `/api/v1/connector`. It holds **no** in-memory state — every call reads
+the folder fresh:
 
 ```
 GET  /api/v1/connector/status?root=…       policy, triggers, pending count
@@ -248,6 +250,77 @@ GET  /api/v1/connector/changes?root=…      file-change timeline
 GET  /api/v1/connector/audit?root=…        audit records (tail)
 GET  /api/v1/connector/verify?root=…       chain integrity
 ```
+
+---
+
+## Which folders the API serves: `sandbox serve --root`
+
+The connector routes only serve folders the operator listed when the server started.
+
+```bash
+sandbox serve --root /work/projA --root /work/projB
+SANDBOX_CONNECTOR_ROOTS="/work/projA:/work/projB" sandbox serve   # os.pathsep-separated (";" on Windows)
+```
+
+- **How roots are listed.** `--root PATH` (repeatable) and `SANDBOX_CONNECTOR_ROOTS` are
+  combined. `serve` resolves each `--root` with `realpath` and passes the list to the
+  server through that environment variable, so every uvicorn worker sees it. The app reads
+  it once at startup and does not re-read it per request.
+- **No roots, no service.** With none listed, `serve` prints a warning and every
+  `/api/v1/connector/*` call returns 403.
+- **Matching.** The `?root=` value is compared as a string, after `normpath` and `normcase`,
+  with the listed roots. The request value is never used to touch the filesystem, and after
+  a match the server uses its own stored root, not the request string. A subfolder of a
+  listed root does not match.
+- **Order of checks** (after the bearer-token checks, which come first):
+  - 400 if `root` contains a NUL byte, is longer than 1024 characters, or is not an absolute path.
+  - 403 if it is not a listed root. The reply does not repeat the path.
+  - 400 if the listed root cannot be examined by the OS (`OSError`).
+  - 404 if the listed root has no `.sandbox/`.
+- This is a limit on which folders the API shows. It is not an access control for the
+  folders themselves; the approver token is still what allows approve and deny.
+
+---
+
+## Reviewer keys: the key home
+
+Approval signatures are made with an Ed25519 key per reviewer id. Those seeds, and the
+pin file `pins.json`, are kept outside the workspace.
+
+- **Location.** `SANDBOX_KEY_HOME` (must be an absolute path), else
+  `%LOCALAPPDATA%\agg\keys` on Windows, `$XDG_DATA_HOME/agg/keys` or
+  `~/.local/share/agg/keys` on Linux, `~/Library/Application Support/agg/keys` on macOS.
+- **Per workspace.** Each workspace gets a subfolder named by its random id
+  (`.sandbox/workspace_id`, written by `sandbox init`, or on first signing if it is missing).
+  Reviewer `cli` therefore has a separate key and pin in each workspace. Seed files are
+  created with mode 0600. On Linux and macOS the key home (when this tool creates it) and
+  the workspace folder are set to mode 0700; on Windows a newly created key home is
+  restricted to the current user with `icacls`, best effort. `sandbox keys status` shows
+  the workspace folder and warns if the key home is readable by other accounts.
+- **Out of the agent's reach.** The hook denies read, write, delete and rename of the key
+  home for Read, Grep, Glob, Write, Edit and shell, regardless of the `read_outside` and
+  `write_outside` triggers. Paths are compared after resolving symlinks and junctions,
+  8.3 names, case, `~` and environment variables. A key home that is inside the workspace,
+  or that contains it, is refused.
+- **Fails closed.** If the key home cannot be resolved or written, there is no key and so no
+  signature. There is no fallback to `.sandbox/state/keys`, the current directory or a relative
+  path. `approve` returns `key_unavailable`, the API answers 503 and nothing is approved.
+- **Rotation.** Keys from before this layout were stored in `.sandbox/state/keys/`. They are
+  treated as exposed. When a reviewer first signs and has no key in the key home, a new key is
+  generated there. If an old in-tree seed for that reviewer exists, a `key_rotated` record
+  is written to the audit chain first. The old seed is not copied, moved or deleted. Records it signed are shown as `legacy`.
+  `sandbox keys purge-legacy` (a human command, denied to the agent) deletes the old seeds.
+  There is no other rotate command. A new workspace id also starts new keys; deleting
+  `.sandbox/workspace_id` does this, and it is audited as `workspace_id_created`, not prevented.
+- **Pins.** The first time a reviewer signs from the approver CLI or the approver-token API,
+  its public key is pinned in `pins.json` and audited as `key_pinned`. Approvals are checked
+  against the pinned key, not only the key embedded in the record (`approval._valid_for`). The policy flag `keys.enrol:
+  explicit` refuses reviewers that are not already pinned.
+- **What this does not stop.** The key home stops the agent that the hook governs. It does
+  not stop other code running as the same OS user, including a `python` command a human
+  approved: that code can read the same files. (Stated limit, ADR 0007.) Two pinned keys are
+  also not proof of two different people; one person can pin two reviewer ids, which
+  `sandbox verify` flags as a "new-key approval" but does not prevent.
 
 ---
 
