@@ -68,6 +68,10 @@ Each task's new tests are committed as strict xfail (`raises=<named exception>`)
 | T5 `ee/` skeleton | `tests/unit/test_m1_t5_standalone.py` (root) | 92 | 0 | 92 | tests first (this commit) |
 | T5 `ee/` skeleton | `ee/tests/test_health.py` (ee) | 6 | 6 | 0 | tests first (this commit) |
 | T5 `ee/` skeleton | `ee/tests/test_import_contract.py` (ee) | 4 | 4 | 0 | tests first (this commit) |
+| T6 PG/Alembic | `ee/tests/test_t6_pg_harness.py` (ee) | 9 | 8 | 1 | tests first (this commit) |
+| T6 clock lint | `ee/tests/test_t6_clock.py` (ee) | 9 | 2 | 7 | tests first (this commit) |
+| T6 module-state lint | `ee/tests/test_t6_module_state.py` (ee) | 12 | 0 | 12 | tests first (this commit) |
+| T6 CI-skip rule | `ee/tests/test_t6_ci_skip.py` (ee) | 2 | 0 | 2 | tests first (this commit) |
 
 **N** (the Phase A count in the M1 gate) = the sum of this table's "Tests" column once T1-T4 are written; written here before any fix runs.
 
@@ -114,3 +118,65 @@ Corpus size per class: glob_command_word 10, substitution 17, variable_command 1
   ```
 
 **Full suite at this commit (local Windows):** 1760 passed, 1 skipped (symlink), 0 failed. The 92 T5 root-suite tests are included in the 1760. The 10 ee/ xfail tests are not in the root suite's `testpaths` and ran separately: 10 xfailed.
+
+### T6 (Postgres + Alembic harness)
+
+`ee/tests/test_t6_pg_harness.py`: 9 tests (8 strict xfail, 1 guard).
+`ee/tests/test_t6_clock.py`: 9 tests (2 strict xfail, 7 guards/positive controls).
+`ee/tests/test_t6_module_state.py`: 12 tests (0 strict xfail, 12 guards/positive controls).
+`ee/tests/test_t6_ci_skip.py`: 2 tests (0 strict xfail, 2 guards).
+`ee/tests/pg_image.py`: PG_IMAGE constant (digest single source, no tests in this file).
+`ee/tests/conftest.py`: pg marker, pg_url fixture, CI-skip hook.
+
+Total T6: 32 new tests (10 strict xfail, 22 guards/passing).
+- PG_IMAGE digest: `sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d`
+
+Frozen `ee/` node-id list (T5 + T6, Q7c):
+```
+ee/tests/test_health.py::test_health_returns_200
+ee/tests/test_health.py::test_health_returns_json
+ee/tests/test_health.py::test_health_has_status_field
+ee/tests/test_health.py::test_ready_route_exists
+ee/tests/test_health.py::test_ready_returns_json
+ee/tests/test_health.py::test_ready_has_status_field
+ee/tests/test_import_contract.py::test_import_linter_contract_passes
+ee/tests/test_import_contract.py::test_import_linter_positive_control_catches_violation
+ee/tests/test_import_contract.py::test_ee_package_has_pyproject
+ee/tests/test_import_contract.py::test_ee_has_license
+ee/tests/test_t6_pg_harness.py::test_ci_workflow_pg_image_matches
+ee/tests/test_t6_pg_harness.py::test_make_engine_select_1
+ee/tests/test_t6_pg_harness.py::test_alembic_config_loadable
+ee/tests/test_t6_pg_harness.py::test_alembic_round_trip
+ee/tests/test_t6_pg_harness.py::test_alembic_every_revision_has_downgrade
+ee/tests/test_t6_pg_harness.py::test_ready_200_when_db_reachable_and_at_head
+ee/tests/test_t6_pg_harness.py::test_ready_503_behind_head
+ee/tests/test_t6_pg_harness.py::test_ready_503_unreachable_db
+ee/tests/test_t6_pg_harness.py::test_health_stays_200_without_db
+ee/tests/test_t6_clock.py::test_no_clock_violations_in_agg_cp
+ee/tests/test_t6_clock.py::test_positive_control_time_time_flagged
+ee/tests/test_t6_clock.py::test_positive_control_from_datetime_now_flagged
+ee/tests/test_t6_clock.py::test_positive_control_time_time_ns_flagged
+ee/tests/test_t6_clock.py::test_positive_control_datetime_utcnow_flagged
+ee/tests/test_t6_clock.py::test_positive_control_date_today_flagged
+ee/tests/test_t6_clock.py::test_positive_control_from_time_import_time_flagged
+ee/tests/test_t6_clock.py::test_clock_module_exists
+ee/tests/test_t6_clock.py::test_system_clock_returns_utc
+ee/tests/test_t6_module_state.py::test_no_module_level_mutable_state_in_agg_cp
+ee/tests/test_t6_module_state.py::test_positive_control_empty_dict_flagged
+ee/tests/test_t6_module_state.py::test_positive_control_defaultdict_flagged
+ee/tests/test_t6_module_state.py::test_positive_control_list_literal_flagged
+ee/tests/test_t6_module_state.py::test_positive_control_set_call_flagged
+ee/tests/test_t6_module_state.py::test_positive_control_list_comprehension_flagged
+ee/tests/test_t6_module_state.py::test_positive_control_tuple_allowed
+ee/tests/test_t6_module_state.py::test_positive_control_frozenset_allowed
+ee/tests/test_t6_module_state.py::test_positive_control_constant_allowed
+ee/tests/test_t6_module_state.py::test_positive_control_collections_deque_flagged
+ee/tests/test_t6_module_state.py::test_positive_control_counter_flagged
+ee/tests/test_t6_module_state.py::test_positive_control_ordered_dict_flagged
+ee/tests/test_t6_ci_skip.py::test_ci_skip_pg_is_failure
+ee/tests/test_t6_ci_skip.py::test_non_ci_skip_pg_is_ok
+```
+
+**ee/ suite at this commit (local Windows):** 42 collected, 32 passed, 10 xfailed, 0 failed. The 10 xfailed are: 8 from test_t6_pg_harness.py (T6 code not yet built) and 2 from test_t6_clock.py (agg_cp.clock not yet built).
+
+**Root suite at this commit (local Windows):** 1760 passed, 1 skipped (symlink), 0 failed -- unchanged from T5.
