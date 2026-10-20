@@ -105,10 +105,15 @@ jobs:
           python -m pip install --quiet "./ee[dev]" "defusedxml>=0.7.1"
       - name: lint-imports (import-linter contract)
         run: lint-imports --config ee/.importlinter
-      - name: Run ee tests
+      - name: Run ee tests (branch coverage; M1 gate item 2 needs >= 85%)
         env:
           AGG_TEST_PG_URL: postgresql://postgres@localhost:5432/postgres
-        run: python -m pytest -q ee/tests --junitxml "$RUNNER_TEMP/junit-ee.xml"
+          COVERAGE_FILE: ${{ runner.temp }}/.coverage
+        run: python -m coverage run --branch --source=ee/src/agg_cp -m pytest -q ee/tests --junitxml "$RUNNER_TEMP/junit-ee.xml"
+      - name: Coverage gate (fail under 85%, no omit list)
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/.coverage
+        run: python -m coverage report --fail-under=85 | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: success() || failure()
         with:

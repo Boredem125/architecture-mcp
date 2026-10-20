@@ -88,6 +88,31 @@ def _app_conn(conninfo: str):
     return conn
 
 
+_SLUG_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
+
+
+def is_valid_slug(slug: str) -> bool:
+    """Org slug format, mirrored by the ``orgs_slug_format`` CHECK (0006):
+    1-63 chars of ``[a-z0-9-]``, starting with a letter or digit."""
+    return (
+        0 < len(slug) <= 63
+        and slug[0] != "-"
+        and all(c in _SLUG_CHARS for c in slug)
+    )
+
+
+def org_secret_path(secrets_dir: str, slug: str) -> str | None:
+    """Path of an org's OIDC client-secret file inside *secrets_dir*, or
+    None when the slug is not a valid slug or would leave the directory."""
+    if not is_valid_slug(slug):
+        return None
+    base = _os.path.realpath(secrets_dir)
+    path = _os.path.realpath(_os.path.join(base, slug))
+    if _os.path.dirname(path) != base:
+        return None
+    return path
+
+
 def csrf_token_for(session_token: str) -> str:
     """Derive the CSRF token deterministically from a session token.
 
@@ -395,8 +420,11 @@ def build_auth_router(
                 slug_row = conn.execute(
                     "SELECT slug FROM orgs WHERE id = %s", [txn_org_id],
                 ).fetchone()
-            if slug_row:
-                secret_path = _os.path.join(oidc_secrets_dir, slug_row[0])
+            secret_path = (
+                org_secret_path(oidc_secrets_dir, slug_row[0])
+                if slug_row else None
+            )
+            if secret_path is not None:
                 if _os.path.isfile(secret_path):
                     with open(secret_path) as f:
                         client_secret = f.read().strip()
