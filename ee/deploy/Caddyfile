@@ -1,0 +1,61 @@
+# Caddyfile -- reverse proxy and static-file server for the control plane.
+#
+# Serves the built web bundle under a strict CSP (SEC-04 groundwork)
+# and proxies /api/* to the FastAPI backend.
+#
+# Caddy runs as non-root with no-new-privileges, so it cannot bind
+# privileged ports.  We use high ports (8080/8443) and the compose
+# port mapping publishes 127.0.0.1:443->8443, 127.0.0.1:80->8080.
+#
+# TLS: by default Caddy uses automatic HTTPS with its internal CA.
+# For production, replace with customer-provided cert/key or ACME.
+
+{
+	# Global options
+	admin off
+	http_port 8080
+	https_port 8443
+}
+
+{$AGG_SITE_ADDRESS:localhost} {
+	tls internal
+
+	# -----------------------------------------------------------------------
+	# Security headers (every response)
+	# -----------------------------------------------------------------------
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'"
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	# -----------------------------------------------------------------------
+	# API reverse proxy
+	# -----------------------------------------------------------------------
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+
+	# Health endpoint for proxy-level checks (not proxied)
+	handle /health {
+		respond "OK" 200
+	}
+
+	# -----------------------------------------------------------------------
+	# Static web bundle with SPA fallback
+	# -----------------------------------------------------------------------
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+# HTTP -> HTTPS redirect
+:8080 {
+	redir https://{host}{uri} permanent
+}

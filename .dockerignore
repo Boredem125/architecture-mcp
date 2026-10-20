@@ -1,0 +1,19 @@
+# Keep the build context small.  The Dockerfile COPYs only:
+#   pyproject.toml, ee/pyproject.toml, src/, ee/src/, ee/src/agg_cp/migrations/
+.git
+.venv
+node_modules
+**/__pycache__
+tests/
+docs/
+ee/tests/
+ee/deploy/secrets/
+ee/web/node_modules
+benchmarks
+demo
+examples
+*.pyc
+*.pyo
+.mypy_cache
+.pytest_cache
+.ruff_cache
