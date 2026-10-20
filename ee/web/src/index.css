@@ -2,7 +2,264 @@
 
 body {
   margin: 0;
-  background-color: #111827;
+  background-color: #030712;
   color: #f3f4f6;
   font-family: Inter, system-ui, -apple-system, sans-serif;
+}
+
+/* ---------- layout ---------- */
+
+.page-center {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.main-content {
+  flex: 1 1 auto;
+  padding: 2rem;
+  overflow: auto;
+}
+
+/* ---------- login ---------- */
+
+.login-card {
+  width: 100%;
+  max-width: 22rem;
+  padding: 2rem;
+  border-radius: 0.75rem;
+  border: 1px solid #1f2937;
+  background-color: #111827;
+}
+
+.login-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #fff;
+  margin: 0 0 0.25rem;
+}
+
+.login-subtitle {
+  font-size: 0.875rem;
+  color: #9ca3af;
+  margin: 0 0 1.5rem;
+}
+
+.login-label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #d1d5db;
+  margin-bottom: 0.5rem;
+}
+
+.login-input {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid #374151;
+  background-color: #1f2937;
+  color: #f3f4f6;
+  font-size: 0.875rem;
+  box-sizing: border-box;
+}
+
+.login-input:focus {
+  outline: 2px solid #3b82f6;
+  outline-offset: -1px;
+  border-color: #3b82f6;
+}
+
+.login-button {
+  display: block;
+  width: 100%;
+  margin-top: 1rem;
+  padding: 0.625rem 1rem;
+  border-radius: 0.5rem;
+  border: none;
+  background-color: #2563eb;
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.login-button:hover {
+  background-color: #1d4ed8;
+}
+
+/* ---------- unavailable ---------- */
+
+.unavailable-card {
+  width: 100%;
+  max-width: 28rem;
+  padding: 2rem;
+  border-radius: 0.75rem;
+  border: 1px solid #92400e;
+  background-color: #111827;
+}
+
+.unavailable-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #fbbf24;
+  margin: 0 0 0.5rem;
+}
+
+.unavailable-text {
+  font-size: 0.875rem;
+  color: #9ca3af;
+  margin: 0;
+}
+
+/* ---------- user bar ---------- */
+
+.user-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 2rem;
+  border-bottom: 1px solid #1f2937;
+  background-color: #111827;
+}
+
+.user-name {
+  font-weight: 600;
+  color: #fff;
+  margin-right: 1rem;
+}
+
+.user-org {
+  font-size: 0.875rem;
+  color: #9ca3af;
+  margin-right: 1rem;
+}
+
+.user-roles {
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+.logout-button {
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.375rem;
+  border: 1px solid #374151;
+  background-color: transparent;
+  color: #d1d5db;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.logout-button:hover {
+  background-color: #1f2937;
+}
+
+/* ---------- sections ---------- */
+
+.section-card {
+  border-radius: 0.75rem;
+  border: 1px solid #1f2937;
+  background-color: #111827;
+  padding: 1.5rem;
+}
+
+.section-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #fff;
+  margin: 0 0 1rem;
+}
+
+/* ---------- projects ---------- */
+
+.project-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.project-button {
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid #374151;
+  background-color: #1f2937;
+  color: #d1d5db;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.project-button:hover {
+  border-color: #4b5563;
+}
+
+.project-button-active {
+  border-color: #3b82f6;
+  color: #93c5fd;
+  background-color: rgba(37, 99, 235, 0.15);
+}
+
+/* ---------- members ---------- */
+
+.members-section {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid #1f2937;
+}
+
+.members-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #e5e7eb;
+  margin: 0 0 0.75rem;
+}
+
+.members-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.th-cell {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  font-weight: 600;
+  color: #9ca3af;
+  border-bottom: 1px solid #1f2937;
+}
+
+.member-row:hover {
+  background-color: rgba(255, 255, 255, 0.03);
+}
+
+.td-cell {
+  padding: 0.5rem 0.75rem;
+  color: #d1d5db;
+  border-bottom: 1px solid #111827;
+}
+
+.td-role {
+  color: #9ca3af;
+}
+
+/* ---------- status / error text ---------- */
+
+.status-text {
+  font-size: 0.875rem;
+  color: #9ca3af;
+}
+
+.error-text {
+  font-size: 0.875rem;
+  color: #f87171;
 }
