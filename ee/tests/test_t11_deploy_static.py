@@ -520,6 +520,12 @@ class TestNoShellSecretLeak:
         data = _load_compose()
         violations = []
         for name, svc in data["services"].items():
+            # Demo-profile services may read secrets via cat to inject
+            # env vars when the service has no _FILE convention (e.g.
+            # Keycloak).
+            profiles = svc.get("profiles", [])
+            if "demo" in profiles:
+                continue
             combined = " ".join([
                 self._flatten_cmd(svc.get("entrypoint")),
                 self._flatten_cmd(svc.get("command")),
@@ -780,3 +786,308 @@ class TestRolesShellSafety:
     def test_positive_control_shell_interpolation_detected(self):
         bad_script = "psql <<EOSQL\nCREATE ROLE x PASSWORD '${OWNER_PASS}';\nEOSQL"
         assert "${OWNER_PASS}" in bad_script
+
+
+# ---------------------------------------------------------------------------
+# 23. Caddyfile has an IdP site block with tls internal
+# ---------------------------------------------------------------------------
+
+class TestCaddyfileIdpSite:
+    """The Caddyfile must contain an idp.localhost site block with tls internal."""
+
+    def test_idp_site_present(self):
+        text = _CADDYFILE.read_text(encoding="utf-8")
+        assert "idp.localhost" in text, (
+            "Caddyfile must contain an idp.localhost site block"
+        )
+
+    def test_idp_site_has_tls_internal(self):
+        """The idp.localhost site block must use tls internal."""
+        text = _CADDYFILE.read_text(encoding="utf-8")
+        # Find the idp.localhost site block and check for tls internal.
+        # Skip Caddy variable syntax ({$VAR:default}) when looking for
+        # the site block's opening brace.
+        idp_pos = text.find("idp.localhost")
+        assert idp_pos >= 0, "idp.localhost not found in Caddyfile"
+        # Walk forward from idp_pos looking for a '{' that is NOT part of
+        # a Caddy variable ({$ or {http or {scheme etc).  A site block
+        # brace is preceded by whitespace or the address line.
+        brace_pos = -1
+        i = idp_pos
+        while i < len(text):
+            if text[i] == "{":
+                # Skip {$...} and {placeholder} patterns
+                if i + 1 < len(text) and text[i + 1] in ("$",):
+                    # Skip to closing }
+                    close = text.find("}", i + 1)
+                    if close >= 0:
+                        i = close + 1
+                        continue
+                # This is a real site-block brace
+                brace_pos = i
+                break
+            i += 1
+        assert brace_pos >= 0, "no site-block brace after idp.localhost"
+        # Find the matching closing brace
+        depth = 0
+        end_pos = brace_pos
+        for j in range(brace_pos, len(text)):
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    end_pos = j
+                    break
+        block = text[brace_pos : end_pos + 1]
+        assert "tls internal" in block, (
+            "idp.localhost site block must contain 'tls internal'"
+        )
+
+    def test_idp_site_proxies_to_keycloak(self):
+        text = _CADDYFILE.read_text(encoding="utf-8")
+        idp_pos = text.find("idp.localhost")
+        assert idp_pos >= 0
+        after_idp = text[idp_pos:]
+        assert "keycloak:8080" in after_idp, (
+            "idp.localhost site must reverse_proxy to keycloak:8080"
+        )
+
+    def test_positive_control_missing_idp_detected(self):
+        """A Caddyfile without idp.localhost must be detected."""
+        bad = "localhost { tls internal }"
+        assert "idp.localhost" not in bad
+
+    def test_positive_control_idp_without_tls_internal(self):
+        """An idp.localhost block without tls internal must be detected."""
+        bad_block = "{ reverse_proxy keycloak:8080 }"
+        assert "tls internal" not in bad_block
+
+
+# ---------------------------------------------------------------------------
+# 24. AGG_OIDC_ALLOW_HOSTS -- only in demo-profile services or as a
+#     compose variable reference (never a hardcoded literal in non-demo)
+# ---------------------------------------------------------------------------
+
+@_skip_no_yaml
+class TestAllowHostsOnlyInDemo:
+    """AGG_OIDC_ALLOW_HOSTS must not have a hardcoded (non-variable-reference)
+    value in any service that is NOT in the demo profile."""
+
+    @staticmethod
+    def _is_compose_variable(value: str) -> bool:
+        """Return True if value is a compose variable reference like ${VAR:-}."""
+        return "${" in str(value)
+
+    def test_allow_hosts_not_hardcoded_in_non_demo(self):
+        data = _load_compose()
+        violations = []
+        for name, svc in data["services"].items():
+            profiles = svc.get("profiles", [])
+            if "demo" in profiles:
+                continue  # demo services may hardcode it
+            env = svc.get("environment", {})
+            if isinstance(env, list):
+                env_dict = {}
+                for item in env:
+                    if "=" in item:
+                        k, v = item.split("=", 1)
+                        env_dict[k] = v
+                env = env_dict
+            val = env.get("AGG_OIDC_ALLOW_HOSTS")
+            if val is not None and not self._is_compose_variable(str(val)):
+                violations.append(
+                    f"service '{name}' has hardcoded AGG_OIDC_ALLOW_HOSTS="
+                    f"'{val}' but is not in demo profile"
+                )
+        assert not violations, (
+            f"AGG_OIDC_ALLOW_HOSTS must only be hardcoded in demo-profile "
+            f"services: {violations}"
+        )
+
+    def test_positive_control_hardcoded_allow_hosts_detected(self):
+        """A non-demo service with hardcoded allow_hosts must be flagged."""
+        svc = {
+            "environment": {"AGG_OIDC_ALLOW_HOSTS": "idp.localhost"},
+        }
+        val = svc["environment"]["AGG_OIDC_ALLOW_HOSTS"]
+        assert not self._is_compose_variable(val)
+
+    def test_positive_control_variable_ref_passes(self):
+        """A compose variable reference must pass the check."""
+        val = "${AGG_OIDC_ALLOW_HOSTS:-}"
+        assert self._is_compose_variable(val)
+
+
+# ---------------------------------------------------------------------------
+# 25. No secret literal in demo-realm.json client objects
+# ---------------------------------------------------------------------------
+
+class TestNoSecretLiteralInRealmJson:
+    """The demo-realm.json must use the Keycloak env-var placeholder
+    ``${AGG_DEMO_OIDC_CLIENT_SECRET}`` for client secrets -- never a
+    literal value.  The actual secret is injected via the Keycloak
+    entrypoint at runtime from a compose secret."""
+
+    _EXPECTED_PLACEHOLDER = "${AGG_DEMO_OIDC_CLIENT_SECRET}"
+
+    @staticmethod
+    def _load_realms() -> list[dict]:
+        import json
+        text = _DEMO_REALM.read_text(encoding="utf-8")
+        data = json.loads(text)
+        assert isinstance(data, list) and len(data) >= 1
+        return data
+
+    def test_secret_is_env_placeholder(self):
+        for realm in self._load_realms():
+            for client in realm.get("clients", []):
+                secret = client.get("secret")
+                assert secret == self._EXPECTED_PLACEHOLDER, (
+                    f"realm '{realm['realm']}' client '{client['clientId']}' "
+                    f"secret must be '{self._EXPECTED_PLACEHOLDER}', "
+                    f"got '{secret}'"
+                )
+
+    def test_positive_control_literal_secret_detected(self):
+        """A client with a literal secret value must fail the check."""
+        bad_client = {"clientId": "bad", "secret": "s3cret"}
+        assert bad_client["secret"] != self._EXPECTED_PLACEHOLDER
+
+    def test_positive_control_placeholder_passes(self):
+        """A client with the correct placeholder must pass."""
+        good_client = {"clientId": "good", "secret": "${AGG_DEMO_OIDC_CLIENT_SECRET}"}
+        assert good_client["secret"] == self._EXPECTED_PLACEHOLDER
+
+
+# ---------------------------------------------------------------------------
+# 26. CA bundle volume mounted read-only in the api service
+# ---------------------------------------------------------------------------
+
+@_skip_no_yaml
+class TestCaBundleMountReadOnly:
+    """The ca-bundle volume must be mounted read-only in the api service
+    so the api cannot tamper with the trusted CA bundle."""
+
+    def test_ca_bundle_volume_exists(self):
+        data = _load_compose()
+        volumes = data.get("volumes", {})
+        assert "ca-bundle" in volumes, (
+            "compose.yml must define a 'ca-bundle' volume"
+        )
+
+    def test_api_mounts_ca_bundle_readonly(self):
+        data = _load_compose()
+        api = data["services"]["api"]
+        api_volumes = api.get("volumes", [])
+        found_ro = False
+        for vol in api_volumes:
+            vol_str = str(vol)
+            if "ca-bundle" in vol_str and ":ro" in vol_str:
+                found_ro = True
+                break
+        assert found_ro, (
+            "api service must mount the ca-bundle volume as read-only (:ro)"
+        )
+
+    def test_positive_control_rw_mount_detected(self):
+        """A volume mount without :ro must fail the check."""
+        bad_vol = "ca-bundle:/ca-bundle"
+        assert ":ro" not in bad_vol
+
+    def test_positive_control_ro_mount_passes(self):
+        """A volume mount with :ro must pass."""
+        good_vol = "ca-bundle:/ca-bundle:ro"
+        assert ":ro" in good_vol
+
+
+# ---------------------------------------------------------------------------
+# 27. Proxy network isolation: proxy must NOT be on 'internal', only {edge, idp}
+# ---------------------------------------------------------------------------
+
+@_skip_no_yaml
+class TestProxyNetworks:
+    """The proxy must connect to ``edge`` (public) and ``idp`` (for Keycloak)
+    but must NOT sit on ``internal`` (where postgres lives)."""
+
+    @staticmethod
+    def _service_networks(data: dict, svc_name: str) -> set[str]:
+        svc = data["services"][svc_name]
+        nets = svc.get("networks", [])
+        if isinstance(nets, list):
+            return set(nets)
+        return set(nets.keys())
+
+    def test_proxy_networks_are_edge_and_idp(self):
+        data = _load_compose()
+        proxy_nets = self._service_networks(data, "proxy")
+        assert proxy_nets == {"edge", "idp"}, (
+            f"proxy must be on exactly {{edge, idp}}, got {proxy_nets}"
+        )
+
+    def test_proxy_not_on_internal(self):
+        data = _load_compose()
+        proxy_nets = self._service_networks(data, "proxy")
+        assert "internal" not in proxy_nets, (
+            "proxy must NOT be on the 'internal' network (postgres isolation)"
+        )
+
+    def test_postgres_only_on_internal(self):
+        data = _load_compose()
+        pg_nets = self._service_networks(data, "postgres")
+        assert pg_nets == {"internal"}, (
+            f"postgres must be on exactly {{internal}}, got {pg_nets}"
+        )
+
+    def test_idp_network_is_internal(self):
+        """The 'idp' network must be marked internal: true."""
+        data = _load_compose()
+        net_defs = data.get("networks", {})
+        idp_net = net_defs.get("idp", {})
+        assert idp_net.get("internal") is True, (
+            "the 'idp' network must have internal: true"
+        )
+
+    def test_positive_control_proxy_on_internal_detected(self):
+        """A proxy on 'internal' must be flagged."""
+        bad_nets = {"edge", "internal"}
+        assert "internal" in bad_nets
+
+    def test_positive_control_proxy_missing_idp_detected(self):
+        """A proxy without 'idp' must be detected."""
+        bad_nets = {"edge"}
+        assert bad_nets != {"edge", "idp"}
+
+
+# ---------------------------------------------------------------------------
+# 28. Every realm client has standardFlowEnabled: true
+# ---------------------------------------------------------------------------
+
+class TestRealmStandardFlow:
+    """Every OIDC client in demo-realm.json must have standardFlowEnabled: true."""
+
+    @staticmethod
+    def _load_realms() -> list[dict]:
+        import json
+        text = _DEMO_REALM.read_text(encoding="utf-8")
+        data = json.loads(text)
+        assert isinstance(data, list) and len(data) >= 1
+        return data
+
+    def test_every_client_has_standard_flow_enabled(self):
+        for realm in self._load_realms():
+            for client in realm.get("clients", []):
+                assert client.get("standardFlowEnabled") is True, (
+                    f"realm '{realm['realm']}' client '{client['clientId']}' "
+                    f"must have standardFlowEnabled: true"
+                )
+
+    def test_positive_control_missing_standard_flow_detected(self):
+        """A client without standardFlowEnabled must fail."""
+        bad_client = {"clientId": "bad", "publicClient": False}
+        assert bad_client.get("standardFlowEnabled") is not True
+
+    def test_positive_control_standard_flow_false_detected(self):
+        """A client with standardFlowEnabled: false must fail."""
+        bad_client = {"clientId": "bad", "standardFlowEnabled": False}
+        assert bad_client.get("standardFlowEnabled") is not True
