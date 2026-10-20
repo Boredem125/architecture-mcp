@@ -12,6 +12,9 @@ dependencies = [
     "ai-agent-sandbox",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "alembic>=1.13.0",
+    "psycopg[binary]>=3.1.0",
 ]
 
 [project.optional-dependencies]
@@ -23,9 +26,6 @@ dev = [
     "testcontainers[postgres]>=4.0.0",
 ]
 server = [
-    "sqlalchemy[asyncio]>=2.0.0",
-    "alembic>=1.13.0",
-    "psycopg[binary]>=3.1.0",
     "authlib>=1.3.0",
 ]
 
