@@ -45,6 +45,7 @@ _T9_ROUTES = frozenset({
     ("GET", "/api/v1/org/users"),
     ("POST", "/api/v1/org/users"),
     ("POST", "/api/v1/org/members"),
+    ("DELETE", "/api/v1/org/members/{user_id}/{role}"),
     ("GET", "/api/v1/org/audit/verify"),
 })
 
@@ -139,7 +140,6 @@ def _check_all_api_routes_declare_rbac(app) -> list[tuple[str, str]]:
 # ===================================================================
 
 
-@RED_T9
 def test_frozen_route_set():
     """The full (method, path) set equals the design table + T8 auth + infra."""
     try:
@@ -165,7 +165,6 @@ def test_frozen_route_set():
     )
 
 
-@RED_T9
 def test_all_api_routes_declare_rbac():
     """Every /api route except the 3 pre-auth auth routes declares x-agg-rbac."""
     try:
@@ -190,7 +189,6 @@ def test_all_api_routes_declare_rbac():
     )
 
 
-@RED_T9
 def test_planted_undeclared_route_detected():
     """Positive control: a planted route without x-agg-rbac is detected."""
     try:

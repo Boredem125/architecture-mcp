@@ -101,6 +101,74 @@ def csrf_token_for(session_token: str) -> str:
     return base64.urlsafe_b64encode(mac).rstrip(b"=").decode("ascii")
 
 
+def validate_session(conn, request, clock):
+    """Validate the ``__Host-agg_session`` cookie on *conn*.
+
+    Sets ``app.org_id`` transaction-locally, checks token hash, expiry,
+    idle timeout, revocation, and touches ``last_seen_at``.
+
+    Returns ``((org_id, user_id, session_id, session_token, csrf_hash), None)``
+    on success or ``(None, error_response)`` on failure.
+
+    Does **not** commit; the caller is responsible for commit/rollback.
+    Used by both the auth router (logout) and the api router (all T9
+    routes), eliminating duplicate session validation logic.
+    """
+    cookie = request.cookies.get("__Host-agg_session")
+    if not cookie:
+        return None, JSONResponse({"error": "no_session"}, status_code=401)
+
+    parts = cookie.split(".", 1)
+    if len(parts) != 2:
+        return None, JSONResponse({"error": "bad_session"}, status_code=401)
+
+    try:
+        org_id = uuid.UUID(parts[0])
+    except ValueError:
+        return None, JSONResponse({"error": "bad_session"}, status_code=401)
+
+    token = parts[1]
+    token_hash = _sha256_hex(token)
+    now = clock.now()
+
+    conn.execute(
+        "SELECT set_config('app.org_id', %s, true)", [str(org_id)],
+    )
+    row = conn.execute(
+        "SELECT id, user_id, expires_at, last_seen_at, revoked_at, "
+        "csrf_hash FROM web_sessions WHERE token_hash = %s",
+        [token_hash],
+    ).fetchone()
+
+    if row is None:
+        return None, JSONResponse(
+            {"error": "session_not_found"}, status_code=401,
+        )
+
+    session_id, user_id, expires_at, last_seen_at, revoked_at, csrf_hash = row
+
+    if revoked_at is not None:
+        return None, JSONResponse(
+            {"error": "session_revoked"}, status_code=401,
+        )
+    if now >= expires_at:
+        return None, JSONResponse(
+            {"error": "session_expired"}, status_code=401,
+        )
+    idle = (now - last_seen_at).total_seconds()
+    if idle >= _SESSION_IDLE_S:
+        return None, JSONResponse(
+            {"error": "session_idle"}, status_code=401,
+        )
+
+    conn.execute(
+        "UPDATE web_sessions SET last_seen_at = %s WHERE id = %s",
+        [now, session_id],
+    )
+
+    return (org_id, user_id, session_id, token, csrf_hash), None
+
+
 # ---------------------------------------------------------------------------
 # Route factory
 # ---------------------------------------------------------------------------
@@ -744,7 +812,7 @@ def build_auth_router(
     # ---------------------------------------------------------------
     # POST /logout
     # ---------------------------------------------------------------
-    @router.post("/logout")
+    @router.post("/logout", openapi_extra={"x-agg-rbac": {"role": "session", "scope": "session"}})
     def logout(request: Request) -> Response:
         # require_session
         session_result = _do_require_session(request)
@@ -797,64 +865,14 @@ def build_auth_router(
         """Parse session cookie, validate, update last_seen_at.
 
         Returns (org_id, user_id, session_id) or a 401 Response.
+        Delegates to :func:`validate_session` for the actual checks.
         """
-        cookie = request.cookies.get("__Host-agg_session")
-        if not cookie:
-            return JSONResponse({"error": "no_session"}, status_code=401)
-
-        parts = cookie.split(".", 1)
-        if len(parts) != 2:
-            return JSONResponse({"error": "bad_session"}, status_code=401)
-
-        try:
-            org_id = uuid.UUID(parts[0])
-        except ValueError:
-            return JSONResponse({"error": "bad_session"}, status_code=401)
-
-        token = parts[1]
-        token_hash = _sha256_hex(token)
-        now = clock.now()
-
         with _app_conn(conninfo) as conn:
-            conn.execute(
-                "SELECT set_config('app.org_id', %s, true)", [str(org_id)],
-            )
-            row = conn.execute(
-                "SELECT id, user_id, expires_at, last_seen_at, revoked_at "
-                "FROM web_sessions WHERE token_hash = %s",
-                [token_hash],
-            ).fetchone()
-
-            if row is None:
-                return JSONResponse(
-                    {"error": "session_not_found"}, status_code=401,
-                )
-
-            session_id, user_id, expires_at, last_seen_at, revoked_at = row
-
-            if revoked_at is not None:
-                return JSONResponse(
-                    {"error": "session_revoked"}, status_code=401,
-                )
-
-            if now >= expires_at:
-                return JSONResponse(
-                    {"error": "session_expired"}, status_code=401,
-                )
-
-            idle = (now - last_seen_at).total_seconds()
-            if idle >= _SESSION_IDLE_S:
-                return JSONResponse(
-                    {"error": "session_idle"}, status_code=401,
-                )
-
-            # Touch last_seen_at
-            conn.execute(
-                "UPDATE web_sessions SET last_seen_at = %s WHERE id = %s",
-                [now, session_id],
-            )
+            result, err = validate_session(conn, request, clock)
+            if err:
+                return err
+            org_id, user_id, session_id, _token, _csrf_hash = result
             conn.commit()
-
         return (org_id, user_id, session_id)
 
     # ---------------------------------------------------------------
