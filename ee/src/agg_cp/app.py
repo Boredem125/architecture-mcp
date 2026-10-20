@@ -84,7 +84,10 @@ def create_app(
     are passed through to the auth router.
     """
     if settings is None:
-        settings = Settings(db_url=db_url)
+        if db_url is not None:
+            settings = Settings(db_url=db_url)
+        else:
+            settings = settings_from_env()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

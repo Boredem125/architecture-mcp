@@ -435,27 +435,38 @@ def build_api_router(*, db_url: str, clock: Clock) -> APIRouter:
 
             binding_id = uuid.uuid4()
             now = clock.now()
-            conn.execute(
+            inserted = conn.execute(
                 "INSERT INTO role_bindings "
                 "(id, org_id, user_id, scope_type, scope_id, role, "
                 "created_at) "
                 "VALUES (%s, %s, %s, 'project', %s, %s, %s) "
                 "ON CONFLICT (org_id, user_id, scope_type, scope_id, role) "
-                "DO NOTHING",
+                "DO NOTHING RETURNING id",
                 [binding_id, org_id, target_uid,
                  project_id, body.role, now],
-            )
-            conn.execute(
-                "INSERT INTO admin_audit (id, org_id, action, detail) "
-                "VALUES (%s, %s, 'role_granted', %s)",
-                [uuid.uuid4(), org_id,
-                 _json.dumps({
-                     "user_id": str(target_uid),
-                     "project_id": str(project_id),
-                     "role": body.role,
-                     "scope_type": "project",
-                 })],
-            )
+            ).fetchone()
+
+            if not inserted:
+                # Already granted: report the existing binding's id.
+                binding_id = conn.execute(
+                    "SELECT id FROM role_bindings WHERE org_id = %s "
+                    "AND user_id = %s AND scope_type = 'project' "
+                    "AND scope_id = %s AND role = %s",
+                    [org_id, target_uid, project_id, body.role],
+                ).fetchone()[0]
+            if inserted:
+                conn.execute(
+                    "INSERT INTO admin_audit "
+                    "(id, org_id, action, detail) "
+                    "VALUES (%s, %s, 'role_granted', %s)",
+                    [uuid.uuid4(), org_id,
+                     _json.dumps({
+                         "user_id": str(target_uid),
+                         "project_id": str(project_id),
+                         "role": body.role,
+                         "scope_type": "project",
+                     })],
+                )
             conn.commit()
 
         return JSONResponse({"id": str(binding_id)}, status_code=201)
@@ -676,25 +687,36 @@ def build_api_router(*, db_url: str, clock: Clock) -> APIRouter:
 
             binding_id = uuid.uuid4()
             now = clock.now()
-            conn.execute(
+            inserted = conn.execute(
                 "INSERT INTO role_bindings "
                 "(id, org_id, user_id, scope_type, scope_id, role, "
                 "created_at) "
                 "VALUES (%s, %s, %s, 'org', %s, %s, %s) "
                 "ON CONFLICT (org_id, user_id, scope_type, scope_id, role) "
-                "DO NOTHING",
+                "DO NOTHING RETURNING id",
                 [binding_id, org_id, target_uid, org_id, body.role, now],
-            )
-            conn.execute(
-                "INSERT INTO admin_audit (id, org_id, action, detail) "
-                "VALUES (%s, %s, 'role_granted', %s)",
-                [uuid.uuid4(), org_id,
-                 _json.dumps({
-                     "user_id": str(target_uid),
-                     "role": body.role,
-                     "scope_type": "org",
-                 })],
-            )
+            ).fetchone()
+
+            if not inserted:
+                # Already granted: report the existing binding's id.
+                binding_id = conn.execute(
+                    "SELECT id FROM role_bindings WHERE org_id = %s "
+                    "AND user_id = %s AND scope_type = 'org' "
+                    "AND scope_id = %s AND role = %s",
+                    [org_id, target_uid, org_id, body.role],
+                ).fetchone()[0]
+            if inserted:
+                conn.execute(
+                    "INSERT INTO admin_audit "
+                    "(id, org_id, action, detail) "
+                    "VALUES (%s, %s, 'role_granted', %s)",
+                    [uuid.uuid4(), org_id,
+                     _json.dumps({
+                         "user_id": str(target_uid),
+                         "role": body.role,
+                         "scope_type": "org",
+                     })],
+                )
             conn.commit()
 
         return JSONResponse({"id": str(binding_id)}, status_code=201)
