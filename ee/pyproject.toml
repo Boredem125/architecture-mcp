@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agg-control-plane"
+version = "0.1.0"
+description = "Agent Governance Gateway: self-hosted control plane (Elastic License 2.0)"
+requires-python = ">=3.12"
+license = { text = "Elastic-2.0" }
+dependencies = [
+    "ai-agent-sandbox",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "httpx>=0.27.0",
+    "import-linter>=2.0",
+]
+server = [
+    "sqlalchemy[asyncio]>=2.0.0",
+    "alembic>=1.13.0",
+    "psycopg[binary]>=3.1.0",
+    "authlib>=1.3.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agg_cp"]

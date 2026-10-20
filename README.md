@@ -61,4 +61,6 @@ Optional intent-aware layer: `pip install -e ".[semantic]"`, then `jevos serve` 
 
 *Compliance mappings show design intent, not certification. No software is "compliant" on its own; organisations are.*
 
-Licensed under [MIT](LICENSE).
+## Licence
+
+Everything outside `ee/` is licensed under the [MIT License](LICENSE). The `ee/` directory contains the self-hosted control plane and is licensed under the [Elastic License 2.0](ee/LICENSE).

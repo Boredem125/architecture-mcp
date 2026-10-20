@@ -23,11 +23,6 @@ class EESkeletonOpen(Exception):
     """The ee/ skeleton is not built yet (M1 T5)."""
 
 
-RED_T5 = pytest.mark.xfail(
-    raises=EESkeletonOpen, strict=True,
-    reason="M1 T5: ee/ skeleton not yet built",
-)
-
 
 def _require(cond: bool, msg: str) -> None:
     if not cond:
@@ -62,7 +57,6 @@ def _get_test_client():
 # ---------------------------------------------------------------------------
 
 
-@RED_T5
 def test_health_returns_200():
     """GET /health returns 200."""
     client = _get_test_client()
@@ -70,7 +64,6 @@ def test_health_returns_200():
     _require(resp.status_code == 200, f"/health returned {resp.status_code}, expected 200")
 
 
-@RED_T5
 def test_health_returns_json():
     """GET /health returns a JSON body."""
     client = _get_test_client()
@@ -80,7 +73,6 @@ def test_health_returns_json():
     _require(isinstance(body, dict), f"/health body is not a dict: {type(body)}")
 
 
-@RED_T5
 def test_health_has_status_field():
     """GET /health JSON contains a ``status`` key."""
     client = _get_test_client()
@@ -95,7 +87,6 @@ def test_health_has_status_field():
 # ---------------------------------------------------------------------------
 
 
-@RED_T5
 def test_ready_route_exists():
     """GET /ready returns an HTTP response (not 404/405)."""
     client = _get_test_client()
@@ -106,7 +97,6 @@ def test_ready_route_exists():
     )
 
 
-@RED_T5
 def test_ready_returns_json():
     """GET /ready returns a JSON body."""
     client = _get_test_client()
@@ -116,7 +106,6 @@ def test_ready_returns_json():
     _require(isinstance(body, dict), f"/ready body is not a dict: {type(body)}")
 
 
-@RED_T5
 def test_ready_has_status_field():
     """GET /ready JSON contains a ``status`` key."""
     client = _get_test_client()
