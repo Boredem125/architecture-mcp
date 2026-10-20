@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import secrets
+import sys
 import uuid
 
 from agg_cp.db import alembic_config
@@ -24,7 +25,7 @@ def _sync_conninfo(url: str) -> str:
     return url.replace("+psycopg", "")
 
 
-def main() -> None:
+def main() -> int | None:
     """Run alembic upgrade head, then optionally emit a setup code."""
     from alembic import command as alembic_cmd
 
@@ -39,6 +40,12 @@ def main() -> None:
     slug = os.environ.get("AGG_BOOTSTRAP_ORG_SLUG")
     if not slug:
         return
+    from agg_cp.auth import is_valid_slug
+
+    if not is_valid_slug(slug):
+        print("AGG_BOOTSTRAP_ORG_SLUG must match [a-z0-9][a-z0-9-]{0,62}",
+              file=sys.stderr)
+        return 2
 
     org_name = os.environ.get("AGG_BOOTSTRAP_ORG_NAME", slug)
     org_issuer = os.environ.get("AGG_BOOTSTRAP_ORG_ISSUER")
@@ -139,4 +146,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
