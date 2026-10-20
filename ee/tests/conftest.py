@@ -120,3 +120,59 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> None:
         f"FAILED: pg-marked test was skipped in CI (CI=true). "
         f"Postgres must be available in CI. Original skip reason: {report.longrepr}"
     )
+
+
+# ---------------------------------------------------------------------------
+# T7 fixtures: DB roles and connection URLs
+# ---------------------------------------------------------------------------
+
+def _replace_url_credentials(url: str, user: str, password: str) -> str:
+    """Replace user:password in a ``postgresql+psycopg://`` URL."""
+    prefix_end = url.index("://") + 3
+    at_idx = url.index("@", prefix_end)
+    return f"{url[:prefix_end]}{user}:{password}@{url[at_idx + 1:]}"
+
+
+@pytest.fixture(scope="session")
+def pg_roles(pg_url):
+    """Create ``agg_owner``, ``agg_app``, ``agg_worker`` roles.
+
+    T7 contract: migrations must not hard-code passwords; this fixture
+    creates login passwords for the roles themselves (M1_PLAN D5.2).
+    """
+    import psycopg
+
+    conninfo = pg_url.replace("+psycopg", "")
+    with psycopg.connect(conninfo, autocommit=True) as conn:
+        for stmt in [
+            "DO $$ BEGIN "
+            "  CREATE ROLE agg_owner WITH LOGIN PASSWORD 'test_owner'; "
+            "EXCEPTION WHEN duplicate_object THEN NULL; END $$",
+            "DO $$ BEGIN "
+            "  CREATE ROLE agg_app WITH LOGIN PASSWORD 'test_app' "
+            "  NOSUPERUSER NOBYPASSRLS; "
+            "EXCEPTION WHEN duplicate_object THEN NULL; END $$",
+            "DO $$ BEGIN "
+            "  CREATE ROLE agg_worker WITH NOLOGIN; "
+            "EXCEPTION WHEN duplicate_object THEN NULL; END $$",
+        ]:
+            conn.execute(stmt)
+        # Grant baseline schema usage so migrations and queries work
+        db = conn.execute("SELECT current_database()").fetchone()[0]
+        conn.execute(f'GRANT ALL ON DATABASE "{db}" TO agg_owner')
+        conn.execute(f'GRANT CONNECT ON DATABASE "{db}" TO agg_app')
+        conn.execute("GRANT USAGE ON SCHEMA public TO agg_owner")
+        conn.execute("GRANT CREATE ON SCHEMA public TO agg_owner")
+        conn.execute("GRANT USAGE ON SCHEMA public TO agg_app")
+
+
+@pytest.fixture(scope="session")
+def app_url(pg_url, pg_roles):
+    """``postgresql+psycopg://`` URL for the ``agg_app`` role."""
+    return _replace_url_credentials(pg_url, "agg_app", "test_app")
+
+
+@pytest.fixture(scope="session")
+def owner_url(pg_url, pg_roles):
+    """``postgresql+psycopg://`` URL for the ``agg_owner`` role."""
+    return _replace_url_credentials(pg_url, "agg_owner", "test_owner")

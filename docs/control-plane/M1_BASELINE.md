@@ -72,6 +72,9 @@ Each task's new tests are committed as strict xfail (`raises=<named exception>`)
 | T6 clock lint | `ee/tests/test_t6_clock.py` (ee) | 9 | 2 | 7 | tests first (this commit) |
 | T6 module-state lint | `ee/tests/test_t6_module_state.py` (ee) | 12 | 0 | 12 | tests first (this commit) |
 | T6 CI-skip rule | `ee/tests/test_t6_ci_skip.py` (ee) | 2 | 0 | 2 | tests first (this commit) |
+| T7 RLS/catalog/visibility | `ee/tests/test_t7_rls.py` (ee) | 16 | 14 | 2 | tests first (this commit) |
+| T7 admin_audit chain | `ee/tests/test_t7_audit.py` (ee) | 9 | 9 | 0 | tests first (this commit) |
+| T7 pre-auth + downgrade | `ee/tests/test_t7_preauth.py` (ee) | 4 | 4 | 0 | tests first (this commit) |
 
 **N** (the Phase A count in the M1 gate) = the sum of this table's "Tests" column once T1-T4 are written; written here before any fix runs.
 
@@ -180,3 +183,93 @@ ee/tests/test_t6_ci_skip.py::test_non_ci_skip_pg_is_ok
 **ee/ suite at this commit (local Windows):** 42 collected, 32 passed, 10 xfailed, 0 failed. The 10 xfailed are: 8 from test_t6_pg_harness.py (T6 code not yet built) and 2 from test_t6_clock.py (agg_cp.clock not yet built).
 
 **Root suite at this commit (local Windows):** 1760 passed, 1 skipped (symlink), 0 failed -- unchanged from T5.
+
+### T7 (M1 tables, roles, RLS, admin_audit chain, SEC-07)
+
+`ee/tests/test_t7_rls.py`: 16 tests (14 strict xfail, 2 guards).
+`ee/tests/test_t7_audit.py`: 9 tests (9 strict xfail, 0 guards).
+`ee/tests/test_t7_preauth.py`: 4 tests (4 strict xfail, 0 guards).
+`ee/tests/conftest.py`: T7 additions -- `_replace_url_credentials` helper, `pg_roles` fixture (creates agg_owner/agg_app/agg_worker with test passwords), `app_url` and `owner_url` session fixtures.
+
+Total T7: 29 new tests (27 strict xfail, 2 guards/passing).
+- Hash chain convention: SHA-256 of canonical JSON (sorted keys, compact separators) of non-chain columns; genesis = `"0" * 64` (matching `chain.py:_GENESIS_HASH`); type serialisation: UUID -> str, datetime -> isoformat, jsonb -> dict.
+- ADR gap noted: the exact serialisation of DB column types for the record_hash is implied by reference to the connector's `audit.py` pattern (ADR 0002 -> ADR 0001 s5), not spelled out for admin_audit.  The test defines the convention; the implementation must match.
+
+Frozen `ee/` node-id list (T5 + T6 + T7, Q7c):
+```
+ee/tests/test_health.py::test_health_returns_200
+ee/tests/test_health.py::test_health_returns_json
+ee/tests/test_health.py::test_health_has_status_field
+ee/tests/test_health.py::test_ready_route_exists
+ee/tests/test_health.py::test_ready_returns_json
+ee/tests/test_health.py::test_ready_has_status_field
+ee/tests/test_import_contract.py::test_import_linter_contract_passes
+ee/tests/test_import_contract.py::test_import_linter_positive_control_catches_violation
+ee/tests/test_import_contract.py::test_ee_package_has_pyproject
+ee/tests/test_import_contract.py::test_ee_has_license
+ee/tests/test_t6_pg_harness.py::test_ci_workflow_pg_image_matches
+ee/tests/test_t6_pg_harness.py::test_make_engine_select_1
+ee/tests/test_t6_pg_harness.py::test_alembic_config_loadable
+ee/tests/test_t6_pg_harness.py::test_alembic_round_trip
+ee/tests/test_t6_pg_harness.py::test_alembic_every_revision_has_downgrade
+ee/tests/test_t6_pg_harness.py::test_ready_200_when_db_reachable_and_at_head
+ee/tests/test_t6_pg_harness.py::test_ready_503_behind_head
+ee/tests/test_t6_pg_harness.py::test_ready_503_unreachable_db
+ee/tests/test_t6_pg_harness.py::test_health_stays_200_without_db
+ee/tests/test_t6_clock.py::test_no_clock_violations_in_agg_cp
+ee/tests/test_t6_clock.py::test_positive_control_time_time_flagged
+ee/tests/test_t6_clock.py::test_positive_control_from_datetime_now_flagged
+ee/tests/test_t6_clock.py::test_positive_control_time_time_ns_flagged
+ee/tests/test_t6_clock.py::test_positive_control_datetime_utcnow_flagged
+ee/tests/test_t6_clock.py::test_positive_control_date_today_flagged
+ee/tests/test_t6_clock.py::test_positive_control_from_time_import_time_flagged
+ee/tests/test_t6_clock.py::test_clock_module_exists
+ee/tests/test_t6_clock.py::test_system_clock_returns_utc
+ee/tests/test_t6_module_state.py::test_no_module_level_mutable_state_in_agg_cp
+ee/tests/test_t6_module_state.py::test_positive_control_empty_dict_flagged
+ee/tests/test_t6_module_state.py::test_positive_control_defaultdict_flagged
+ee/tests/test_t6_module_state.py::test_positive_control_list_literal_flagged
+ee/tests/test_t6_module_state.py::test_positive_control_set_call_flagged
+ee/tests/test_t6_module_state.py::test_positive_control_list_comprehension_flagged
+ee/tests/test_t6_module_state.py::test_positive_control_tuple_allowed
+ee/tests/test_t6_module_state.py::test_positive_control_frozenset_allowed
+ee/tests/test_t6_module_state.py::test_positive_control_constant_allowed
+ee/tests/test_t6_module_state.py::test_positive_control_collections_deque_flagged
+ee/tests/test_t6_module_state.py::test_positive_control_counter_flagged
+ee/tests/test_t6_module_state.py::test_positive_control_ordered_dict_flagged
+ee/tests/test_t6_ci_skip.py::test_ci_skip_pg_is_failure
+ee/tests/test_t6_ci_skip.py::test_non_ci_skip_pg_is_ok
+ee/tests/test_t7_rls.py::test_guard_agg_app_connection
+ee/tests/test_t7_rls.py::test_guard_agg_worker_nologin
+ee/tests/test_t7_rls.py::test_rls_enabled_and_forced
+ee/tests/test_t7_rls.py::test_table_owner_is_agg_owner
+ee/tests/test_t7_rls.py::test_every_table_has_at_least_one_policy
+ee/tests/test_t7_rls.py::test_secdef_prosecdef
+ee/tests/test_t7_rls.py::test_secdef_search_path
+ee/tests/test_t7_rls.py::test_secdef_no_public_execute
+ee/tests/test_t7_rls.py::test_secdef_agg_app_execute
+ee/tests/test_t7_rls.py::test_secdef_owner_not_superuser
+ee/tests/test_t7_rls.py::test_visibility_org_a_sees_own
+ee/tests/test_t7_rls.py::test_visibility_org_unset_zero
+ee/tests/test_t7_rls.py::test_visibility_org_empty_zero
+ee/tests/test_t7_rls.py::test_visibility_org_b_never_sees_a
+ee/tests/test_t7_rls.py::test_insert_wrong_org_refused
+ee/tests/test_t7_rls.py::test_pooled_no_leak
+ee/tests/test_t7_audit.py::test_audit_update_rejected_agg_app
+ee/tests/test_t7_audit.py::test_audit_update_rejected_agg_owner
+ee/tests/test_t7_audit.py::test_audit_delete_rejected_agg_app
+ee/tests/test_t7_audit.py::test_audit_delete_rejected_agg_owner
+ee/tests/test_t7_audit.py::test_audit_truncate_rejected_agg_app
+ee/tests/test_t7_audit.py::test_audit_truncate_rejected_agg_owner
+ee/tests/test_t7_audit.py::test_audit_insert_select_agg_app
+ee/tests/test_t7_audit.py::test_audit_chain_verifiable
+ee/tests/test_t7_audit.py::test_audit_chain_flipped_byte
+ee/tests/test_t7_preauth.py::test_preauth_known_slug
+ee/tests/test_t7_preauth.py::test_preauth_unknown_slug
+ee/tests/test_t7_preauth.py::test_preauth_no_direct_oidc
+ee/tests/test_t7_preauth.py::test_downgrade_removes_objects
+```
+
+**ee/ suite at this commit (local Windows):** 71 collected, 44 passed, 27 xfailed, 0 failed. The 27 xfailed are all T7 RED tests (T7 migration not yet built). The 2 T7 guards (test_guard_agg_app_connection, test_guard_agg_worker_nologin) pass now because the conftest fixture creates the roles.
+
+**Root suite at this commit (local Windows):** 1760 passed, 1 skipped (symlink), 0 failed -- unchanged from T6.
