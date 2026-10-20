@@ -24,7 +24,6 @@ import pytest
 
 from .t8p2_helpers import (
     T8P2Pending,
-    RED_T8P2,
     require_t8p2,
     FakeClock,
     FakeIdP,
@@ -100,7 +99,7 @@ def _is_route_missing_404(resp) -> bool:
 # ===================================================================
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_login_unknown_slug_404(pg_url, app_url, owner_url, pg_roles):
     """GET /api/v1/auth/login?org=nonexistent returns 404."""
@@ -123,7 +122,7 @@ def test_login_unknown_slug_404(pg_url, app_url, owner_url, pg_roles):
     assert resp.status_code == 404
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_login_unknown_slug_same_body(pg_url, app_url, owner_url, pg_roles):
     """Two different unknown slugs return the same 404 body (no info leak)."""
@@ -156,7 +155,7 @@ def test_login_unknown_slug_same_body(pg_url, app_url, owner_url, pg_roles):
 # ===================================================================
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_login_302_redirect_uri(pg_url, app_url, owner_url, pg_roles):
     """302 Location has exact redirect_uri matching AGG_PUBLIC_URL + callback path."""
@@ -173,7 +172,7 @@ def test_login_302_redirect_uri(pg_url, app_url, owner_url, pg_roles):
     assert params["redirect_uri"] == ["https://testserver/api/v1/auth/callback"]
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_login_302_s256_challenge(pg_url, app_url, owner_url, pg_roles):
     """302 Location has code_challenge_method=S256 and a code_challenge."""
@@ -191,7 +190,7 @@ def test_login_302_s256_challenge(pg_url, app_url, owner_url, pg_roles):
     assert len(params["code_challenge"][0]) > 20
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_login_302_state_nonce(pg_url, app_url, owner_url, pg_roles):
     """302 Location has state and nonce query parameters."""
@@ -215,7 +214,7 @@ def test_login_302_state_nonce(pg_url, app_url, owner_url, pg_roles):
 # ===================================================================
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_login_cookie_attributes(pg_url, app_url, owner_url, pg_roles):
     """agg_login cookie: Secure, HttpOnly, SameSite=Lax, Path=/api/v1/auth, Max-Age=600."""
@@ -254,7 +253,7 @@ def test_login_cookie_attributes(pg_url, app_url, owner_url, pg_roles):
 # ===================================================================
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_login_http_issuer_refused(pg_url, app_url, owner_url, pg_roles):
     """An org with an http:// (not https) issuer is refused during login."""
@@ -282,7 +281,7 @@ def test_login_http_issuer_refused(pg_url, app_url, owner_url, pg_roles):
     )
 
 
-@RED_T8P2
+
 @pytest.mark.pg
 def test_login_private_address_issuer_refused(pg_url, app_url, owner_url, pg_roles):
     """An issuer that resolves to a private address is refused."""

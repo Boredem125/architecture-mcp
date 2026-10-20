@@ -315,18 +315,22 @@ def test_ready_503_behind_head(pg_url: str, pg_roles):
     # Downgrade to base so schema is behind head
     alembic_cmd.downgrade(cfg, "base")
 
-    client = _get_app_with_db(pg_url)
-    resp = client.get("/ready")
-    assert resp.status_code == 503, (
-        f"/ready returned {resp.status_code} when behind head, expected 503"
-    )
-    body = resp.json()
-    assert "status" in body, f"/ready 503 body missing 'status': {body}"
-    # Should mention being behind head (non-secret reason)
-    body_str = str(body).lower()
-    assert "behind" in body_str or "head" in body_str or "migration" in body_str, (
-        f"/ready 503 body should mention being behind head: {body}"
-    )
+    try:
+        client = _get_app_with_db(pg_url)
+        resp = client.get("/ready")
+        assert resp.status_code == 503, (
+            f"/ready returned {resp.status_code} when behind head, expected 503"
+        )
+        body = resp.json()
+        assert "status" in body, f"/ready 503 body missing 'status': {body}"
+        # Should mention being behind head (non-secret reason)
+        body_str = str(body).lower()
+        assert "behind" in body_str or "head" in body_str or "migration" in body_str, (
+            f"/ready 503 body should mention being behind head: {body}"
+        )
+    finally:
+        # Restore to head for subsequent tests
+        alembic_cmd.upgrade(cfg, "head")
 
 
 def test_ready_503_unreachable_db():
