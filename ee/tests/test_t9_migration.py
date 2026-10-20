@@ -91,7 +91,6 @@ def _head_is_at_least_0004(pg_url: str) -> bool:
 # ===================================================================
 
 
-@RED_T9
 @pytest.mark.pg
 def test_0004_unique_index_exists(pg_url, app_url, owner_url, pg_roles):
     """0004 adds a unique index on role_bindings (org_id, user_id, scope_type, scope_id, role)."""
@@ -112,7 +111,6 @@ def test_0004_unique_index_exists(pg_url, app_url, owner_url, pg_roles):
 # ===================================================================
 
 
-@RED_T9
 @pytest.mark.pg
 def test_0004_check_constraints_refuse_bad_values(pg_url, app_url, owner_url, pg_roles):
     """CHECK constraints refuse bad role, scope_type, and environment values."""
@@ -171,7 +169,6 @@ def test_0004_check_constraints_refuse_bad_values(pg_url, app_url, owner_url, pg
         conn.rollback()
 
 
-@RED_T9
 @pytest.mark.pg
 def test_0004_check_constraints_good_values_pass(pg_url, app_url, owner_url, pg_roles):
     """Positive control: valid role, scope_type, and environment values pass CHECK constraints."""
@@ -226,7 +223,6 @@ def test_0004_check_constraints_good_values_pass(pg_url, app_url, owner_url, pg_
 # ===================================================================
 
 
-@RED_T9
 @pytest.mark.pg
 def test_0004_downgrade_removes_additions(pg_url, pg_roles):
     """Downgrading from 0004 to 0003 removes the unique index and CHECK constraints."""

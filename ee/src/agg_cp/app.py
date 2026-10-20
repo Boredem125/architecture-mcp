@@ -99,6 +99,7 @@ def create_app(
 
     app = FastAPI(
         title="Agent Governance Gateway - Control Plane",
+        openapi_url=None,
         docs_url=None,
         redoc_url=None,
         lifespan=lifespan,
@@ -143,7 +144,17 @@ def create_app(
             oidc_secrets_dir=settings.oidc_secrets_dir,
             oidc_allow_hosts=allow_hosts,
         )
-        app.include_router(auth_router)
+        # Add routes directly so they appear as top-level APIRoute
+        # objects on app.routes (FastAPI 0.154+ wraps include_router
+        # in _IncludedRouter which hides routes from introspection).
+        for _r in auth_router.routes:
+            app.router.routes.append(_r)
+
+        from .api import build_api_router
+
+        api_router = build_api_router(db_url=settings.db_url, clock=actual_clock)
+        for _r in api_router.routes:
+            app.router.routes.append(_r)
 
     @app.get("/health")
     async def health() -> JSONResponse:
