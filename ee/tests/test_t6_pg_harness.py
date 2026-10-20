@@ -112,7 +112,7 @@ def test_alembic_config_loadable(pg_url: str):
 
 
 @pytest.mark.pg
-def test_alembic_round_trip(pg_url: str):
+def test_alembic_round_trip(pg_url: str, pg_roles):
     """Alembic up/down round trip: upgrade head, snapshot, downgrade base,
     upgrade head, snapshot equal.
 
@@ -288,7 +288,7 @@ def test_alembic_every_revision_has_downgrade():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.pg
-def test_ready_200_when_db_reachable_and_at_head(pg_url: str):
+def test_ready_200_when_db_reachable_and_at_head(pg_url: str, pg_roles):
     """/ready returns 200 {"status": "ok"} when DB reachable AND schema at
     Alembic head."""
     # First, run migrations to head
@@ -306,7 +306,7 @@ def test_ready_200_when_db_reachable_and_at_head(pg_url: str):
 
 
 @pytest.mark.pg
-def test_ready_503_behind_head(pg_url: str):
+def test_ready_503_behind_head(pg_url: str, pg_roles):
     """/ready returns 503 when schema is behind Alembic head."""
     db = _import_db()
     cfg = db.alembic_config(pg_url)

@@ -1,35 +1,35 @@
-"""M1 T7 tests-first: admin_audit append-only, hash chain, triggers.
+"""M1 T7 tests: admin_audit append-only, hash chain, triggers.
 
-Contract (M1_PLAN D5.3, ADR 0002 amendment 4, SEC-07):
+Contract (M1_PLAN D5.3, ADR 0002 amendments 4 and 6, SEC-07):
 
 - ``agg_app`` has INSERT, SELECT only on admin_audit.
 - Row triggers reject UPDATE and DELETE for *every* role (including
   agg_owner).
 - BEFORE TRUNCATE trigger rejects; TRUNCATE privilege revoked.
-- Hash-chained per org: each row stores ``previous_hash`` (prior row's
-  ``record_hash``) and its own ``record_hash``.  First row per org
-  chains from a fixed genesis (``"0" * 64``, matching the connector's
-  ``chain.py:_GENESIS_HASH``).
-- Hash convention (implied by ADR 0002 reference to ADR 0001 s5 and
-  the connector's ``audit.py``):
-    record_hash = SHA-256(canonical_json(body))
-    body = all columns except {previous_hash, record_hash, chain_length}
-    canonical_json = json.dumps(body, separators=(",",":"),
-                                sort_keys=True, default=_json_default)
-  Type serialisation: UUID -> str, datetime -> isoformat, jsonb -> dict.
-
-Tests marked RED_T7 are strict xfail before T7 migration code exists.
+- Hash-chained per org (ADR 0002 item 6): a BEFORE INSERT trigger
+  computes chain_length, previous_hash, created_at and record_hash,
+  overwriting anything the client sent.
+- ``record_hash`` = lowercase hex SHA-256 of the UTF-8 text of
+  ``admin_audit_canonical(row)`` (a SQL function that builds a jsonb
+  object of every column except record_hash, with UUIDs as text and
+  timestamps as ``to_char(ts AT TIME ZONE 'UTC',
+  'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')``).
+- First row per org chains from ``"0" * 64``.
+- Python verification reads ``admin_audit_canonical(t)::text`` from
+  the database and recomputes SHA-256 (``agg_cp.audit.verify_chain``).
 """
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import json
 import uuid
 
 import pytest
 
+
 # ---------------------------------------------------------------------------
-# Named exception
+# Named exception (guard checks)
 # ---------------------------------------------------------------------------
 
 
@@ -42,14 +42,7 @@ def _require(cond: bool, msg: str) -> None:
         raise T7Pending(msg)
 
 
-RED_T7 = pytest.mark.xfail(
-    raises=(T7Pending,),
-    strict=True,
-    reason="M1 T7: admin_audit triggers / chain not yet built",
-)
-
 GENESIS = "0" * 64  # matches chain.py _GENESIS_HASH
-CHAIN_COLS = frozenset({"previous_hash", "record_hash", "chain_length"})
 
 
 # ---------------------------------------------------------------------------
@@ -81,27 +74,6 @@ def _check_audit_table(url: str) -> None:
             ")"
         ).fetchone()[0]
         _require(exists, "admin_audit table does not exist")
-
-
-def _json_default(obj):
-    """JSON serialiser for DB column types."""
-    if isinstance(obj, uuid.UUID):
-        return str(obj)
-    if hasattr(obj, "isoformat"):
-        return obj.isoformat()
-    raise TypeError(f"Cannot serialise {type(obj)}")
-
-
-def _compute_record_hash(body: dict) -> str:
-    """SHA-256 of canonical JSON of the non-chain body columns."""
-    return hashlib.sha256(
-        json.dumps(
-            body,
-            separators=(",", ":"),
-            sort_keys=True,
-            default=_json_default,
-        ).encode("utf-8")
-    ).hexdigest()
 
 
 # Seed cache (module scope)
@@ -141,7 +113,6 @@ def _seed_org(owner_url: str) -> uuid.UUID:
 # ===================================================================
 
 
-@RED_T7
 @pytest.mark.pg
 def test_audit_update_rejected_agg_app(pg_url, app_url, owner_url, pg_roles):
     """UPDATE on admin_audit is rejected for agg_app."""
@@ -165,7 +136,9 @@ def test_audit_update_rejected_agg_app(pg_url, app_url, owner_url, pg_roles):
         conn.execute(
             "SELECT set_config('app.org_id', %s, false)", [str(org_id)]
         )
-        with pytest.raises(psycopg.errors.RaiseException):
+        with pytest.raises(
+            (psycopg.errors.InsufficientPrivilege, psycopg.errors.RaiseException)
+        ):
             conn.execute(
                 "UPDATE admin_audit SET action='tampered' WHERE id=%s",
                 [row_id],
@@ -173,7 +146,6 @@ def test_audit_update_rejected_agg_app(pg_url, app_url, owner_url, pg_roles):
         conn.rollback()
 
 
-@RED_T7
 @pytest.mark.pg
 def test_audit_update_rejected_agg_owner(pg_url, owner_url, pg_roles):
     """UPDATE on admin_audit is rejected even for agg_owner."""
@@ -210,7 +182,6 @@ def test_audit_update_rejected_agg_owner(pg_url, owner_url, pg_roles):
 # ===================================================================
 
 
-@RED_T7
 @pytest.mark.pg
 def test_audit_delete_rejected_agg_app(pg_url, app_url, owner_url, pg_roles):
     """DELETE on admin_audit is rejected for agg_app."""
@@ -234,14 +205,15 @@ def test_audit_delete_rejected_agg_app(pg_url, app_url, owner_url, pg_roles):
         conn.execute(
             "SELECT set_config('app.org_id', %s, false)", [str(org_id)]
         )
-        with pytest.raises(psycopg.errors.RaiseException):
+        with pytest.raises(
+            (psycopg.errors.InsufficientPrivilege, psycopg.errors.RaiseException)
+        ):
             conn.execute(
                 "DELETE FROM admin_audit WHERE id=%s", [row_id]
             )
         conn.rollback()
 
 
-@RED_T7
 @pytest.mark.pg
 def test_audit_delete_rejected_agg_owner(pg_url, owner_url, pg_roles):
     """DELETE on admin_audit is rejected even for agg_owner."""
@@ -277,7 +249,6 @@ def test_audit_delete_rejected_agg_owner(pg_url, owner_url, pg_roles):
 # ===================================================================
 
 
-@RED_T7
 @pytest.mark.pg
 def test_audit_truncate_rejected_agg_app(pg_url, app_url, owner_url, pg_roles):
     """TRUNCATE on admin_audit is rejected for agg_app
@@ -295,7 +266,6 @@ def test_audit_truncate_rejected_agg_app(pg_url, app_url, owner_url, pg_roles):
         conn.rollback()
 
 
-@RED_T7
 @pytest.mark.pg
 def test_audit_truncate_rejected_agg_owner(pg_url, owner_url, pg_roles):
     """TRUNCATE on admin_audit is rejected for agg_owner (trigger)."""
@@ -315,7 +285,6 @@ def test_audit_truncate_rejected_agg_owner(pg_url, owner_url, pg_roles):
 # ===================================================================
 
 
-@RED_T7
 @pytest.mark.pg
 def test_audit_insert_select_agg_app(pg_url, app_url, owner_url, pg_roles):
     """agg_app can INSERT and SELECT on admin_audit."""
@@ -349,20 +318,18 @@ def test_audit_insert_select_agg_app(pg_url, app_url, owner_url, pg_roles):
 
 
 # ===================================================================
-# 4e. Chain verification
+# 4e. Chain verification (ADR 0002 item 6)
 # ===================================================================
 
 
-@RED_T7
 @pytest.mark.pg
 def test_audit_chain_verifiable(pg_url, app_url, owner_url, pg_roles):
     """Inserting 3 rows per org gives a verifiable hash chain.
 
-    Verification:
+    Verification (ADR 0002 item 6):
     1. previous_hash of first row == GENESIS ("0" * 64)
     2. previous_hash of row N == record_hash of row N-1
-    3. record_hash of each row matches SHA-256 of canonical JSON of
-       its non-chain columns (the connector audit.py convention).
+    3. record_hash of each row == SHA-256 of admin_audit_canonical(row)::text
     """
     _ensure_at_head(pg_url)
     _check_audit_table(pg_url)
@@ -407,48 +374,202 @@ def test_audit_chain_verifiable(pg_url, app_url, owner_url, pg_roles):
         conn.execute(
             "SELECT set_config('app.org_id', %s, false)", [str(org_id)]
         )
-        cur = conn.execute(
-            "SELECT * FROM admin_audit "
-            "WHERE org_id = %s ORDER BY chain_length",
+        rows = conn.execute(
+            "SELECT admin_audit_canonical(t)::text AS canonical, "
+            "t.chain_length, t.previous_hash, t.record_hash "
+            "FROM admin_audit t "
+            "WHERE t.org_id = %s ORDER BY t.chain_length",
             [org_id],
-        )
-        cols = [d.name for d in cur.description]
-        rows = cur.fetchall()
+        ).fetchall()
 
     assert len(rows) == 3, f"Expected 3 rows, got {len(rows)}"
 
     prev_hash = GENESIS
-    for row in rows:
-        row_dict = dict(zip(cols, row))
+    for canonical, chain_length, previous_hash, record_hash in rows:
         # Check chain link
-        assert row_dict["previous_hash"] == prev_hash, (
-            f"Chain broken at chain_length {row_dict.get('chain_length')}: "
-            f"previous_hash={row_dict['previous_hash']!r}, expected={prev_hash!r}"
+        assert previous_hash == prev_hash, (
+            f"Chain broken at chain_length {chain_length}: "
+            f"previous_hash={previous_hash!r}, expected={prev_hash!r}"
         )
-        # Recompute record_hash
-        body = {k: v for k, v in row_dict.items() if k not in CHAIN_COLS}
-        computed = _compute_record_hash(body)
-        assert row_dict["record_hash"] == computed, (
-            f"Hash mismatch at chain_length {row_dict.get('chain_length')}: "
-            f"stored={row_dict['record_hash']!r}, computed={computed!r}"
+        # Recompute record_hash from the DB canonical text
+        computed = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        assert record_hash == computed, (
+            f"Hash mismatch at chain_length {chain_length}: "
+            f"stored={record_hash!r}, computed={computed!r}"
         )
-        prev_hash = row_dict["record_hash"]
+        prev_hash = record_hash
 
 
-@RED_T7
 @pytest.mark.pg
 def test_audit_chain_flipped_byte(pg_url, app_url, owner_url, pg_roles):
-    """Positive control: a flipped byte in a row's body produces a
-    different record_hash, proving content integrity.
+    """Positive control: a flipped byte in a row's detail (done with
+    triggers disabled via session_replication_role = replica) makes
+    verify_chain return not ok.  Another org's chain still verifies.
     """
     _ensure_at_head(pg_url)
     _check_audit_table(pg_url)
 
     import psycopg
 
-    # Use a fresh org for isolation
-    org_id = uuid.uuid4()
+    from agg_cp.audit import verify_chain
+
+    # Two fresh orgs for isolation
+    org_a = uuid.uuid4()
+    org_b = uuid.uuid4()
     conninfo_owner = _conninfo(owner_url)
+
+    try:
+        for oid, slug in [(org_a, f"flip-a-{org_a}"), (org_b, f"flip-b-{org_b}")]:
+            with psycopg.connect(conninfo_owner) as conn:
+                conn.execute(
+                    "SELECT set_config('app.org_id', %s, false)",
+                    [str(oid)],
+                )
+                conn.execute(
+                    "INSERT INTO orgs (id, org_id, name, slug, created_at) "
+                    "VALUES (%s, %s, %s, %s, now())",
+                    [oid, oid, f"FlipOrg-{slug}", slug],
+                )
+                conn.commit()
+    except Exception as exc:
+        raise T7Pending(f"Cannot seed flip orgs: {exc}") from exc
+
+    # Insert one row per org via agg_app
+    with psycopg.connect(_conninfo(app_url)) as conn:
+        conn.execute(
+            "SELECT set_config('app.org_id', %s, false)", [str(org_a)]
+        )
+        conn.execute(
+            "INSERT INTO admin_audit (id, org_id, action, detail) "
+            "VALUES (%s, %s, 'flip.original', '{}'::jsonb)",
+            [uuid.uuid4(), org_a],
+        )
+        conn.commit()
+
+    with psycopg.connect(_conninfo(app_url)) as conn:
+        conn.execute(
+            "SELECT set_config('app.org_id', %s, false)", [str(org_b)]
+        )
+        conn.execute(
+            "INSERT INTO admin_audit (id, org_id, action, detail) "
+            "VALUES (%s, %s, 'flip.other', '{}'::jsonb)",
+            [uuid.uuid4(), org_b],
+        )
+        conn.commit()
+
+    # Pre-condition: both chains verify
+    with psycopg.connect(_conninfo(app_url)) as conn:
+        conn.execute(
+            "SELECT set_config('app.org_id', %s, false)", [str(org_a)]
+        )
+        ok, reason = verify_chain(conn, org_a)
+        assert ok, f"Pre-condition: org A chain should be ok: {reason}"
+
+    with psycopg.connect(_conninfo(app_url)) as conn:
+        conn.execute(
+            "SELECT set_config('app.org_id', %s, false)", [str(org_b)]
+        )
+        ok, reason = verify_chain(conn, org_b)
+        assert ok, f"Pre-condition: org B chain should be ok: {reason}"
+
+    # As superuser, disable triggers and flip a byte in org A's detail
+    with psycopg.connect(_conninfo(pg_url)) as conn:
+        conn.execute("SET session_replication_role = replica")
+        conn.execute(
+            "UPDATE admin_audit SET detail = '{\"tampered\": true}'::jsonb "
+            "WHERE org_id = %s",
+            [org_a],
+        )
+        conn.commit()
+        conn.execute("SET session_replication_role = DEFAULT")
+
+    # Org A's chain should now be broken
+    with psycopg.connect(_conninfo(app_url)) as conn:
+        conn.execute(
+            "SELECT set_config('app.org_id', %s, false)", [str(org_a)]
+        )
+        ok, reason = verify_chain(conn, org_a)
+        assert not ok, (
+            "Positive control failed: flipping a byte should break the chain"
+        )
+
+    # Org B's chain should still be ok
+    with psycopg.connect(_conninfo(app_url)) as conn:
+        conn.execute(
+            "SELECT set_config('app.org_id', %s, false)", [str(org_b)]
+        )
+        ok, reason = verify_chain(conn, org_b)
+        assert ok, f"Org B's chain should still verify: {reason}"
+
+
+# ===================================================================
+# 4f. Client-supplied chain fields are overwritten (ADR 0002 item 6)
+# ===================================================================
+
+
+@pytest.mark.pg
+def test_audit_client_fields_overwritten(pg_url, app_url, owner_url, pg_roles):
+    """Client-supplied previous_hash, record_hash and chain_length are
+    overwritten by the BEFORE INSERT trigger (ADR 0002 item 6)."""
+    _ensure_at_head(pg_url)
+    _check_audit_table(pg_url)
+    org_id = _seed_org(owner_url)
+
+    import psycopg
+
+    with psycopg.connect(_conninfo(app_url)) as conn:
+        conn.execute(
+            "SELECT set_config('app.org_id', %s, false)", [str(org_id)]
+        )
+        row_id = uuid.uuid4()
+        conn.execute(
+            "INSERT INTO admin_audit "
+            "(id, org_id, action, detail, chain_length, previous_hash, record_hash) "
+            "VALUES (%s, %s, 'test.overwrite', '{}'::jsonb, 999, 'fakehash', 'fakehash2')",
+            [row_id, org_id],
+        )
+        conn.commit()
+
+        conn.execute(
+            "SELECT set_config('app.org_id', %s, false)", [str(org_id)]
+        )
+        row = conn.execute(
+            "SELECT chain_length, previous_hash, record_hash "
+            "FROM admin_audit WHERE id = %s",
+            [row_id],
+        ).fetchone()
+
+        assert row is not None, "Row not found after insert"
+        assert row[0] != 999, "chain_length should be overwritten by trigger"
+        assert row[1] != "fakehash", (
+            "previous_hash should be overwritten by trigger"
+        )
+        assert row[2] != "fakehash2", (
+            "record_hash should be overwritten by trigger"
+        )
+
+
+# ===================================================================
+# 4g. Concurrent inserts (ADR 0002 item 6 advisory lock)
+# ===================================================================
+
+
+@pytest.mark.pg
+def test_audit_concurrent_inserts(pg_url, app_url, owner_url, pg_roles):
+    """2 connections inserting 10 rows each concurrently for the same
+    org give chain_length 1..20 with no gaps and verify_chain ok."""
+    _ensure_at_head(pg_url)
+    _check_audit_table(pg_url)
+
+    import psycopg
+
+    from agg_cp.audit import verify_chain
+
+    # Fresh org for isolation
+    org_id = uuid.uuid4()
+    slug = f"conc-org-{org_id}"
+    conninfo_owner = _conninfo(owner_url)
+
     try:
         with psycopg.connect(conninfo_owner) as conn:
             conn.execute(
@@ -457,53 +578,48 @@ def test_audit_chain_flipped_byte(pg_url, app_url, owner_url, pg_roles):
             )
             conn.execute(
                 "INSERT INTO orgs (id, org_id, name, slug, created_at) "
-                "VALUES (%s, %s, 'FlipOrg', 'flip-org', now())",
-                [org_id, org_id],
+                "VALUES (%s, %s, 'ConcOrg', %s, now())",
+                [org_id, org_id, slug],
             )
             conn.commit()
     except Exception as exc:
-        raise T7Pending(f"Cannot seed flip org: {exc}") from exc
+        raise T7Pending(f"Cannot seed conc org: {exc}") from exc
 
-    with psycopg.connect(_conninfo(app_url)) as conn:
+    conninfo_app = _conninfo(app_url)
+
+    def insert_10(worker_id: int) -> None:
+        with psycopg.connect(conninfo_app) as conn:
+            for i in range(10):
+                conn.execute(
+                    "SELECT set_config('app.org_id', %s, false)",
+                    [str(org_id)],
+                )
+                conn.execute(
+                    "INSERT INTO admin_audit (id, org_id, action, detail) "
+                    "VALUES (%s, %s, %s, '{}'::jsonb)",
+                    [uuid.uuid4(), org_id, f"conc.{worker_id}.{i}"],
+                )
+                conn.commit()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        f1 = executor.submit(insert_10, 0)
+        f2 = executor.submit(insert_10, 1)
+        f1.result(timeout=30)
+        f2.result(timeout=30)
+
+    # Verify chain_lengths are 1..20 with no gaps
+    with psycopg.connect(conninfo_app) as conn:
         conn.execute(
             "SELECT set_config('app.org_id', %s, false)", [str(org_id)]
         )
-        conn.execute(
-            "INSERT INTO admin_audit (id, org_id, action, detail) "
-            "VALUES (%s, %s, 'flip.original', '{}'::jsonb)",
-            [uuid.uuid4(), org_id],
-        )
-        conn.commit()
-
-        conn.execute(
-            "SELECT set_config('app.org_id', %s, false)", [str(org_id)]
-        )
-        cur = conn.execute(
-            "SELECT * FROM admin_audit "
-            "WHERE org_id = %s ORDER BY chain_length LIMIT 1",
+        lengths = conn.execute(
+            "SELECT chain_length FROM admin_audit "
+            "WHERE org_id = %s ORDER BY chain_length",
             [org_id],
+        ).fetchall()
+        assert [r[0] for r in lengths] == list(range(1, 21)), (
+            f"Expected chain_length 1..20, got {[r[0] for r in lengths]}"
         )
-        cols = [d.name for d in cur.description]
-        row = cur.fetchone()
 
-    assert row is not None, "No admin_audit row found"
-    row_dict = dict(zip(cols, row))
-
-    body = {k: v for k, v in row_dict.items() if k not in CHAIN_COLS}
-    stored_hash = row_dict["record_hash"]
-
-    # Verify original hash matches
-    original_hash = _compute_record_hash(body)
-    assert stored_hash == original_hash, "Pre-condition: original hash must match"
-
-    # Flip one byte in the action field
-    tampered_body = dict(body)
-    original_action = tampered_body["action"]
-    tampered_body["action"] = original_action[:-1] + chr(
-        ord(original_action[-1]) ^ 0x01
-    )
-    tampered_hash = _compute_record_hash(tampered_body)
-
-    assert tampered_hash != stored_hash, (
-        "Positive control failed: flipping a byte should change the hash"
-    )
+        ok, reason = verify_chain(conn, org_id)
+        assert ok, f"Concurrent chain should verify: {reason}"
