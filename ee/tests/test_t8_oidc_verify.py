@@ -98,13 +98,6 @@ def _get_error_classes():
     return _get_attr(mod, "OIDCError"), _get_attr(mod, "IdTokenError")
 
 
-RED_T8 = pytest.mark.xfail(
-    raises=(T8Pending,),
-    strict=True,
-    reason="M1 T8 part 1: agg_cp.oidc not built",
-)
-
-
 # ---------------------------------------------------------------------------
 # Shared test fixtures (module-level)
 # ---------------------------------------------------------------------------
@@ -212,7 +205,6 @@ class TestFakeIdPSelfTests:
 class TestHappyPath:
     """Successful verification cases."""
 
-    @RED_T8
     def test_valid_rs256_token(self):
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
         clock = FakeClock(_NOW)
@@ -225,7 +217,6 @@ class TestHappyPath:
         assert result.sub == "user-1"
         assert result.link_key == (_ISSUER, "user-1")
 
-    @RED_T8
     @pytest.mark.parametrize("alg", ["RS256", "PS256", "ES256"])
     def test_allowed_algs_pass(self, alg):
         idp = FakeIdP(_ISSUER, alg=alg, client_id=_CLIENT_ID)
@@ -237,7 +228,6 @@ class TestHappyPath:
         result = verifier.verify(token, config=config, nonce=_NONCE)
         assert result.sub == "user-1"
 
-    @RED_T8
     def test_aud_as_list_with_azp(self):
         """aud is a list containing client_id, azp present and equals client_id."""
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
@@ -253,7 +243,6 @@ class TestHappyPath:
         result = verifier.verify(token, config=config, nonce=_NONCE)
         assert result.sub == "user-1"
 
-    @RED_T8
     def test_exp_within_leeway_passes(self):
         """Token expired 30s ago but leeway is 60s: should pass."""
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
@@ -270,7 +259,6 @@ class TestHappyPath:
         result = verifier.verify(token, config=config, nonce=_NONCE)
         assert result.sub == "user-1"
 
-    @RED_T8
     def test_auth_time_14min_with_sensitive_max_age(self):
         """auth_time 14 min ago, max_age_s=900 (15 min): passes."""
         mod = _import_oidc()
@@ -289,7 +277,6 @@ class TestHappyPath:
         )
         assert result.sub == "user-1"
 
-    @RED_T8
     def test_missing_auth_time_without_max_age_passes(self):
         """Without max_age_s, a missing auth_time is allowed."""
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
@@ -305,7 +292,6 @@ class TestHappyPath:
 class TestIssuerChecks:
     """iss claim validation."""
 
-    @RED_T8
     def test_iss_trailing_slash_mismatch(self):
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
         clock = FakeClock(_NOW)
@@ -318,7 +304,6 @@ class TestIssuerChecks:
             verifier.verify(token, config=config, nonce=_NONCE)
         assert exc_info.value.reason == "iss_mismatch"
 
-    @RED_T8
     def test_iss_case_mismatch(self):
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
         clock = FakeClock(_NOW)
@@ -331,7 +316,6 @@ class TestIssuerChecks:
             verifier.verify(token, config=config, nonce=_NONCE)
         assert exc_info.value.reason == "iss_mismatch"
 
-    @RED_T8
     def test_iss_different_org(self):
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
         clock = FakeClock(_NOW)
@@ -351,7 +335,6 @@ class TestEntraIssuer:
     _ENTRA_TEMPLATE = "https://login.microsoftonline.com/{tenantid}/v2.0"
     _TENANT_ID = "aaaabbbb-cccc-dddd-eeee-ffffffffffff"
 
-    @RED_T8
     def test_entra_happy_path(self):
         expected_iss = self._ENTRA_TEMPLATE.replace("{tenantid}", self._TENANT_ID)
         idp = FakeIdP(expected_iss, client_id=_CLIENT_ID)
@@ -365,7 +348,6 @@ class TestEntraIssuer:
         result = verifier.verify(token, config=config, nonce=_NONCE)
         assert result.iss == expected_iss
 
-    @RED_T8
     def test_entra_iss_wrong_tenant(self):
         """iss rendered with another tenant -> iss_mismatch."""
         other_tenant = "11112222-3333-4444-5555-666677778888"
@@ -384,7 +366,6 @@ class TestEntraIssuer:
             verifier.verify(token, config=config, nonce=_NONCE)
         assert exc_info.value.reason == "iss_mismatch"
 
-    @RED_T8
     def test_entra_tid_claim_differs(self):
         """iss correct but tid claim different -> tid_mismatch."""
         expected_iss = self._ENTRA_TEMPLATE.replace("{tenantid}", self._TENANT_ID)
@@ -402,7 +383,6 @@ class TestEntraIssuer:
             verifier.verify(token, config=config, nonce=_NONCE)
         assert exc_info.value.reason == "tid_mismatch"
 
-    @RED_T8
     def test_entra_tid_claim_missing(self):
         """iss correct but tid claim absent -> tid_mismatch."""
         expected_iss = self._ENTRA_TEMPLATE.replace("{tenantid}", self._TENANT_ID)
@@ -419,7 +399,6 @@ class TestEntraIssuer:
             verifier.verify(token, config=config, nonce=_NONCE)
         assert exc_info.value.reason == "tid_mismatch"
 
-    @RED_T8
     def test_entra_template_without_tenant_id(self):
         """Issuer template without tenant_id in config -> OIDCError."""
         OIDCError, _ = _get_error_classes()
@@ -432,7 +411,6 @@ class TestEntraIssuer:
 class TestAudienceChecks:
     """aud claim validation."""
 
-    @RED_T8
     def test_aud_mismatch_string(self):
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
         clock = FakeClock(_NOW)
@@ -445,7 +423,6 @@ class TestAudienceChecks:
             verifier.verify(token, config=config, nonce=_NONCE)
         assert exc_info.value.reason == "aud_mismatch"
 
-    @RED_T8
     def test_aud_list_missing_client_id(self):
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
         clock = FakeClock(_NOW)
@@ -462,7 +439,6 @@ class TestAudienceChecks:
 class TestAzpChecks:
     """azp claim validation."""
 
-    @RED_T8
     def test_azp_present_not_client_id(self):
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
         clock = FakeClock(_NOW)
@@ -475,7 +451,6 @@ class TestAzpChecks:
             verifier.verify(token, config=config, nonce=_NONCE)
         assert exc_info.value.reason == "azp_mismatch"
 
-    @RED_T8
     def test_multi_aud_without_azp(self):
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
         clock = FakeClock(_NOW)
@@ -492,7 +467,6 @@ class TestAzpChecks:
 class TestAlgChecks:
     """alg validation and signature verification."""
 
-    @RED_T8
     def test_alg_none_rejected(self):
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
         clock = FakeClock(_NOW)
@@ -505,7 +479,6 @@ class TestAlgChecks:
             verifier.verify(token, config=config, nonce=_NONCE)
         assert exc_info.value.reason == "alg_not_allowed"
 
-    @RED_T8
     def test_hs256_arbitrary_secret_rejected(self):
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
         clock = FakeClock(_NOW)
@@ -518,7 +491,6 @@ class TestAlgChecks:
             verifier.verify(token, config=config, nonce=_NONCE)
         assert exc_info.value.reason == "alg_not_allowed"
 
-    @RED_T8
     def test_hs256_alg_confusion_rsa_pubkey(self):
         """HS256 signed with the RSA public key PEM as secret (alg confusion)."""
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
@@ -533,7 +505,6 @@ class TestAlgChecks:
             verifier.verify(token, config=config, nonce=_NONCE)
         assert exc_info.value.reason == "alg_not_allowed"
 
-    @RED_T8
     def test_rs384_rejected(self):
         """RS384 is not in ALLOWED_ALGS."""
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
@@ -549,7 +520,6 @@ class TestAlgChecks:
             verifier.verify(token, config=config, nonce=_NONCE)
         assert exc_info.value.reason == "alg_not_allowed"
 
-    @RED_T8
     def test_header_rs256_but_ec_key_in_jwks(self):
         """Header says RS256 but the kid's key in JWKS is EC -> bad_signature or alg_not_allowed."""
         idp = FakeIdP(_ISSUER, alg="ES256", client_id=_CLIENT_ID)
@@ -565,7 +535,6 @@ class TestAlgChecks:
             verifier.verify(token, config=config, nonce=_NONCE)
         assert exc_info.value.reason in ("bad_signature", "alg_not_allowed")
 
-    @RED_T8
     def test_tampered_payload_bad_signature(self):
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
         clock = FakeClock(_NOW)
@@ -583,7 +552,6 @@ class TestAlgChecks:
 class TestNonceChecks:
     """nonce claim validation."""
 
-    @RED_T8
     def test_nonce_mismatch(self):
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
         clock = FakeClock(_NOW)
@@ -596,7 +564,6 @@ class TestNonceChecks:
             verifier.verify(token, config=config, nonce=_NONCE)
         assert exc_info.value.reason == "nonce_mismatch"
 
-    @RED_T8
     def test_nonce_missing(self):
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
         clock = FakeClock(_NOW)
@@ -613,7 +580,6 @@ class TestNonceChecks:
 class TestExpiryChecks:
     """exp / iat time validation."""
 
-    @RED_T8
     def test_expired_beyond_leeway(self):
         """Token expired 120s ago, leeway is 60s -> expired."""
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
@@ -628,7 +594,6 @@ class TestExpiryChecks:
             verifier.verify(token, config=config, nonce=_NONCE)
         assert exc_info.value.reason == "expired"
 
-    @RED_T8
     def test_exp_missing(self):
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
         clock = FakeClock(_NOW)
@@ -641,7 +606,6 @@ class TestExpiryChecks:
             verifier.verify(token, config=config, nonce=_NONCE)
         assert exc_info.value.reason == "exp_missing"
 
-    @RED_T8
     def test_iat_in_future(self):
         """iat is beyond leeway in the future -> iat_in_future."""
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
@@ -660,7 +624,6 @@ class TestExpiryChecks:
 class TestAuthTimeChecks:
     """auth_time validation with max_age_s."""
 
-    @RED_T8
     def test_auth_too_old(self):
         """auth_time 16 min ago, max_age_s=900 (15 min) -> auth_too_old."""
         mod = _import_oidc()
@@ -680,7 +643,6 @@ class TestAuthTimeChecks:
             )
         assert exc_info.value.reason == "auth_too_old"
 
-    @RED_T8
     def test_auth_time_missing_with_max_age(self):
         """max_age_s set but auth_time missing -> auth_time_missing."""
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
@@ -700,7 +662,6 @@ class TestAuthTimeChecks:
 class TestJWKSRotation:
     """JWKS key rotation and refresh behaviour."""
 
-    @RED_T8
     def test_rotation_forces_one_refresh(self):
         """After rotate(), a token with new kid verifies and causes exactly 1 forced refresh."""
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
@@ -721,7 +682,6 @@ class TestJWKSRotation:
         assert result.sub == "user-1"
         assert prov.fetches == fetches_before + 1
 
-    @RED_T8
     def test_unknown_kid_after_refresh(self):
         """A token with a completely unknown kid, even after refresh -> unknown_kid."""
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
@@ -737,7 +697,6 @@ class TestJWKSRotation:
             verifier.verify(token, config=config, nonce=_NONCE)
         assert exc_info.value.reason == "unknown_kid"
 
-    @RED_T8
     def test_rate_limited_refresh(self):
         """Two unknown-kid tokens within min_refresh_interval_s cause at most one forced refresh."""
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
@@ -770,7 +729,6 @@ class TestJWKSRotation:
         # Should NOT have refreshed again (rate limited)
         assert fetches_after_second == fetches_after_first
 
-    @RED_T8
     def test_rate_limit_resets_after_interval(self):
         """After advancing the clock past min_refresh_interval_s, a refresh is allowed again."""
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
@@ -799,7 +757,6 @@ class TestJWKSRotation:
             verifier.verify(token_bad2, config=config, nonce=_NONCE)
         assert prov.fetches == fetches_after_first + 1
 
-    @RED_T8
     def test_retired_key_rejected(self):
         """A token signed by the retired (pre-rotation) key -> unknown_kid."""
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
@@ -826,7 +783,6 @@ class TestJWKSRotation:
 class TestLinkKey:
     """VerifiedIdentity.link_key: (iss, sub), never email."""
 
-    @RED_T8
     def test_different_sub_same_email_different_link_key(self):
         """Two tokens with same email but different sub have different link_key."""
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
@@ -843,7 +799,6 @@ class TestLinkKey:
 
         assert result1.link_key != result2.link_key
 
-    @RED_T8
     def test_same_sub_different_email_same_link_key(self):
         """Two tokens with same iss+sub but different email have same link_key."""
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
@@ -860,7 +815,6 @@ class TestLinkKey:
 
         assert result1.link_key == result2.link_key
 
-    @RED_T8
     def test_link_key_contains_no_email(self):
         """link_key tuple should not contain any email value."""
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
@@ -879,7 +833,6 @@ class TestLinkKey:
 class TestMalformed:
     """Malformed token handling."""
 
-    @RED_T8
     def test_not_three_parts(self):
         _, IdTokenError = _get_error_classes()
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
@@ -891,7 +844,6 @@ class TestMalformed:
             verifier.verify("only.two", config=config, nonce=_NONCE)
         assert exc_info.value.reason == "malformed"
 
-    @RED_T8
     def test_bad_base64(self):
         _, IdTokenError = _get_error_classes()
         idp = FakeIdP(_ISSUER, client_id=_CLIENT_ID)
@@ -907,7 +859,6 @@ class TestMalformed:
 class TestInjectedClock:
     """Prove the verifier uses the injected clock, not the system clock."""
 
-    @RED_T8
     def test_fake_clock_one_year_ahead_causes_expired(self):
         """With FakeClock set 1 year ahead, a fresh-looking token is 'expired'
         (proves the injected clock is used, no monkeypatching needed)."""
@@ -928,13 +879,11 @@ class TestInjectedClock:
 class TestAllowedAlgsConstant:
     """Verify the ALLOWED_ALGS constant."""
 
-    @RED_T8
     def test_allowed_algs_value(self):
         mod = _import_oidc()
         algs = _get_attr(mod, "ALLOWED_ALGS")
         assert algs == frozenset({"RS256", "PS256", "ES256"})
 
-    @RED_T8
     def test_sensitive_max_age_s_value(self):
         mod = _import_oidc()
         val = _get_attr(mod, "SENSITIVE_MAX_AGE_S")

@@ -250,9 +250,20 @@ class FakeIdP:
 
         header = {"alg": alg, "kid": kid}
         token_bytes = jwt.encode(header, claims, signing_jwk)
-        if isinstance(token_bytes, bytes):
-            return token_bytes.decode("ascii")
-        return token_bytes
+        token_str = token_bytes.decode("ascii") if isinstance(token_bytes, bytes) else token_bytes
+
+        # authlib 1.9+ silently overwrites the header kid with the signing
+        # key's kid.  Restore the requested kid so _kid overrides work.
+        # (This intentionally invalidates the signature for tokens whose kid
+        # does not match the signing key -- exactly what unknown-kid tests need.)
+        encoded_header = json.loads(_b64url_decode(token_str.split(".")[0]))
+        if encoded_header.get("kid") != kid:
+            parts = token_str.split(".")
+            encoded_header["kid"] = kid
+            parts[0] = _b64url_encode(json.dumps(encoded_header, separators=(",", ":")).encode())
+            token_str = ".".join(parts)
+
+        return token_str
 
     def mint_unsigned(self, *, now: dt.datetime | None = None, **overrides: Any) -> str:
         """Return an unsigned id_token (alg=none)."""

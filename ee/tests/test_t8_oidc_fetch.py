@@ -74,13 +74,6 @@ def _get_error_classes():
     return _get_attr(mod, "UnsafeURLError"), _get_attr(mod, "OIDCError")
 
 
-RED_T8 = pytest.mark.xfail(
-    raises=(T8Pending,),
-    strict=True,
-    reason="M1 T8 part 1: agg_cp.oidc not built",
-)
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -111,7 +104,6 @@ _PUBLIC_IP = "93.184.216.34"  # example.com
 class TestSchemeCheck:
     """Only HTTPS is allowed."""
 
-    @RED_T8
     def test_http_rejected(self):
         UnsafeURLError, _ = _get_error_classes()
         with pytest.raises(UnsafeURLError) as exc_info:
@@ -121,7 +113,6 @@ class TestSchemeCheck:
             )
         assert exc_info.value.reason == "scheme_not_https"
 
-    @RED_T8
     def test_https_public_passes(self):
         """Public address over HTTPS should pass."""
         _check_fetch_url(
@@ -133,7 +124,6 @@ class TestSchemeCheck:
 class TestPrivateAddressBlocking:
     """Private, loopback, and link-local addresses are blocked."""
 
-    @RED_T8
     @pytest.mark.parametrize(
         "addr,label",
         [
@@ -170,7 +160,6 @@ class TestPrivateAddressBlocking:
             )
         assert exc_info.value.reason == "address_not_allowed"
 
-    @RED_T8
     def test_any_one_private_in_multiple_results_refused(self):
         """If any resolved address is private, the URL is refused."""
         UnsafeURLError, _ = _get_error_classes()
@@ -185,7 +174,6 @@ class TestPrivateAddressBlocking:
 class TestAllowHosts:
     """The allow_hosts parameter."""
 
-    @RED_T8
     def test_allowed_host_private_address_passes(self):
         """A host in allow_hosts with a private address passes."""
         _check_fetch_url(
@@ -194,7 +182,6 @@ class TestAllowHosts:
             allow_hosts=frozenset({"keycloak.local"}),
         )
 
-    @RED_T8
     def test_allowed_host_http_still_rejected(self):
         """Even an allowed host rejects http://."""
         UnsafeURLError, _ = _get_error_classes()
@@ -210,7 +197,6 @@ class TestAllowHosts:
 class TestResolverFailure:
     """DNS resolution failure."""
 
-    @RED_T8
     def test_resolver_raises_resolve_failed(self):
         UnsafeURLError, _ = _get_error_classes()
         with pytest.raises(UnsafeURLError) as exc_info:
@@ -224,7 +210,6 @@ class TestResolverFailure:
 class TestGetJsonNotCalledForRefusedURL:
     """get_json must never be called for a refused URL."""
 
-    @RED_T8
     def test_get_json_not_called_on_http(self):
         calls = []
 
@@ -243,7 +228,6 @@ class TestGetJsonNotCalledForRefusedURL:
             )
         assert calls == [], f"get_json was called for a refused URL: {calls}"
 
-    @RED_T8
     def test_get_json_not_called_on_private(self):
         calls = []
 
@@ -273,7 +257,6 @@ _ISSUER = "https://idp.example.com"
 class TestFetchDiscovery:
     """fetch_discovery validation."""
 
-    @RED_T8
     def test_happy_path(self):
         """Valid discovery doc returns the dict."""
         config = _build_config(_ISSUER, "client-id")
@@ -297,7 +280,6 @@ class TestFetchDiscovery:
         assert result["issuer"] == _ISSUER
         assert len(calls) >= 1
 
-    @RED_T8
     def test_discovery_issuer_mismatch(self):
         """Discovery doc issuer does not match config -> discovery_issuer_mismatch."""
         _, OIDCError = _get_error_classes()
@@ -315,7 +297,6 @@ class TestFetchDiscovery:
             )
         assert exc_info.value.reason == "discovery_issuer_mismatch"
 
-    @RED_T8
     def test_jwks_uri_http_rejected(self):
         """jwks_uri is http -> jwks_uri_unsafe."""
         _, OIDCError = _get_error_classes()
@@ -333,7 +314,6 @@ class TestFetchDiscovery:
             )
         assert exc_info.value.reason == "jwks_uri_unsafe"
 
-    @RED_T8
     def test_jwks_uri_private_address_rejected(self):
         """jwks_uri resolves to private address -> jwks_uri_unsafe."""
         _, OIDCError = _get_error_classes()
