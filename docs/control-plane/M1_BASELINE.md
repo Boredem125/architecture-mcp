@@ -490,3 +490,18 @@ ee/tests/test_t9_routes.py::test_planted_undeclared_route_detected
 **T8 part 2 build:** 53 strict xfail markers removed (all pass). Added in build for the two security reviews (`ee/tests/test_t8p2_review.py`): concurrent callback replay gives one session, concurrent bootstrap gives one admin, private token endpoint refused with no POST, http authorization endpoint refused, 10 concurrent wrong setup codes cap at 5, an identity already in another org gives 409 with that org untouched, `settings_from_env` reads the deploy variables. Named test-isolation edits (orchestrator sign-off, no assertion changed): `test_t6_pg_harness.py::test_ready_503_behind_head` restores head in `finally`; `test_t7_rls.py` seeds idempotently and inserts the new `web_sessions` columns; `test_t7_preauth.py` seeds idempotently and downgrades to an explicit revision; `test_t8p2_session.py::test_callback_missing_cookie_refused` clears the client cookie jar; `test_t8p2_setup_code.py` uses a unique bootstrap subject. ee suite (Linux cloud, native Postgres 16, `CI=true`): 323 passed, 45 xfailed (T9), 0 skipped.
 
 **T9 build:** 45 strict xfail markers removed (all pass). Design amendment (orchestrator ruling, `T9_DESIGN.md`): `DELETE /org/members/{user_id}/{role}` added for org-scope revokes; the last-admin guard lives there (lock, then RBAC on a fresh read, then count), not on the project member route. Named test edits (no assertion removed): frozen route set in `test_t9_routes.py` gains that route; `test_t9_rbac.py::test_last_org_admin_revoke_409` targets it; the two CLI tests in `test_t9_audit.py` set `AGG_DATABASE_URL` (the CLI reads no test variable). Added in build for the two security reviews (`ee/tests/test_t9_review.py`, 4): removing a project-admin binding from the sole org admin gives 204, two admins revoking themselves concurrently give one 204 and one 409, a non-admin on the org revoke route gives 404, a viewer probing the sole admin gives 404 (no last-admin oracle). ee suite (Linux cloud, native Postgres 16, `CI=true`, fresh DB): 372 passed, 0 skipped.
+
+### T10 (multi-worker, one Postgres; Tests item 7)
+
+`ee/tests/test_t10_multiworker.py` (7, pg): a real `uvicorn agg_cp.app:create_app --factory --workers 4` subprocess; 4 worker PIDs; one seeded session gives 200 on 40 fresh connections (revoked: 401); 20 concurrent identical grants give one `role_bindings` row, one `role_granted` audit row, and every response names that row; `agg-cp audit verify` passes after the concurrent writes; `agg_app` passes `check_db_ready` at head; the module-state lint scans `api.py`, `auth.py`, `rbac.py`. Product fixes it found: `create_app()` with no arguments reads `settings_from_env()`; revision `0005` grants `agg_app` SELECT on `alembic_version` (so `/ready` works as the app role); a grant that changes nothing writes no audit row and returns the stored binding id. ee suite (Linux cloud, native Postgres 16, `CI=true`, fresh DB): 379 passed, 0 skipped.
+
+New `ee/` node ids (T10):
+```
+ee/tests/test_t10_multiworker.py::test_four_workers_running
+ee/tests/test_t10_multiworker.py::test_session_works_across_all_workers
+ee/tests/test_t10_multiworker.py::test_revoked_session_401_all_workers
+ee/tests/test_t10_multiworker.py::test_concurrent_role_grants_idempotent
+ee/tests/test_t10_multiworker.py::test_audit_chain_valid_after_concurrent_writes
+ee/tests/test_t10_multiworker.py::test_check_db_ready_as_agg_app
+ee/tests/test_t10_multiworker.py::test_module_state_lint_scans_key_files
+```
