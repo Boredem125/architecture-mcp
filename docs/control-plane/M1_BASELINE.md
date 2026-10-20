@@ -276,3 +276,96 @@ ee/tests/test_t7_preauth.py::test_downgrade_removes_objects
 **ee/ suite after T7 build (local Windows):** 73 collected, 73 passed, 0 xfailed, 0 skipped, 0 failed. Same with CI=true. The 2 new tests (`test_audit_client_fields_overwritten`, `test_audit_concurrent_inserts`) are included. T6 `test_alembic_round_trip` and `test_ready_200_when_db_reachable_and_at_head` gained `pg_roles` dependency (T7 migration references the roles).
 
 **Root suite at this commit (local Windows):** 1760 passed, 1 skipped (symlink), 0 failed -- unchanged from T6.
+
+### T8 part 1 (ID-token verification, SEC-13; cloud session)
+
+`ee/tests/fake_idp.py`: in-process fake IdP (RSA/EC keys, JWKS rotation, unsigned and HS256 mints), `FakeJWKSProvider`, `FakeClock`; no tests in this file.
+`ee/tests/test_t8_oidc_verify.py`: 57 tests (46 strict xfail `raises=T8Pending`, 11 fake-IdP guards).
+`ee/tests/test_t8_oidc_fetch.py`: 22 tests (22 strict xfail).
+
+Total T8 part 1: 79 new tests (68 strict xfail, 11 guards). `authlib` and `cryptography` move from the `server` extra into `ee` dependencies (CI installs `ee[dev]`). Sessions, cookies, setup codes and routes are T8 part 2 (need T7 tables).
+
+**ee/ suite at this commit (Linux cloud, no Docker):** 48 passed, 34 skipped (pg, no Docker here; the CI `ee` job runs them), 68 xfailed. New files under `CI=true`: 11 passed, 68 xfailed, 0 skipped.
+
+New `ee/` node ids (T8 part 1):
+```
+ee/tests/test_t8_oidc_verify.py::TestFakeIdPSelfTests::test_default_claims_present
+ee/tests/test_t8_oidc_verify.py::TestFakeIdPSelfTests::test_override_claim
+ee/tests/test_t8_oidc_verify.py::TestFakeIdPSelfTests::test_remove_claim
+ee/tests/test_t8_oidc_verify.py::TestFakeIdPSelfTests::test_rotate_drops_old_kid
+ee/tests/test_t8_oidc_verify.py::TestFakeIdPSelfTests::test_unsigned_token_has_alg_none
+ee/tests/test_t8_oidc_verify.py::TestFakeIdPSelfTests::test_hs256_token_has_correct_alg
+ee/tests/test_t8_oidc_verify.py::TestFakeIdPSelfTests::test_fake_clock_satisfies_protocol
+ee/tests/test_t8_oidc_verify.py::TestFakeIdPSelfTests::test_fake_clock_advance
+ee/tests/test_t8_oidc_verify.py::TestFakeIdPSelfTests::test_fake_clock_set
+ee/tests/test_t8_oidc_verify.py::TestFakeIdPSelfTests::test_provider_counts_fetches
+ee/tests/test_t8_oidc_verify.py::TestFakeIdPSelfTests::test_tamper_payload_changes_claim
+ee/tests/test_t8_oidc_verify.py::TestHappyPath::test_valid_rs256_token
+ee/tests/test_t8_oidc_verify.py::TestHappyPath::test_allowed_algs_pass[RS256]
+ee/tests/test_t8_oidc_verify.py::TestHappyPath::test_allowed_algs_pass[PS256]
+ee/tests/test_t8_oidc_verify.py::TestHappyPath::test_allowed_algs_pass[ES256]
+ee/tests/test_t8_oidc_verify.py::TestHappyPath::test_aud_as_list_with_azp
+ee/tests/test_t8_oidc_verify.py::TestHappyPath::test_exp_within_leeway_passes
+ee/tests/test_t8_oidc_verify.py::TestHappyPath::test_auth_time_14min_with_sensitive_max_age
+ee/tests/test_t8_oidc_verify.py::TestHappyPath::test_missing_auth_time_without_max_age_passes
+ee/tests/test_t8_oidc_verify.py::TestIssuerChecks::test_iss_trailing_slash_mismatch
+ee/tests/test_t8_oidc_verify.py::TestIssuerChecks::test_iss_case_mismatch
+ee/tests/test_t8_oidc_verify.py::TestIssuerChecks::test_iss_different_org
+ee/tests/test_t8_oidc_verify.py::TestEntraIssuer::test_entra_happy_path
+ee/tests/test_t8_oidc_verify.py::TestEntraIssuer::test_entra_iss_wrong_tenant
+ee/tests/test_t8_oidc_verify.py::TestEntraIssuer::test_entra_tid_claim_differs
+ee/tests/test_t8_oidc_verify.py::TestEntraIssuer::test_entra_tid_claim_missing
+ee/tests/test_t8_oidc_verify.py::TestEntraIssuer::test_entra_template_without_tenant_id
+ee/tests/test_t8_oidc_verify.py::TestAudienceChecks::test_aud_mismatch_string
+ee/tests/test_t8_oidc_verify.py::TestAudienceChecks::test_aud_list_missing_client_id
+ee/tests/test_t8_oidc_verify.py::TestAzpChecks::test_azp_present_not_client_id
+ee/tests/test_t8_oidc_verify.py::TestAzpChecks::test_multi_aud_without_azp
+ee/tests/test_t8_oidc_verify.py::TestAlgChecks::test_alg_none_rejected
+ee/tests/test_t8_oidc_verify.py::TestAlgChecks::test_hs256_arbitrary_secret_rejected
+ee/tests/test_t8_oidc_verify.py::TestAlgChecks::test_hs256_alg_confusion_rsa_pubkey
+ee/tests/test_t8_oidc_verify.py::TestAlgChecks::test_rs384_rejected
+ee/tests/test_t8_oidc_verify.py::TestAlgChecks::test_header_rs256_but_ec_key_in_jwks
+ee/tests/test_t8_oidc_verify.py::TestAlgChecks::test_tampered_payload_bad_signature
+ee/tests/test_t8_oidc_verify.py::TestNonceChecks::test_nonce_mismatch
+ee/tests/test_t8_oidc_verify.py::TestNonceChecks::test_nonce_missing
+ee/tests/test_t8_oidc_verify.py::TestExpiryChecks::test_expired_beyond_leeway
+ee/tests/test_t8_oidc_verify.py::TestExpiryChecks::test_exp_missing
+ee/tests/test_t8_oidc_verify.py::TestExpiryChecks::test_iat_in_future
+ee/tests/test_t8_oidc_verify.py::TestAuthTimeChecks::test_auth_too_old
+ee/tests/test_t8_oidc_verify.py::TestAuthTimeChecks::test_auth_time_missing_with_max_age
+ee/tests/test_t8_oidc_verify.py::TestJWKSRotation::test_rotation_forces_one_refresh
+ee/tests/test_t8_oidc_verify.py::TestJWKSRotation::test_unknown_kid_after_refresh
+ee/tests/test_t8_oidc_verify.py::TestJWKSRotation::test_rate_limited_refresh
+ee/tests/test_t8_oidc_verify.py::TestJWKSRotation::test_rate_limit_resets_after_interval
+ee/tests/test_t8_oidc_verify.py::TestJWKSRotation::test_retired_key_rejected
+ee/tests/test_t8_oidc_verify.py::TestLinkKey::test_different_sub_same_email_different_link_key
+ee/tests/test_t8_oidc_verify.py::TestLinkKey::test_same_sub_different_email_same_link_key
+ee/tests/test_t8_oidc_verify.py::TestLinkKey::test_link_key_contains_no_email
+ee/tests/test_t8_oidc_verify.py::TestMalformed::test_not_three_parts
+ee/tests/test_t8_oidc_verify.py::TestMalformed::test_bad_base64
+ee/tests/test_t8_oidc_verify.py::TestInjectedClock::test_fake_clock_one_year_ahead_causes_expired
+ee/tests/test_t8_oidc_verify.py::TestAllowedAlgsConstant::test_allowed_algs_value
+ee/tests/test_t8_oidc_verify.py::TestAllowedAlgsConstant::test_sensitive_max_age_s_value
+ee/tests/test_t8_oidc_fetch.py::TestSchemeCheck::test_http_rejected
+ee/tests/test_t8_oidc_fetch.py::TestSchemeCheck::test_https_public_passes
+ee/tests/test_t8_oidc_fetch.py::TestPrivateAddressBlocking::test_private_address_blocked[loopback-v4]
+ee/tests/test_t8_oidc_fetch.py::TestPrivateAddressBlocking::test_private_address_blocked[loopback-v6]
+ee/tests/test_t8_oidc_fetch.py::TestPrivateAddressBlocking::test_private_address_blocked[private-10.x]
+ee/tests/test_t8_oidc_fetch.py::TestPrivateAddressBlocking::test_private_address_blocked[private-172.16.x]
+ee/tests/test_t8_oidc_fetch.py::TestPrivateAddressBlocking::test_private_address_blocked[private-192.168.x]
+ee/tests/test_t8_oidc_fetch.py::TestPrivateAddressBlocking::test_private_address_blocked[link-local-metadata]
+ee/tests/test_t8_oidc_fetch.py::TestPrivateAddressBlocking::test_private_address_blocked[link-local-v6]
+ee/tests/test_t8_oidc_fetch.py::TestPrivateAddressBlocking::test_private_address_blocked[mapped-loopback]
+ee/tests/test_t8_oidc_fetch.py::TestPrivateAddressBlocking::test_private_address_blocked[unspecified-v4]
+ee/tests/test_t8_oidc_fetch.py::TestPrivateAddressBlocking::test_private_address_blocked[unique-local-v6]
+ee/tests/test_t8_oidc_fetch.py::TestPrivateAddressBlocking::test_any_one_private_in_multiple_results_refused
+ee/tests/test_t8_oidc_fetch.py::TestAllowHosts::test_allowed_host_private_address_passes
+ee/tests/test_t8_oidc_fetch.py::TestAllowHosts::test_allowed_host_http_still_rejected
+ee/tests/test_t8_oidc_fetch.py::TestResolverFailure::test_resolver_raises_resolve_failed
+ee/tests/test_t8_oidc_fetch.py::TestGetJsonNotCalledForRefusedURL::test_get_json_not_called_on_http
+ee/tests/test_t8_oidc_fetch.py::TestGetJsonNotCalledForRefusedURL::test_get_json_not_called_on_private
+ee/tests/test_t8_oidc_fetch.py::TestFetchDiscovery::test_happy_path
+ee/tests/test_t8_oidc_fetch.py::TestFetchDiscovery::test_discovery_issuer_mismatch
+ee/tests/test_t8_oidc_fetch.py::TestFetchDiscovery::test_jwks_uri_http_rejected
+ee/tests/test_t8_oidc_fetch.py::TestFetchDiscovery::test_jwks_uri_private_address_rejected
+```
