@@ -131,10 +131,11 @@ def _audit_rotation(layout, reviewer_id: str, new_pub: str) -> None:
     done_rids: dict[str, str] = {}
     try:
         if layout.done_dir.is_dir():
+            from sandbox.connector.evidence import _canonical_record_hash
+
             for p in sorted(layout.done_dir.glob("*.json")):
                 raw = p.read_bytes()
-                canon = _json.dumps(_json.loads(raw), sort_keys=True, separators=(",", ":")).encode()
-                done_rids[p.stem] = hashlib.sha256(canon).hexdigest()
+                done_rids[p.stem] = _canonical_record_hash(_json.loads(raw))
     except (OSError, AttributeError):
         pass
     try:
