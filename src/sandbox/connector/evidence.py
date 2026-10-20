@@ -96,6 +96,74 @@ def _canon(obj: Any) -> bytes:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
+def _canonical_record_hash(rec: dict[str, Any]) -> str:
+    """SHA-256 of the canonical JSON form of a record.
+
+    This is the same canonical form used by ``signing._audit_rotation`` (write
+    side) and ``_key_status_for`` / ``check_decision`` (read side).  Both sides
+    share this one helper so the hash is never computed with diverging params.
+    """
+    return hashlib.sha256(
+        json.dumps(rec, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _check_legacy_key(
+    reviewer_id: str,
+    signer_pub: str,
+    request_id: str | None,
+    rec: dict[str, Any],
+    audit_records: list[dict[str, Any]],
+) -> tuple[str, str]:
+    """Check if a record signed by *signer_pub* qualifies as legacy.
+
+    Searches *audit_records* (from **verified** chains only) for a
+    ``key_rotated`` event whose ``retired_public_key`` matches *signer_pub*
+    and whose ``done_at_rotation`` dict maps *request_id* to a canonical
+    SHA-256 that matches the current record content.
+
+    Returns ``(status, detail)`` where *status* is one of:
+
+    * ``"legacy"`` -- the record is verified as legacy.
+    * ``"not_rotated"`` -- no ``key_rotated`` event for this reviewer.
+    * ``"not_covered"`` -- the request is not in ``done_at_rotation``.
+    * ``"hash_mismatch"`` -- content changed since rotation.
+    * ``"unverifiable"`` -- ``done_at_rotation`` is malformed.
+    """
+    rotation_events = [
+        e for e in audit_records
+        if e.get("event") == "key_rotated" and e.get("reviewer_id") == reviewer_id
+    ]
+
+    # Try each rotation event that retired this exact key.
+    for rot in rotation_events:
+        if rot.get("retired_public_key") != signer_pub:
+            continue
+        done_at = rot.get("done_at_rotation")
+        if not isinstance(done_at, dict):
+            return ("unverifiable", "done_at_rotation is missing or not a dict")
+        if not request_id or request_id not in done_at:
+            return (
+                "not_covered",
+                f"request_id {request_id!r} is not in done_at_rotation",
+            )
+        current_hash = _canonical_record_hash(rec)
+        if current_hash != done_at[request_id]:
+            return (
+                "hash_mismatch",
+                f"content hash does not match done_at_rotation for {request_id!r}",
+            )
+        return ("legacy", "")
+
+    # No rotation event retired this key (or none at all).
+    return (
+        "not_rotated",
+        f"reviewer {reviewer_id!r}: pre-M1 key has not been rotated; "
+        f"run an approval or sandbox signing command as {reviewer_id!r} "
+        f"on the source folder, then re-export",
+    )
+
+
 def _pretty(obj: Any) -> bytes:
     return (json.dumps(obj, sort_keys=True, indent=2, ensure_ascii=False, default=str) + "\n").encode("utf-8")
 
@@ -149,9 +217,20 @@ def _check(name: str, ok: bool, detail: str = "") -> dict[str, Any]:
     return {"check": name, "ok": bool(ok), "detail": detail}
 
 
-def check_decision(rec: Any, stem: str, reviewer_keys: dict[str, str | None]) -> list[dict[str, Any]]:
-    """The checks for one done-record. ``reviewer_keys`` maps reviewer id → the
-    folder's public key for it (None if the folder has none)."""
+def check_decision(
+    rec: Any,
+    stem: str,
+    reviewer_keys: dict[str, str | None],
+    audit_records: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """The checks for one done-record. ``reviewer_keys`` maps reviewer id to the
+    folder's public key for it (None if the folder has none).
+
+    When *audit_records* is provided (from **verified** audit chains in the
+    pack), the check can accept a legacy record signed by a retired pre-M1 key
+    if a ``key_rotated`` event covers it (ADR 0007 Decision 1.6).  Without
+    *audit_records* the behaviour is unchanged (export side).
+    """
     from sandbox.connector.signing import distinct_approvals, verify_approval, verify_record
 
     if not isinstance(rec, dict):
@@ -172,17 +251,39 @@ def check_decision(rec: Any, stem: str, reviewer_keys: dict[str, str | None]) ->
 
     reviewer = _rid(rec.get("reviewer_id"))
     expected = reviewer_keys.get(reviewer)
-    if expected is None:
-        checks.append(_check("signer_is_folder_key", False, f"the folder has no key for reviewer {reviewer!r}"))
-    elif rec.get("signer_public_key") != expected:
-        checks.append(_check("signer_is_folder_key", False,
-                             f"signed by key {str(rec.get('signer_public_key'))[:16]}..., "
-                             f"not the folder's key for reviewer {reviewer!r}"))
-    else:
+    signer_pub = rec.get("signer_public_key")
+
+    # Signer-is-folder-key: current key match, or legacy via key_rotated.
+    if expected is not None and signer_pub == expected:
         checks.append(_check("signer_is_folder_key", True))
+    elif audit_records is not None and signer_pub:
+        status, detail = _check_legacy_key(
+            reviewer, str(signer_pub), rec.get("request_id"), rec, audit_records,
+        )
+        if status == "legacy":
+            checks.append(_check("signer_is_folder_key", True,
+                                 "legacy: signed by retired pre-M1 key"))
+        elif expected is not None:
+            # The folder has a current key but the record's signer does not
+            # match and is not legacy.
+            checks.append(_check("signer_is_folder_key", False,
+                                 f"signed by key {str(signer_pub)[:16]}..., "
+                                 f"not the folder's key for reviewer {reviewer!r}; "
+                                 f"legacy check: {detail}"))
+        else:
+            checks.append(_check("signer_is_folder_key", False, detail))
+    elif expected is None:
+        checks.append(_check("signer_is_folder_key", False,
+                             f"the folder has no key for reviewer {reviewer!r}"))
+    else:
+        checks.append(_check("signer_is_folder_key", False,
+                             f"signed by key {str(signer_pub)[:16]}..., "
+                             f"not the folder's key for reviewer {reviewer!r}"))
 
     if rec.get("requires_dual") and rec.get("decision") == "approved":
-        problems, good = [], []
+        problems: list[str] = []
+        strict_good: list[dict[str, Any]] = []
+        legacy_good: list[dict[str, Any]] = []
         for n, a in enumerate(_approvals(rec), start=1):
             if not isinstance(a, dict):
                 problems.append(f"approval {n}: not an object")
@@ -192,20 +293,61 @@ def check_decision(rec: Any, stem: str, reviewer_keys: dict[str, str | None]) ->
                 problems.append(f"approval {n} ({who}): signature does not verify")
             elif any(a.get(k) != rec.get(k) for k in ("request_id", "command", "fingerprint")):
                 problems.append(f"approval {n} ({who}): approves a different request or command")
-            elif a.get("signer_public_key") != reviewer_keys.get(who):
-                problems.append(f"approval {n} ({who}): not signed by the folder's key for {who!r}")
             else:
-                good.append(a)
-        if not distinct_approvals(good):
+                a_pub = a.get("signer_public_key")
+                a_expected = reviewer_keys.get(who)
+                if a_expected is not None and a_pub == a_expected:
+                    strict_good.append(a)
+                elif audit_records is not None and a_pub:
+                    a_status, a_detail = _check_legacy_key(
+                        who, str(a_pub), rec.get("request_id"), rec,
+                        audit_records,
+                    )
+                    if a_status == "legacy":
+                        legacy_good.append(a)
+                    elif a_expected is not None:
+                        # The folder has a current key for this reviewer but the
+                        # approval's key does not match it and is not legacy.
+                        problems.append(f"approval {n} ({who}): not signed by the folder's key for {who!r}")
+                    else:
+                        problems.append(f"approval {n} ({who}): {a_detail}")
+                elif a_pub != a_expected:
+                    problems.append(f"approval {n} ({who}): not signed by the folder's key for {who!r}")
+                else:
+                    strict_good.append(a)
+        good = strict_good + legacy_good
+        has_legacy = bool(legacy_good)
+        # Legacy approvals pre-date sig_v and key pinning (M0 era);
+        # ``distinct_approvals`` requires both, so use a per-approval
+        # validity check when any approval is legacy-verified: each
+        # counted approval must be legacy-valid or strict-valid (matching
+        # the folder's current key AND sig_v 1).
+        if has_legacy:
+            counted: list[dict[str, Any]] = list(legacy_good)
+            for a in strict_good:
+                if a.get("sig_v") == 1:
+                    counted.append(a)
+            distinct_ok = (
+                len({_rid(a.get("reviewer_id")) for a in counted}) >= 2
+                and len({a.get("signer_public_key") for a in counted}) >= 2
+            )
+        else:
+            distinct_ok = distinct_approvals(good)
+        if not distinct_ok:
             problems.append(f"{len(good)} valid approval(s) by distinct reviewers and keys; 2 required")
         checks.append(_check("dual_control", not problems, "; ".join(problems)))
     return checks
 
 
-def _checks_for(rec: Any, stem: str, reviewer_keys: dict[str, str | None]) -> list[dict[str, Any]]:
+def _checks_for(
+    rec: Any,
+    stem: str,
+    reviewer_keys: dict[str, str | None],
+    audit_records: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     if rec is None:
         return [_check("parse", False, "not valid JSON")]
-    return check_decision(rec, stem, reviewer_keys)
+    return check_decision(rec, stem, reviewer_keys, audit_records=audit_records)
 
 
 def _reviewer_ids(records: list[dict[str, Any]]) -> set[str]:
@@ -335,6 +477,13 @@ def build_pack(layout: FolderLayout, since: float | None = None, until: float | 
                     audit_by_file[path].append(rec)
     files[CHAINS_FILE] = _pretty(chains)
 
+    # Verified audit records for legacy key checks (export == verify).
+    verified_audit_records: list[dict[str, Any]] = []
+    for _d_name, _chain_info in chains.items():
+        if _chain_info.get("ok"):
+            _chain_path = _chain_info.get("file", "")
+            verified_audit_records.extend(audit_by_file.get(_chain_path, []))
+
     # Done-records in the window.
     raw: list[tuple[str, bytes, Any]] = []
     excluded = 0
@@ -365,7 +514,7 @@ def build_pack(layout: FolderLayout, since: float | None = None, until: float | 
     for stem, data, rec in raw:
         path = f"decisions/{stem}.json"
         files[path] = data
-        checks = _checks_for(rec, stem, reviewer_keys)
+        checks = _checks_for(rec, stem, reviewer_keys, audit_records=verified_audit_records)
         ok = all(c["ok"] for c in checks)
         r = rec if isinstance(rec, dict) else {}
         index.append({
@@ -519,6 +668,10 @@ def _key_status_for(rec: dict[str, Any], layout: FolderLayout, audit_records: li
     - 'legacy': the record was signed with a now-retired pre-M1 key AND its
       done-record file existed at rotation time (ADR 0007 1.6).
     - 'unverifiable': anything else.
+
+    Delegates the legacy check to :func:`_check_legacy_key` (the same helper
+    ``check_decision`` uses on the verify side) so the canonical hash and
+    ``done_at_rotation`` logic is never duplicated.
     """
     from sandbox.connector import keyhome
     from sandbox.connector.signing import verify_record
@@ -536,31 +689,9 @@ def _key_status_for(rec: dict[str, Any], layout: FolderLayout, audit_records: li
             return "pinned"
     except keyhome.KeyHomeError:
         pass
-    # Check if legacy (signed by a retired key, covered by done_at_rotation)
-    rotation_events = [e for e in audit_records
-                       if e.get("event") == "key_rotated" and e.get("reviewer_id") == reviewer_id]
-    if rotation_events:
-        for rot in rotation_events:
-            if rot.get("retired_public_key") == pub:
-                # ADR 0007 1.6: done_at_rotation is {request_id: sha256_hex}.
-                # "legacy" only if the id is present AND the canonical hash of
-                # the current record matches -- a content-swap re-signed with
-                # the retired key is caught.  Missing or list-form
-                # done_at_rotation -> "unverifiable" (fail closed).
-                done_at = rot.get("done_at_rotation")
-                if not isinstance(done_at, dict):
-                    return "unverifiable"
-                request_id = rec.get("request_id")
-                if not request_id or request_id not in done_at:
-                    return "unverifiable"
-                # Verify content hash
-                canon = json.dumps(rec, sort_keys=True, separators=(",", ":")).encode()
-                current_hash = hashlib.sha256(canon).hexdigest()
-                if current_hash != done_at[request_id]:
-                    return "unverifiable"
-                return "legacy"
-    # Not pinned, no rotation record covering it
-    return "unverifiable"
+    # Check if legacy via shared helper
+    status, _ = _check_legacy_key(reviewer_id, pub, rec.get("request_id"), rec, audit_records)
+    return status if status == "legacy" else "unverifiable"
 
 
 def _label_decisions(layout: FolderLayout, index: list[dict[str, Any]],
@@ -767,27 +898,64 @@ def verify_evidence(path: str | Path, exporter_key: str | None = None) -> dict[s
         failures.append(f"{REVIEWER_KEYS}: missing or not valid JSON; signer checks cannot run")
         reviewer_keys = {}
 
+    # Pre-verify audit chains: extract records only from chains that verify
+    # (ADR 0007 1.6 contract: "that chain verifies").  Broken chains are
+    # reported below; their records are never used for legacy key checks.
+    verified_audit_records: list[dict[str, Any]] = []
+    chain_results: dict[str, dict[str, Any]] = {}
+    for p in sorted(files):
+        if p.startswith("audit/") and p.endswith("/records.jsonl"):
+            result["sessions"] += 1
+            r = verify_chain_bytes(files[p])
+            chain_results[p] = r
+            if r["ok"]:
+                for line in files[p].split(b"\n"):
+                    if line.strip():
+                        try:
+                            verified_audit_records.append(json.loads(line))
+                        except (ValueError, UnicodeDecodeError):
+                            pass
+
+    legacy_count = 0
+    decisions_detail: list[dict[str, Any]] = []
+
     for p in sorted(files):
         if not (p.startswith("decisions/") and p.endswith(".json")) or p == DECISIONS_INDEX:
             continue
         result["decisions"] += 1
         rec = _read_json(files[p])
         stem = PurePosixPath(p).stem
-        checks = _checks_for(rec, stem, reviewer_keys)
+        checks = _checks_for(rec, stem, reviewer_keys, audit_records=verified_audit_records)
         tag = " (already failing at export)" if p in failed_at_export else ""
+
+        # Determine per-record key_status from the signer_is_folder_key check.
+        key_status = "pinned"
+        for c in checks:
+            if c["check"] == "signer_is_folder_key":
+                if not c["ok"]:
+                    key_status = "unverifiable"
+                elif c.get("detail", "").startswith("legacy"):
+                    key_status = "legacy"
+                    legacy_count += 1
+        decisions_detail.append({
+            "request_id": stem,
+            "key_status": key_status,
+            "ok": all(c["ok"] for c in checks),
+        })
+
         for c in checks:
             if not c["ok"]:
                 failures.append(f"{p}: {c['check']} failed: {c['detail'] or 'check failed'}{tag}")
 
-    for p in sorted(files):
-        if p.startswith("audit/") and p.endswith("/records.jsonl"):
-            result["sessions"] += 1
-            r = verify_chain_bytes(files[p])
-            if not r["ok"]:
-                tag = " (already broken at export)" if p in broken_at_export else ""
-                failures.append(f"{p}: audit chain failed: {r['message']}{tag}")
+    # Report broken audit chains (already verified above).
+    for p, r in sorted(chain_results.items()):
+        if not r["ok"]:
+            tag = " (already broken at export)" if p in broken_at_export else ""
+            failures.append(f"{p}: audit chain failed: {r['message']}{tag}")
 
     result["ok"] = not failures
     result["created_at"] = manifest.get("created_at")
     result["source_root"] = manifest.get("source_root")
+    result["legacy_count"] = legacy_count
+    result["decisions_detail"] = decisions_detail
     return result

@@ -64,6 +64,7 @@ Each task's new tests are committed as strict xfail (`raises=<named exception>`)
 | T3 D3.1 | `tests/security/test_m1_t3_pins.py` | 22 | 15 | 7 | tests first (this commit) |
 | T4 D3.2-4, SEC-24 | `tests/security/test_m1_t4_domains.py` | 22 | 15 | 7 | tests first (this commit) |
 | T4b SEC-30, SEC-31 | `tests/security/test_m1_t4b_downgrade.py` | 14 | 10 | 4 | tests first (this commit) |
+| T4c evidence legacy | `tests/security/test_m1_t4c_evidence_legacy.py` | 16 | 9 | 7 | tests first; +6 follow-ups (dual control per approval, export=verify, shared hash, intact-chain not_covered); suite 1668 passed, 1 skipped |
 
 **N** (the Phase A count in the M1 gate) = the sum of this table's "Tests" column once T1-T4 are written; written here before any fix runs.
 
