@@ -20,3 +20,12 @@ tests/unit/test_containment.py::test_windows_exotic_paths_rejected[\\\\server\\s
 tests/unit/test_containment.py::test_windows_exotic_paths_rejected[file.txt:hidden]
 tests/unit/test_environment_classification.py::test_case_insensitive_on_windows
 tests/security/test_t0g_runners.py::test_pytest_opt_in_is_lost_when_a_path_leaves_the_root[pytest C:/Windows/x]
+tests/security/test_m1_t2_followup.py::test_device_prefixed_key_home_paths_are_denied[Read-file]
+tests/security/test_m1_t2_followup.py::test_device_prefixed_key_home_paths_are_denied[Read-dir]
+tests/security/test_m1_t2_followup.py::test_device_prefixed_key_home_paths_are_denied[Glob-dir]
+tests/security/test_m1_t2_followup.py::test_device_prefixed_key_home_paths_are_denied[Grep-dir]
+tests/security/test_m1_t2_followup.py::test_device_prefixed_key_home_paths_are_denied[Grep-file]
+tests/security/test_m1_t2_followup.py::test_unc_paths_cause_no_filesystem_lookup
+tests/security/test_sec27_28_hook_hardening.py::test_sec27_shadow_package_in_project_cannot_allow
+tests/security/test_sec27_28_hook_hardening.py::test_sec27_shadow_package_cannot_run_in_posttooluse_fallback
+tests/security/test_sec27_28_hook_hardening.py::test_sec28_rc1_from_fallback_maps_to_2

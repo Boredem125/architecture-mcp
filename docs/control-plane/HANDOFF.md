@@ -9,7 +9,7 @@
 2. T8 part 1: tests `66969c2` (#2), build `eee3ebd` (#4). T8 part 2: tests `74b18b8` (#5, squash: branch had a merge commit), build `b0a708d` (#9).
 3. T9: tests `3a0f565` + `2441cae` (#7), build `2a543fa` (#10). T10 `211151a` (#11).
 4. T11 compose files `5de6f49` (#3), Keycloak behind Caddy `df75fed` (#8).
-5. Wrap-up PR (this commit): T13 review findings F1/F2 fixed (slug can never become a path: `is_valid_slug`, `org_secret_path`, CHECK in revision `0006`), CI `ee` job gains the coverage gate (`--fail-under=85`), `ee/deploy/demo.py` (T14 script, not run), `M1_DEMO.md` template, `M1_SECURITY_SIGNOFF.md` (T13).
+5. Wrap-up PR (this commit): T13 review findings F1/F2 fixed (slug can never become a path: `is_valid_slug`, `org_secret_path`, CHECK in revision `0006`), CI `ee` job gains the coverage gate (`--fail-under=85`), `ee/deploy/demo.py` (T14 script; only step 4 run, in the cloud), `M1_DEMO.md` template, `M1_SECURITY_SIGNOFF.md` (T13).
 
 **Security:** every security-sensitive merge had a `security-engineer` diff review and was fixed until signed off (T8 parts 1-2, T9: 2-3 rounds each; T11 twice). T13 hostile review: APPROVE WITH CONDITIONS, no Critical/High; F1 Medium and F2 Low fixed in the wrap-up PR; F3 Low (demo Keycloak `admin/admin` in `compose.yml`, demo profile only) stays as a stated limit.
 
