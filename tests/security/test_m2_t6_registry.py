@@ -233,7 +233,6 @@ def test_nacl_ed25519_roundtrip():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
 def test_domain_tag_remote_approval():
     """agg/remote-approval/v1 tag exists."""
     _need("sandbox.protocol.domains", "REMOTE_APPROVAL")
@@ -241,7 +240,7 @@ def test_domain_tag_remote_approval():
     assert REMOTE_APPROVAL == "agg/remote-approval/v1"
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_domain_tag_device_enroll():
     """agg/device-enroll/v1 tag exists."""
     _need("sandbox.protocol.domains", "DEVICE_ENROLL")
@@ -249,7 +248,7 @@ def test_domain_tag_device_enroll():
     assert DEVICE_ENROLL == "agg/device-enroll/v1"
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_domain_tag_signer_assert():
     """agg/signer-assert/v1 tag exists."""
     _need("sandbox.protocol.domains", "SIGNER_ASSERT")
@@ -257,7 +256,7 @@ def test_domain_tag_signer_assert():
     assert SIGNER_ASSERT == "agg/signer-assert/v1"
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_domain_tag_unenroll():
     """agg/unenroll/v1 tag exists."""
     _need("sandbox.protocol.domains", "UNENROLL")
@@ -270,7 +269,7 @@ def test_domain_tag_unenroll():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_sign_envelope_roundtrip():
     """sign_envelope + verify_envelope round-trips."""
     _need("sandbox.protocol.envelope", "sign_envelope")
@@ -286,7 +285,7 @@ def test_sign_envelope_roundtrip():
     assert result == payload
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_key_id_is_sha256_hex():
     """key_id(pub_bytes) == sha256(pub_bytes).hex()."""
     _need("sandbox.protocol.envelope", "key_id")
@@ -295,7 +294,7 @@ def test_key_id_is_sha256_hex():
     assert key_id(pub) == hashlib.sha256(pub).hexdigest()
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_canonical_bytes_format():
     """canonical_bytes = tag || 0x00 || canonical JSON."""
     _need("sandbox.protocol.envelope", "canonical_bytes")
@@ -306,7 +305,7 @@ def test_canonical_bytes_format():
     assert result == expected
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_verify_envelope_flipped_byte():
     """A flipped byte in the signature is refused (threat 6 partial)."""
     _need("sandbox.protocol.envelope", "sign_envelope")
@@ -323,7 +322,7 @@ def test_verify_envelope_flipped_byte():
     assert exc_info.value.reason
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_verify_envelope_foreign_key():
     """A signature from an untrusted key is refused."""
     _need("sandbox.protocol.envelope", "sign_envelope")
@@ -338,7 +337,7 @@ def test_verify_envelope_foreign_key():
     assert exc_info.value.reason
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_verify_envelope_embedded_key_ignored():
     """A key carried in the payload (embedded) is not used for verification."""
     _need("sandbox.protocol.envelope", "sign_envelope")
@@ -356,7 +355,7 @@ def test_verify_envelope_embedded_key_ignored():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_sig_v_zero_refused():
     """sig_v: 0 is refused (threat 8)."""
     _need("sandbox.protocol.envelope", "verify_envelope")
@@ -368,7 +367,7 @@ def test_sig_v_zero_refused():
     assert "sig_v" in str(exc_info.value.reason).lower() or exc_info.value.reason
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_alg_none_refused():
     """alg: 'none' in a signature is refused (threat 8)."""
     _need("sandbox.protocol.envelope", "verify_envelope")
@@ -387,7 +386,7 @@ def test_alg_none_refused():
     assert exc_info.value.reason
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_unknown_kind_refused():
     """An unknown kind is refused (threat 8)."""
     _need("sandbox.protocol.envelope", "verify_envelope")
@@ -399,7 +398,7 @@ def test_unknown_kind_refused():
     assert exc_info.value.reason
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_extra_field_in_envelope_refused():
     """An extra top-level field in the envelope is refused (threat 8)."""
     _need("sandbox.protocol.envelope", "verify_envelope")
@@ -417,7 +416,7 @@ def test_extra_field_in_envelope_refused():
         verify_envelope(env, {kid: pub})
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_missing_field_in_envelope_refused():
     """A missing required field (no 'signatures') is refused (threat 8)."""
     _need("sandbox.protocol.envelope", "verify_envelope")
@@ -433,7 +432,7 @@ def test_missing_field_in_envelope_refused():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_verify_chain_single_genesis():
     """verify_chain accepts a valid single-version chain."""
     _need("sandbox.protocol.registry", "verify_chain")
@@ -448,7 +447,7 @@ def test_verify_chain_single_genesis():
     assert reg is not None
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_verify_chain_two_versions():
     """verify_chain accepts a valid 2-version chain."""
     _need("sandbox.protocol.registry", "verify_chain")
@@ -479,7 +478,7 @@ def test_verify_chain_two_versions():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_second_genesis_refused():
     """A second v1 in the chain is refused (threat 22)."""
     _need("sandbox.protocol.registry", "verify_chain")
@@ -496,7 +495,7 @@ def test_second_genesis_refused():
     assert exc_info.value.reason
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_genesis_fingerprint_mismatch_refused():
     """A genesis with wrong fingerprint is refused (threat 22)."""
     _need("sandbox.protocol.registry", "verify_chain")
@@ -513,7 +512,7 @@ def test_genesis_fingerprint_mismatch_refused():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_threshold_downgrade_refused():
     """Dropping the threshold from 2 to 1 once 2 admins exist is refused (threat 23)."""
     _need("sandbox.protocol.registry", "verify_chain")
@@ -546,7 +545,7 @@ def test_threshold_downgrade_refused():
     assert exc_info.value.reason
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_threshold_floor_never_below_2_once_2_admins():
     """Once 2 admins exist, threshold can never go below 2 (threat 23)."""
     _need("sandbox.protocol.registry", "verify_chain")
@@ -584,7 +583,7 @@ def test_threshold_floor_never_below_2_once_2_admins():
         verify_chain([genesis, v2, v3], fp)
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_admins_cut_to_1_refused():
     """Cutting admins from 2 to 1 is refused by double threshold (threat 23)."""
     _need("sandbox.protocol.registry", "verify_chain")
@@ -623,7 +622,7 @@ def test_admins_cut_to_1_refused():
         verify_chain([genesis, v2, v3], fp)
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_double_threshold_old_and_new_set():
     """Each version needs the threshold of BOTH the previous and its own admin set (threat 23)."""
     _need("sandbox.protocol.registry", "verify_chain")
@@ -662,7 +661,7 @@ def test_double_threshold_old_and_new_set():
         verify_chain([genesis, v2, v3], fp)
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_duplicate_iss_sub_refused():
     """Duplicate (iss, sub) across keys is refused (threat 23)."""
     _need("sandbox.protocol.registry", "verify_chain")
@@ -686,7 +685,7 @@ def test_duplicate_iss_sub_refused():
         verify_chain([genesis, v2], fp)
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_shared_key_refused():
     """One public key under two user_ids is refused (threat 23)."""
     _need("sandbox.protocol.registry", "verify_chain")
@@ -722,7 +721,7 @@ def test_shared_key_refused():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_browser_key_registry_refused():
     """A browser-key signature on a registry version is refused (threat 21)."""
     _need("sandbox.protocol.registry", "verify_chain")
@@ -747,7 +746,7 @@ def test_browser_key_registry_refused():
         verify_chain([env], fp)
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_browser_key_policy_change_refused():
     """A browser key may not sign policy-change (threat 21)."""
     _need("sandbox.protocol.registry", "Registry")
@@ -769,7 +768,7 @@ def test_browser_key_policy_change_refused():
     assert not reg.may_sign(browser_kid, "agg/policy-change/v1", "staging")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_browser_key_prod_approval_refused():
     """Browser-key remote-approval on prod is refused by may_sign (threat 21)."""
     _need("sandbox.protocol.registry", "Registry")
@@ -789,7 +788,7 @@ def test_browser_key_prod_approval_refused():
     assert not reg.may_sign(browser_kid, "agg/remote-approval/v1", "prod")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_cli_key_prod_remote_approval_refused():
     """CLI-key remote-approval on prod is refused in M2 (threat 21, N9)."""
     _need("sandbox.protocol.registry", "Registry")
@@ -809,7 +808,7 @@ def test_cli_key_prod_remote_approval_refused():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_cross_org_registry_refused():
     """A registry for org-B is refused when checking binding to org-A (threat 29)."""
     _need("sandbox.protocol.registry", "check_binding")
@@ -819,7 +818,7 @@ def test_cross_org_registry_refused():
         check_binding(payload, "org-A", "proj-1")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_cross_project_registry_refused():
     """A registry for project-B is refused when bound to project-A (threat 29)."""
     _need("sandbox.protocol.registry", "check_binding")
@@ -834,7 +833,7 @@ def test_cross_project_registry_refused():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_single_admin_registry_label():
     """A key added by a version with < 2 admin sigs has counts_for_dual=False (threat 30)."""
     _need("sandbox.protocol.registry", "verify_chain")
@@ -861,7 +860,7 @@ def test_single_admin_registry_label():
     assert not reg.counts_for_dual(kid2)
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_single_admin_registry_key_does_not_count_dual_even_with_role():
     """Even with approver role, a single-admin-registry key never counts for dual (threat 30)."""
     _need("sandbox.protocol.registry", "verify_chain")
@@ -870,7 +869,9 @@ def test_single_admin_registry_key_does_not_count_dual_even_with_role():
     sk2, _, kid2 = _keygen()
     sk3, _, kid3 = _keygen()
     genesis, _ = _build_genesis(admin_sks=[sk1], threshold=1)
-    # v2: add both sk2 (approver) and sk3 (admin), but only 1 admin sig
+    # v2: add both sk2 (approver) and sk3 (admin), threshold stays 1
+    # so only 1 admin sig is needed and the version passes chain validation,
+    # but keys added under 1 admin sig get single_admin_registry label
     entry2, _ = _make_key_entry(sk2, user_id="approver-1",
                                 iss="https://idp", sub="approver-1",
                                 kind="cli", roles=["approver"], added_in=2)
@@ -881,7 +882,7 @@ def test_single_admin_registry_key_does_not_count_dual_even_with_role():
         genesis, [sk1],
         new_keys=[entry2, entry3],
         new_admins=[kid1, kid3],
-        threshold=2,
+        threshold=1,
     )
     fp = hashlib.sha256(
         genesis["payload"]["org_id"].encode("utf-8") + b":" +
@@ -898,7 +899,7 @@ def test_single_admin_registry_key_does_not_count_dual_even_with_role():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_device_key_approval_refused():
     """A device-kind key cannot sign remote-approval (threat 31)."""
     _need("sandbox.protocol.registry", "Registry")
@@ -918,7 +919,7 @@ def test_device_key_approval_refused():
     assert not reg.may_sign(device_kid, "agg/remote-approval/v1", "staging")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_bundle_signer_approval_refused():
     """A bundle-signer-kind key cannot sign remote-approval (threat 31)."""
     _need("sandbox.protocol.registry", "Registry")
@@ -943,7 +944,7 @@ def test_bundle_signer_approval_refused():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_forged_count_field_refused():
     """An entry carrying a count field is refused (N8)."""
     _need("sandbox.protocol.registry", "verify_chain")
@@ -981,7 +982,7 @@ def test_forged_count_field_refused():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_cli_may_sign_registry():
     """CLI keys can sign registry versions."""
     _need("sandbox.protocol.registry", "Registry")
@@ -997,7 +998,7 @@ def test_cli_may_sign_registry():
     assert reg.may_sign(kid1, "agg/registry/v1", "prod")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_cli_may_sign_policy_change():
     """CLI keys can sign policy-change."""
     _need("sandbox.protocol.registry", "Registry")
@@ -1013,7 +1014,7 @@ def test_cli_may_sign_policy_change():
     assert reg.may_sign(kid1, "agg/policy-change/v1", "prod")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_cli_nonprod_remote_approval_allowed():
     """CLI keys can sign remote-approval on non-prod (N9)."""
     _need("sandbox.protocol.registry", "Registry")
@@ -1028,7 +1029,7 @@ def test_cli_nonprod_remote_approval_allowed():
     assert reg.may_sign(kid1, "agg/remote-approval/v1", "staging")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_browser_nonprod_remote_approval_allowed():
     """Browser keys can sign remote-approval on non-prod."""
     _need("sandbox.protocol.registry", "Registry")
@@ -1049,11 +1050,106 @@ def test_browser_nonprod_remote_approval_allowed():
 
 
 # ===================================================================
+# Security gap: threshold raise needs new threshold sigs
+# ===================================================================
+
+
+def test_threshold_raise_needs_new_threshold():
+    """v1 has 2 admins, threshold 1. v2 raises to threshold 2 but only 1 sig -> refused."""
+    _need("sandbox.protocol.registry", "verify_chain")
+    from sandbox.protocol.registry import verify_chain, RegistryError
+    sk1, _, kid1 = _keygen()
+    sk2, _, kid2 = _keygen()
+    # Genesis: 2 admins, threshold 1
+    entry1, _ = _make_key_entry(sk1, user_id="admin-0", iss="https://idp",
+                                sub="admin-0", kind="cli",
+                                roles=["admin", "approver"], added_in=1)
+    entry2, _ = _make_key_entry(sk2, user_id="admin-1", iss="https://idp",
+                                sub="admin-1", kind="cli",
+                                roles=["admin", "approver"], added_in=1)
+    bsk, bpub, bkid = _keygen()
+    bs = {"key_id": bkid, "public_key": bpub.hex(), "alg": "ed25519"}
+    payload = _make_registry_payload(
+        org_id="org-1", version=1, threshold=1,
+        admins=[kid1, kid2], keys=[entry1, entry2], bundle_signer=bs,
+    )
+    genesis = _sign_envelope("agg/registry/v1", payload, [sk1])
+    fp = hashlib.sha256(
+        payload["org_id"].encode("utf-8") + b":" + _canonical_json(payload)
+    ).hexdigest()
+    # v2: raise threshold to 2, but only sk1 signs (1 sig < new threshold 2)
+    v2 = _build_next_version(genesis, [sk1], threshold=2)
+    with pytest.raises(RegistryError):
+        verify_chain([genesis, v2], fp)
+
+
+def test_threshold_raise_accepted_with_both_sigs():
+    """v1 has 2 admins, threshold 1. v2 raises to 2 with both sigs -> accepted."""
+    _need("sandbox.protocol.registry", "verify_chain")
+    from sandbox.protocol.registry import verify_chain
+    sk1, _, kid1 = _keygen()
+    sk2, _, kid2 = _keygen()
+    entry1, _ = _make_key_entry(sk1, user_id="admin-0", iss="https://idp",
+                                sub="admin-0", kind="cli",
+                                roles=["admin", "approver"], added_in=1)
+    entry2, _ = _make_key_entry(sk2, user_id="admin-1", iss="https://idp",
+                                sub="admin-1", kind="cli",
+                                roles=["admin", "approver"], added_in=1)
+    bsk, bpub, bkid = _keygen()
+    bs = {"key_id": bkid, "public_key": bpub.hex(), "alg": "ed25519"}
+    payload = _make_registry_payload(
+        org_id="org-1", version=1, threshold=1,
+        admins=[kid1, kid2], keys=[entry1, entry2], bundle_signer=bs,
+    )
+    genesis = _sign_envelope("agg/registry/v1", payload, [sk1])
+    fp = hashlib.sha256(
+        payload["org_id"].encode("utf-8") + b":" + _canonical_json(payload)
+    ).hexdigest()
+    # v2: raise threshold to 2, both admins sign
+    v2 = _build_next_version(genesis, [sk1, sk2], threshold=2)
+    reg = verify_chain([genesis, v2], fp)
+    assert reg is not None
+
+
+# ===================================================================
+# Security gap: expired registry allows deny but not approve
+# ===================================================================
+
+
+def test_expired_registry_allows_deny():
+    """Expired registry: deny allowed on non-prod, approve refused; both refused on prod."""
+    _need("sandbox.protocol.registry", "verify_chain")
+    from sandbox.protocol.registry import verify_chain
+    sk1, _, kid1 = _keygen()
+    browser_sk, _, browser_kid = _keygen()
+    browser_entry, _ = _make_key_entry(browser_sk, user_id="browser-user",
+                                       iss="https://idp", sub="browser-user",
+                                       kind="browser", roles=["approver"],
+                                       added_in=1)
+    genesis, _ = _build_genesis(admin_sks=[sk1], extra_keys=[browser_entry],
+                                expires_at=time.time() - 1)
+    fp = hashlib.sha256(
+        genesis["payload"]["org_id"].encode("utf-8") + b":" +
+        _canonical_json(genesis["payload"])
+    ).hexdigest()
+    reg = verify_chain([genesis], fp)
+    # CLI key: non-prod deny OK, non-prod approve refused
+    assert reg.may_sign(kid1, "agg/remote-approval/v1", "staging", decision="deny")
+    assert not reg.may_sign(kid1, "agg/remote-approval/v1", "staging", decision="approve")
+    # Browser key: non-prod deny OK, non-prod approve refused
+    assert reg.may_sign(browser_kid, "agg/remote-approval/v1", "staging", decision="deny")
+    assert not reg.may_sign(browser_kid, "agg/remote-approval/v1", "staging", decision="approve")
+    # Prod: both refused for any decision (N9)
+    assert not reg.may_sign(kid1, "agg/remote-approval/v1", "prod", decision="deny")
+    assert not reg.may_sign(kid1, "agg/remote-approval/v1", "prod", decision="approve")
+
+
+# ===================================================================
 # RED: expiry (7 days; 72 h with a prod project)
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_expired_registry_refuses_remote_approvals():
     """An expired registry refuses remote approvals."""
     _need("sandbox.protocol.registry", "verify_chain")
@@ -1075,7 +1171,7 @@ def test_expired_registry_refuses_remote_approvals():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_older_registry_version_refused():
     """A registry version with a lower version number than the previous is refused."""
     _need("sandbox.protocol.registry", "verify_chain")

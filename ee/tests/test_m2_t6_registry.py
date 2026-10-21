@@ -166,10 +166,11 @@ def _build_genesis(org_id="org-1", admin_sks=None, threshold=1,
 
 def _create_org(conn, org_id: str, name: str = "Test Org") -> None:
     """Insert an org row (owner connection, set app.org_id first)."""
+    slug = org_id[:32].replace("-", "")
     conn.execute(
-        "INSERT INTO orgs (id, name, created_at) VALUES (%s, %s, now()) "
-        "ON CONFLICT DO NOTHING",
-        [org_id, name],
+        "INSERT INTO orgs (id, org_id, name, slug, created_at) "
+        "VALUES (%s, %s, %s, %s, now()) ON CONFLICT DO NOTHING",
+        [org_id, org_id, name, slug],
     )
 
 
@@ -208,7 +209,7 @@ def test_orgs_table_exists(pg_url, pg_roles, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_store_and_retrieve_genesis(pg_url, pg_roles, app_url, owner_url):
     """store_registry_version stores v1; latest returns it."""
     _need("agg_cp.sync.registry", "store_registry_version")
@@ -233,7 +234,7 @@ def test_store_and_retrieve_genesis(pg_url, pg_roles, app_url, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_store_two_versions(pg_url, pg_roles, app_url, owner_url):
     """store_registry_version stores v1 and v2 in sequence."""
     _need("agg_cp.sync.registry", "store_registry_version")
@@ -276,7 +277,7 @@ def test_store_two_versions(pg_url, pg_roles, app_url, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_genesis_alerted(pg_url, pg_roles, app_url, owner_url):
     """A second v1 is refused AND writes a sync_alerts row (threat 22)."""
     _need("agg_cp.sync.registry", "store_registry_version")
@@ -306,7 +307,7 @@ def test_genesis_alerted(pg_url, pg_roles, app_url, owner_url):
     with psycopg.connect(_conninfo(owner_url)) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, true)", [org_id])
         row = conn.execute(
-            "SELECT 1 FROM sync_alerts WHERE org_id = %s AND alert_type = 'second_genesis'",
+            "SELECT 1 FROM sync_alerts WHERE org_id = %s AND kind = 'second_genesis'",
             [org_id],
         ).fetchone()
     assert row is not None, "sync_alerts row for second_genesis not found"
@@ -318,7 +319,7 @@ def test_genesis_alerted(pg_url, pg_roles, app_url, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_cross_org_store_refused(pg_url, pg_roles, app_url, owner_url):
     """Storing a registry for org-B when app.org_id is org-A is refused (threat 29)."""
     _need("agg_cp.sync.registry", "store_registry_version")
@@ -348,7 +349,7 @@ def test_cross_org_store_refused(pg_url, pg_roles, app_url, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_latest_after_filter(pg_url, pg_roles, app_url, owner_url):
     """latest(conn, org, after=N) returns None when no version > N."""
     _need("agg_cp.sync.registry", "latest")
@@ -381,7 +382,7 @@ def test_latest_after_filter(pg_url, pg_roles, app_url, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T6Pending)
+
 def test_store_bad_sig_refused(pg_url, pg_roles, app_url, owner_url):
     """store_registry_version refuses an envelope with a bad signature."""
     _need("agg_cp.sync.registry", "store_registry_version")
