@@ -77,7 +77,7 @@ def test_root_exposure_owner_only_no_warning():
     with tempfile.TemporaryDirectory() as td:
         with patch("sandbox.connector.keyhome._validated_icacls",
                    return_value=Path(r"C:\Windows\System32\icacls.exe")):
-            with patch("sandbox.connector.keyhome.os.name", "nt"):
+            with patch("sandbox.connector.keyhome._is_windows", return_value=True):
                 with patch("subprocess.run", _fake_icacls(_OWNER_ONLY)):
                     result = root_exposure(Path(td))
     assert result is None, (
@@ -96,7 +96,7 @@ def test_existing_wide_groups_detected():
     with tempfile.TemporaryDirectory() as td:
         with patch("sandbox.connector.keyhome._validated_icacls",
                    return_value=Path(r"C:\Windows\System32\icacls.exe")):
-            with patch("sandbox.connector.keyhome.os.name", "nt"):
+            with patch("sandbox.connector.keyhome._is_windows", return_value=True):
                 with patch("subprocess.run", _fake_icacls(everyone_output)):
                     result = root_exposure(Path(td))
     assert result is not None and "Everyone" in result
@@ -112,7 +112,7 @@ def test_root_exposure_warns_when_icacls_missing():
     from sandbox.connector.keyhome import root_exposure
 
     with patch("sandbox.connector.keyhome._validated_icacls", return_value=None):
-        with patch("sandbox.connector.keyhome.os.name", "nt"):
+        with patch("sandbox.connector.keyhome._is_windows", return_value=True):
             with tempfile.TemporaryDirectory() as td:
                 result = root_exposure(Path(td))
                 assert result is not None, (
@@ -134,7 +134,7 @@ def test_root_exposure_flags_domain_users():
     with tempfile.TemporaryDirectory() as td:
         with patch("sandbox.connector.keyhome._validated_icacls",
                    return_value=Path(r"C:\Windows\System32\icacls.exe")):
-            with patch("sandbox.connector.keyhome.os.name", "nt"):
+            with patch("sandbox.connector.keyhome._is_windows", return_value=True):
                 with patch("subprocess.run",
                            _fake_icacls(_DOMAIN_USERS_READ)):
                     result = root_exposure(Path(td))
@@ -151,7 +151,7 @@ def test_root_exposure_flags_domain_computers():
     with tempfile.TemporaryDirectory() as td:
         with patch("sandbox.connector.keyhome._validated_icacls",
                    return_value=Path(r"C:\Windows\System32\icacls.exe")):
-            with patch("sandbox.connector.keyhome.os.name", "nt"):
+            with patch("sandbox.connector.keyhome._is_windows", return_value=True):
                 with patch("subprocess.run",
                            _fake_icacls(_DOMAIN_COMPUTERS_FULL)):
                     result = root_exposure(Path(td))
