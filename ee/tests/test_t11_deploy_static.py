@@ -512,6 +512,27 @@ class TestKeycloakDockerfile:
             "keycloak Dockerfile must run kc.sh build"
         )
 
+    @staticmethod
+    def _last_user(text: str) -> str | None:
+        users = [
+            l.strip().split(None, 1)[1].strip()
+            for l in text.splitlines()
+            if l.strip().upper().startswith("USER ")
+        ]
+        return users[-1] if users else None
+
+    def test_kc_dockerfile_ends_non_root(self):
+        """Trivy DS-0002: the image must name a non-root USER last."""
+        user = self._last_user(_KC_DOCKERFILE.read_text(encoding="utf-8"))
+        assert user is not None, "keycloak Dockerfile must set USER"
+        assert user.split(":")[0] not in ("root", "0"), (
+            f"keycloak Dockerfile ends as root: USER {user}"
+        )
+
+    def test_positive_control_root_user_detected(self):
+        assert self._last_user("FROM x\nRUN y\n") is None
+        assert self._last_user("FROM x\nUSER 1000\nUSER root\n") == "root"
+
     def test_compose_keycloak_uses_build(self):
         """keycloak service must use build: (not just image:) so the
         pre-built Dockerfile is used."""
