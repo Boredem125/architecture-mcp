@@ -1,8 +1,8 @@
-# M1 hand-off (19 Oct 2026)
+# Control-plane hand-off (M1 done 21 Oct 2026; M2 next)
 
 ## Laptop session status (21 Oct 2026)
 
-**Next action (founder):** approve M1 or send back what failed. All 5 gate items are measured and recorded in `M1_BASELINE.md` (items 1, 3, 4 on founder readings; item 3 step 5 dual control not exercised, as at M0) and `M1_DEMO.md` (demo 27/27 on a fresh clone at `2f71036`). Then M2 (sync) planning in a fresh session.
+**M1 APPROVED by the founder (21 Oct 2026).** Summary and carry-overs: `M1_DONE.md`. **Next action:** M2 (sync) planning in a fresh session: lead-architect drafts `M2_PLAN.md` from the roadmap in `M0_PLAN.md` (M2 sync: connector enrollment, signed policy bundles, audit upload with head checkpoints; ADR 0001 sections 1, 2, 5, 6) plus the `M1_DONE.md` carry-overs (incl. a live two-reviewer dual-control demo step); security-engineer and qa-engineer review; founder approves before any code.
 
 **Done on the laptop (Docker Desktop):** the 4 blocks below ran. Results are in `M1_DEMO.md`: T14 `demo.py` 27 PASS, 0 FAIL on a fresh `down -v`; ZAP 0 High/Medium; `/ready` 200; Keycloak demo profile healthy. Fixes the first real Docker run needed, each signed off by security-engineer: `8b85ede` (Caddy capability, secret ownership, `migrate` reads `AGG_DATABASE_URL_FILE`), `65446a8` (Keycloak built at image-build time, realms split), and the T14 demo fix (bob's real Keycloak `sub` via the admin API, Globex bootstrap, callback status checked before PASS). Records: `16627cc` (gate items 1 and 3 read per founder ruling A in `M1_BASELINE.md`, lead audit of the cloud range, T13 F1/F2 re-review), `edcc8e4` (`.claude/agents/` untracked). Windows needs `127.0.0.1 idp.localhost` in hosts and `demo.py --ca` (README). Open: ee tests not Windows-portable (`os.setsid` in `test_t10_multiworker.py`, symlink privilege in `test_m1_t13_review.py`); CSRF tests compare code with itself (Low).
 
