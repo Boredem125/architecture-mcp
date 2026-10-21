@@ -1,10 +1,10 @@
 # ADR 0007: Reviewer key custody, pinned keys and domain-tagged signatures (standalone mode)
 
-Status: Accepted (18 Oct 2026). Approved by security-engineer on two conditions, both recorded below (Decision 1.6 and 2.7). M1 T0b. Implements `M1_PLAN.md` D2 and D3; settles SEC-05 (standalone half), SEC-24 and the T0-hotfix key residual.
+Status: Accepted (18 Oct 2026). Approved by security-engineer on two conditions, both recorded below (Decision 1.6 and 2.7). M1 T0b. Implements `M1_PLAN.md` D2 and D3; settles SEC-05 (standalone half), SEC-24 and the T0-hotfix key residual. Amended for M2 (21 Oct 2026, M2 T0b): device key custody and four new domain tags. See "M2 amendments".
 
 ## Next action
 
-Backend-engineer: build T2-T4 against this ADR, tests first (qa-engineer).
+Backend-engineer (M2 T6, T8): add the M2 tags and the device key custody below, tests first (qa-engineer).
 
 ## Context
 
@@ -72,3 +72,30 @@ Backend-engineer: build T2-T4 against this ADR, tests first (qa-engineer).
 3. **Key home on C:.** On Windows the default key home is on C:. The founder's dev box sets `SANDBOX_KEY_HOME` on E:.
 4. **Retired seeds until T3/T4.** Until pinned keys (T3) and the 1.6 legacy rule (T3/T4) are in, a retired in-tree seed that someone read could still sign records that verify against its embedded public key. `sandbox keys purge-legacy` removes them; run it after upgrading. This limit closes when T3/T4 land.
 5. **A deleted `.sandbox/workspace_id`** starts a new key folder (new keys, no pins). It is audited as `workspace_id_created`; it is not prevented.
+
+## M2 amendments (21 Oct 2026, M2 T0b)
+
+Source: `docs/control-plane/M2_PLAN.md` D1.6, D1.7, D5.1 and D5.7; security Q3 ruling and F1 in `REVIEW_M2.md`. Protocol rules are in ADR 0001's M2 amendments.
+
+### 1. Device key custody (Q3 ruling)
+
+1. The Ed25519 device key lives in the key home, in `device/` under the workspace id. It is created by `sandbox enroll` (ADR 0001 A1.2), never on first use by any other path. Files 0600; user-only ACL on Windows.
+2. It sits behind the same non-removable deny as reviewer seeds (Decision 1.4): read, write, delete and rename, for Read, Grep, Glob, Write, Edit and shell. Tests cover every tool, rootless Grep/Glob, env-var paths and 8.3 short names.
+3. **Fail closed.** If the key home cannot be resolved or written, `sandbox enroll` and `sandbox sync` refuse to run. Local enforcement is unaffected. There is no fallback to `.sandbox/state/device/` (the path ADR 0001 1.5 first proposed), the cwd or a relative path.
+4. The `managed` marker that enrollment writes in the key home (ADR 0001 A1.7) is under the same deny.
+5. **Re-enroll, never reuse.** A re-enroll generates a new device key and gets a new `device_id` (F1). An old key is never re-registered.
+6. CLI signer keys (`sandbox signer`, ADR 0003 M2 amendments) also live in the key home under the same deny.
+7. **OS keystore deferred again.** Option 3 above said "planned for M2". The Q3 ruling defers it: DPAPI and Keychain do not stop code running as the same user (limit 1), so they do not change the M2 threat picture.
+
+### 2. Domain tags (amends Decision 3.1)
+
+1. **Reserved tags now in use in M2:** `agg/registry/v1`, `agg/bundle/v1`, `agg/device-assert/v1`, `agg/audit-head/v1`.
+2. **Four new tags** in `src/sandbox/protocol/domains.py`: `agg/remote-approval/v1`, `agg/device-enroll/v1`, `agg/signer-assert/v1`, `agg/unenroll/v1`.
+3. `agg/policy-change/v1` is also used for bundle change approvals, over the bundle hash (ADR 0001 A2.3).
+4. A remote deny is signed under `agg/remote-approval/v1` with `decision` set to deny, since `decision` is in `_APPROVAL_FIELDS`. There is no separate deny tag. `decision` must be exactly `approve` or `deny`; any other value is refused, and a deny never counts toward an approval.
+5. Decision 3.2 applies to every new tag: the tag and the signed-field set come from the kind and `sig_v`, in code, never from the record. Each tag's field set is fixed in ADR 0001's M2 amendments (A1.2, A1.4, A1.10, A1.12, A3.4, A4.2).
+6. Which key kind may sign under which tag is the kind matrix in ADR 0003's M2 amendments. A signature from the wrong kind is refused even if it verifies.
+
+### 3. Stated limits (M2)
+
+Limit 1 applies to the device key and CLI signer keys too. Same-user code, or the human operator, can read them or delete the key-home marker. ADR 0001 A8.5 states what that means for managed mode.
