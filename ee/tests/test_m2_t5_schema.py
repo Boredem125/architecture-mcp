@@ -102,7 +102,7 @@ def test_existing_tables_have_force_rls(pg_url, pg_roles, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T5Pending)
+
 def test_all_m2_tables_have_force_rls(pg_url, pg_roles, owner_url):
     """Every M2 new table has ENABLE and FORCE RLS."""
     _ensure_at_head(pg_url)
@@ -139,7 +139,7 @@ _M2_NEW_TABLES = [
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T5Pending)
+
 def test_m2_new_tables_exist(pg_url, pg_roles, owner_url):
     """All six new M2 tables from ADR 0002 exist."""
     _ensure_at_head(pg_url)
@@ -158,7 +158,7 @@ _APPEND_ONLY_TABLES = ["audit_records", "audit_heads", "audit_quarantine"]
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T5Pending)
+
 def test_audit_tables_exist(pg_url, pg_roles, owner_url):
     """audit_records, audit_heads, audit_quarantine exist."""
     _ensure_at_head(pg_url)
@@ -170,7 +170,7 @@ def test_audit_tables_exist(pg_url, pg_roles, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T5Pending)
+
 def test_audit_records_update_refused(pg_url, pg_roles, app_url):
     """UPDATE on audit_records is refused for agg_app."""
     _ensure_at_head(pg_url)
@@ -200,7 +200,7 @@ def test_audit_records_update_refused(pg_url, pg_roles, app_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T5Pending)
+
 def test_audit_records_delete_refused(pg_url, pg_roles, app_url):
     """DELETE on audit_records is refused for agg_app."""
     _ensure_at_head(pg_url)
@@ -226,7 +226,7 @@ def test_audit_records_delete_refused(pg_url, pg_roles, app_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T5Pending)
+
 def test_audit_records_truncate_refused(pg_url, pg_roles, app_url):
     """TRUNCATE on audit_records is refused for agg_app."""
     _ensure_at_head(pg_url)
@@ -290,7 +290,7 @@ def test_m1_secdef_function_exists(pg_url, pg_roles, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T5Pending)
+
 def test_secdef_functions_count_ge_9(pg_url, pg_roles, owner_url):
     """At least 9 SECURITY DEFINER functions (M1 + 8 M2)."""
     _ensure_at_head(pg_url)
@@ -333,7 +333,7 @@ def test_m1_secdef_search_path_pinned(pg_url, pg_roles, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T5Pending)
+
 def test_m2_secdef_search_path_pinned(pg_url, pg_roles, owner_url):
     """Each M2 SECURITY DEFINER function has search_path = pg_catalog, pg_temp."""
     _ensure_at_head(pg_url)
@@ -380,7 +380,7 @@ def test_m1_secdef_owned_by_agg_owner(pg_url, pg_roles, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T5Pending)
+
 def test_m2_secdef_owned_by_agg_owner(pg_url, pg_roles, owner_url):
     """Each M2 SECURITY DEFINER function is owned by agg_owner."""
     _ensure_at_head(pg_url)
@@ -428,7 +428,7 @@ def test_m1_secdef_execute_grants(pg_url, pg_roles, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T5Pending)
+
 def test_m2_secdef_execute_grants(pg_url, pg_roles, owner_url):
     """M2 SECURITY DEFINER: EXECUTE revoked from PUBLIC, granted to agg_app only."""
     _ensure_at_head(pg_url)
@@ -467,7 +467,7 @@ def test_m2_secdef_execute_grants(pg_url, pg_roles, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T5Pending)
+
 def test_enrollment_code_consume_single_winner(pg_url, pg_roles, owner_url, app_url):
     """Atomic enrollment-code consume: exactly 1 winner across 4 concurrent connections."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -530,7 +530,7 @@ def test_enrollment_code_consume_single_winner(pg_url, pg_roles, owner_url, app_
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T5Pending)
+
 def test_signer_link_consume_single_use(pg_url, pg_roles, owner_url, app_url):
     """Signer-link consume returns a result once; second call returns nothing."""
     _ensure_at_head(pg_url)
@@ -576,7 +576,7 @@ def test_signer_link_consume_single_use(pg_url, pg_roles, owner_url, app_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T5Pending)
+
 def test_device_nonce_refuses_repeat(pg_url, pg_roles, owner_url, app_url):
     """Nonce insert refuses a repeat per (device_id, nonce)."""
     _ensure_at_head(pg_url)
@@ -611,7 +611,7 @@ def test_device_nonce_refuses_repeat(pg_url, pg_roles, owner_url, app_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T5Pending)
+
 def test_signer_nonce_refuses_repeat(pg_url, pg_roles, owner_url, app_url):
     """Nonce insert refuses a repeat per (key_id, nonce)."""
     _ensure_at_head(pg_url)
@@ -650,7 +650,7 @@ def test_signer_nonce_refuses_repeat(pg_url, pg_roles, owner_url, app_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T5Pending)
+
 def test_device_token_lookup_unknown_returns_nothing(pg_url, pg_roles, app_url):
     """device_token_lookup for an unknown hash returns NULL."""
     _ensure_at_head(pg_url)
@@ -668,7 +668,7 @@ def test_device_token_lookup_unknown_returns_nothing(pg_url, pg_roles, app_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T5Pending)
+
 def test_signer_token_lookup_unknown_returns_nothing(pg_url, pg_roles, app_url):
     """signer_token_lookup for an unknown hash returns NULL."""
     _ensure_at_head(pg_url)
@@ -717,7 +717,7 @@ def test_alembic_round_trip_m1(pg_url, pg_roles):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T5Pending)
+
 def test_alembic_m2_migration_exists(pg_url, pg_roles):
     """An M2 Alembic migration exists (beyond the 6 M1 revisions)."""
     from agg_cp.db import alembic_config
