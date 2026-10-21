@@ -34,6 +34,11 @@ class KeyHomeError(RuntimeError):
     """The key home is unusable: no signing, no valid approval."""
 
 
+def _is_windows() -> bool:
+    """Platform seam: tests patch this instead of ``os.name`` (which breaks ``Path`` on Linux)."""
+    return os.name == "nt"
+
+
 class NotEnrolledError(KeyHomeError):
     """The reviewer is not enrolled and keys.enrol is set to explicit (ADR 0007 2.4)."""
 
@@ -139,7 +144,7 @@ def root_exposure(root: Path) -> str | None:
     try:
         if not root.exists():
             return None
-        if os.name != "nt":
+        if not _is_windows():
             mode = root.stat().st_mode & 0o077
             return f"mode {oct(root.stat().st_mode & 0o777)} lets group or others in" if mode else None
         import subprocess
@@ -162,7 +167,7 @@ def root_exposure(root: Path) -> str | None:
 
 def _secure_new_root(root: Path) -> None:
     """Windows: make a key home directory we just created user-only (best effort)."""
-    if os.name != "nt":
+    if not _is_windows():
         return
     try:
         import getpass
@@ -201,7 +206,7 @@ def workspace_key_dir(layout, *, create: bool = True) -> Path:
     if create:
         try:
             fresh = not root.exists()
-            if os.name != "nt":
+            if not _is_windows():
                 # Create owner-only directories without a separate chmod:
                 # set a restrictive umask so mkdir's mode argument takes
                 # full effect (0o700 & ~0o077 == 0o700).
