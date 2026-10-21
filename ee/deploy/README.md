@@ -231,14 +231,31 @@ Docker Compose `file:` secrets (non-Swarm) are bind mounts that
 preserve host-side ownership and mode, so the chown in init-secrets
 is what the container processes see at `/run/secrets/`.
 
-### Stated limit: ca-bundle DAC_READ_SEARCH
+### Stated limit: ca-bundle DAC_READ_SEARCH (fixed, M2 T3)
 
-The `ca-bundle` one-shot service has `CAP_DAC_READ_SEARCH` so it can
-read Caddy's internal root CA (`root.crt`).  This capability also
-grants read access to Caddy's private keys in the `caddy-data` volume
-(mounted read-only).  The entrypoint only copies `root.crt`; it does
-not read private keys.  A future improvement could run ca-bundle as
-uid 65532 (caddy's uid) instead, removing the need for the capability.
+**Fixed.** The proxy entrypoint now copies only `root.crt` from
+`caddy-data` to a dedicated `caddy-root-cert` named volume.  The
+`ca-bundle` service reads from `caddy-root-cert` (not `caddy-data`)
+and no longer needs `CAP_DAC_READ_SEARCH`.  Caddy's private keys
+in the `caddy-data` volume are never exposed to `ca-bundle`.
+
+### API base image (M2 T4)
+
+The `api` service uses a Chainguard Python distroless base image:
+
+- **Tag:** `cgr.dev/chainguard/python:latest`
+- **Digest:** `sha256:e2ade4461c3ff67acf054214645e0b4e41b99140d7096ed64c1e15f6fe985cdf`
+- **Python version:** 3.15 (the free Chainguard tier tracks latest)
+- **Properties:** no shell, no package manager, non-root (uid 65532)
+- **Update policy:** rebuild weekly.  Pull `cgr.dev/chainguard/python:latest`,
+  record the new digest, run `docker compose build api`, then Trivy and
+  the full test suite.  Pin the tested digest in `api.Dockerfile`.
+- **Fallback:** if the free `:latest` tag changes Python major.minor in a
+  way that breaks ABI compatibility with the wheels built in the dev stage,
+  build a custom base with Wolfi via `apko` that pins the needed Python
+  minor version (e.g. `python-3.15`).  The Chainguard free tier publishes
+  only `:latest`, so a version pin is only available through `apko` or the
+  paid Chainguard Images subscription.
 
 ### Keycloak admin password
 

@@ -42,7 +42,6 @@ def test_caddyfile_exists():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T3Pending)
 def test_ca_bundle_no_dac_read_search():
     """ca-bundle service must not have DAC_READ_SEARCH capability."""
     text = _COMPOSE.read_text(encoding="utf-8")
@@ -99,7 +98,6 @@ def _do_text_check(text: str):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T3Pending)
 def test_ca_bundle_mounts_only_root_cert_volume():
     """ca-bundle should mount a volume with only root.crt, not caddy-data."""
     text = _COMPOSE.read_text(encoding="utf-8")
@@ -136,7 +134,6 @@ def test_ca_bundle_mounts_only_root_cert_volume():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T3Pending)
 def test_caddy_exports_only_root_crt():
     """Caddy proxy service should export root.crt to a volume that
     does not contain the private key."""
