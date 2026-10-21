@@ -17,7 +17,10 @@ docker compose --profile init run --rm init-secrets
 ```
 
 This creates random credentials and pre-composed database URLs in
-`./secrets/` with mode 0600.
+`./secrets/`.  Each file is chowned to the uid:gid of its consumer
+service with mode 0400 (single consumer) or 0440 (shared via group).
+To regenerate, delete all files in `secrets/` except `.gitignore`
+and re-run the command.
 
 ### 2. Build the web bundle
 
@@ -172,8 +175,8 @@ port 8080.  Keycloak 26 uses `KC_PROXY_HEADERS=xforwarded` and
 
 The proxy has a network alias `idp.localhost` on the internal network,
 so the API resolves it to the Caddy container.  Caddy listens on port
-443 (in addition to 8443) for container-to-container TLS; this requires
-`sysctls: net.ipv4.ip_unprivileged_port_start: 443`.
+443 (in addition to 8443) for container-to-container TLS; the proxy
+has `cap_add: NET_BIND_SERVICE` to allow this.
 
 ### CA trust
 
@@ -183,19 +186,56 @@ and writes the result to the `ca-bundle` volume.  The API sets
 `SSL_CERT_FILE` to this combined bundle so that httpx trusts
 Caddy-issued certificates without `update-ca-certificates`.
 
+### Secret file ownership
+
+The `init-secrets` container (one-shot, runs as root with only
+`CAP_CHOWN` and `CAP_DAC_OVERRIDE`) sets per-consumer ownership on
+each secret file.  `DAC_OVERRIDE` is needed so that the container can
+create files in `./secrets/` even when the directory is owned by a
+non-root uid on native Linux hosts:
+
+| Secret                 | UID:GID      | Mode  | Consumer(s)           |
+|------------------------|-------------|-------|-----------------------|
+| `pg_superuser_password`| 999:999     | 0400  | postgres              |
+| `pg_owner_password`    | 999:999     | 0400  | postgres (00-roles.sh)|
+| `pg_app_password`      | 999:999     | 0400  | postgres (00-roles.sh)|
+| `pg_owner_url`         | 10001:10001 | 0400  | migrate, migrate-demo |
+| `pg_app_url`           | 10001:10001 | 0400  | api                   |
+| `oidc_client_secret`   | 65534:30000 | 0440  | api + keycloak (gid)  |
+| `server_signing_key`   | 10001:10001 | 0400  | api                   |
+
+Files shared between services with different UIDs use a common GID
+(30000) with mode 0440.  The consuming services have `group_add: ["30000"]`
+in compose.yml.  No secret file is world-readable.
+
+Docker Compose `file:` secrets (non-Swarm) are bind mounts that
+preserve host-side ownership and mode, so the chown in init-secrets
+is what the container processes see at `/run/secrets/`.
+
+### Stated limit: ca-bundle DAC_READ_SEARCH
+
+The `ca-bundle` one-shot service has `CAP_DAC_READ_SEARCH` so it can
+read Caddy's internal root CA (`root.crt`).  This capability also
+grants read access to Caddy's private keys in the `caddy-data` volume
+(mounted read-only).  The entrypoint only copies `root.crt`; it does
+not read private keys.  A future improvement could run ca-bundle as
+uid 65532 (caddy's uid) instead, removing the need for the capability.
+
 ### Keycloak admin password
 
 Keycloak has no `_FILE` convention for `KEYCLOAK_ADMIN_PASSWORD`.  This
 is acceptable because: internal network only, demo profile only.
 
-## Unverified until run on a Docker machine
+## Ready checklist
 
-- [ ] Stack starts with `docker compose up -d`
-- [ ] `curl -sk https://localhost/ready` returns HTTP 200
+- [x] Stack starts with `docker compose up -d --build`
+- [x] `curl -sk https://localhost/ready` returns HTTP 200
+- [x] Secret files have per-consumer ownership (see init-secrets.sh table)
 - [ ] Demo login flow through Keycloak completes
 - [ ] Trivy scan: 0 HIGH/CRITICAL on the api image
 - [ ] ZAP baseline on the proxy: no High findings
-- [ ] Postgres runs correctly with `user: "999:999"` and no `cap_add`
+- [x] Postgres runs correctly with `user: "999:999"` and no `cap_add`
+- [x] Proxy runs with `cap_add: NET_BIND_SERVICE` (caddy file caps)
 - [ ] `ca-bundle` service produces a valid combined CA bundle
 - [ ] `idp.localhost` TLS works for both browser and API access
 - [ ] Globex second-org bootstrap command works

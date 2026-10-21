@@ -17,6 +17,7 @@ import os
 import secrets
 import sys
 import uuid
+from pathlib import Path
 
 from agg_cp.db import alembic_config
 
@@ -25,13 +26,37 @@ def _sync_conninfo(url: str) -> str:
     return url.replace("+psycopg", "")
 
 
+def resolve_db_url() -> str:
+    """Return the database URL from env vars.
+
+    Checks ``AGG_DATABASE_URL`` first; falls back to reading the file
+    at ``AGG_DATABASE_URL_FILE``.  Raises :class:`RuntimeError` if
+    neither yields a URL.  The error message never contains the URL
+    or the file contents.
+    """
+    db_url = os.environ.get("AGG_DATABASE_URL", "")
+    if not db_url:
+        url_file = os.environ.get("AGG_DATABASE_URL_FILE")
+        if url_file:
+            path = Path(url_file)
+            if not path.is_file():
+                raise RuntimeError(
+                    f"AGG_DATABASE_URL_FILE points to a missing file: "
+                    f"{url_file}"
+                )
+            db_url = path.read_text(encoding="utf-8").strip()
+    if not db_url:
+        raise RuntimeError(
+            "AGG_DATABASE_URL or AGG_DATABASE_URL_FILE is required"
+        )
+    return db_url
+
+
 def main() -> int | None:
     """Run alembic upgrade head, then optionally emit a setup code."""
     from alembic import command as alembic_cmd
 
-    db_url = os.environ.get("AGG_DATABASE_URL", "")
-    if not db_url:
-        raise RuntimeError("AGG_DATABASE_URL is required")
+    db_url = resolve_db_url()
 
     cfg = alembic_config(db_url)
     alembic_cmd.upgrade(cfg, "head")

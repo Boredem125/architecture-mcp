@@ -1,0 +1,5 @@
+# Force LF line endings for files mounted into Linux containers.
+# Windows git with core.autocrlf=true would otherwise convert to CRLF,
+# which breaks shebang lines in bash scripts.
+*.sh text eol=lf
+Caddyfile text eol=lf
