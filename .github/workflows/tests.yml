@@ -59,9 +59,27 @@ jobs:
       - name: Install (editable, dev extras)
         # defusedxml: junit_gate.py parses the JUnit XML (semgrep use-defused-xml-parse).
         run: python -m pip install --quiet -e ".[dev]" "defusedxml>=0.7.1"
+      - name: Dependency-free CPython for SEC-27/28 (M2 T1)
+        # Embeddable CPython 3.12.10 amd64 from python.org, pinned by sha256.
+        # Source: https://www.python.org/ftp/python/3.12.10/
+        # The ci_bare_python pytest plugin (.github/scripts/) wires BARE_PYTHON
+        # to sys._base_executable before collection so the 3 needs_bare_python
+        # tests run instead of skipping.
+        if: runner.os == 'Windows'
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cpython-embed.zip" \
+            "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip"
+          echo "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3  $RUNNER_TEMP/cpython-embed.zip" \
+            | sha256sum -c
+          unzip -q "$RUNNER_TEMP/cpython-embed.zip" -d "$RUNNER_TEMP/cpython-embed"
+          rm "$RUNNER_TEMP/cpython-embed/python312._pth"
+          "$RUNNER_TEMP/cpython-embed/python.exe" --version
       - name: Run the suite
+        env:
+          BARE_PYTHON: ${{ runner.os == 'Windows' && format('{0}/cpython-embed/python.exe', runner.temp) || '' }}
         run: >
-          python -m pytest -q -p no:logging
+          PYTHONPATH=".github/scripts${PYTHONPATH:+:$PYTHONPATH}"
+          python -m pytest -q -p no:logging -p ci_bare_python
           ${{ matrix.deselect }}
           --junitxml "$RUNNER_TEMP/junit-pytest-${{ runner.os }}.xml"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -105,6 +123,17 @@ jobs:
           python -m pip install --quiet -e "./ee[dev]" "defusedxml>=0.7.1"  # editable: coverage measures ee/src/agg_cp (gate item 2)
       - name: lint-imports (import-linter contract)
         run: lint-imports --config ee/.importlinter
+      - name: Frozen ee test files unchanged (M2_FROZEN_MANIFEST.sha256)
+        # The ee/ half of the manifest (connector-standalone checks the rest).
+        # M2_BASELINE.md section 3 named exceptions, excluded here:
+        #   ee/tests/test_t8p2_session.py (T3), ee/tests/test_t10_multiworker.py (T2),
+        #   ee/tests/test_m1_t13_review.py (T2).
+        # Hashes are of LF content; only the Linux checkout is LF on disk.
+        if: runner.os == 'Linux'
+        run: >
+          grep '  ee/' docs/control-plane/M2_FROZEN_MANIFEST.sha256
+          | grep -v -e '  ee/tests/test_t8p2_session.py$' -e '  ee/tests/test_t10_multiworker.py$' -e '  ee/tests/test_m1_t13_review.py$'
+          | sha256sum -c --quiet
       - name: Run ee tests (branch coverage; M1 gate item 2 needs >= 85%)
         env:
           AGG_TEST_PG_URL: postgresql://postgres@localhost:5432/postgres
@@ -159,17 +188,36 @@ jobs:
         run: |
           python -m pip install --quiet .
           python -m pip install --quiet "pytest>=8.3.0" "pytest-asyncio>=0.24.0" "pytest-timeout>=2.3.0" "defusedxml>=0.7.1"
-      - name: Frozen test files unchanged (M1_FROZEN_MANIFEST.sha256)
-        # M1 manifest supersedes M0_C_MANIFEST (which lags the documented M1
-        # re-hashes in M1_BASELINE.md). Hashes are of LF content; only the Linux
-        # checkout is LF on disk.
-        if: runner.os == 'Linux' && hashFiles('docs/control-plane/M1_FROZEN_MANIFEST.sha256') != ''
-        run: sha256sum -c --quiet docs/control-plane/M1_FROZEN_MANIFEST.sha256
+      - name: Dependency-free CPython for SEC-27/28 (M2 T1)
+        if: runner.os == 'Windows'
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cpython-embed.zip" \
+            "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip"
+          echo "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3  $RUNNER_TEMP/cpython-embed.zip" \
+            | sha256sum -c
+          unzip -q "$RUNNER_TEMP/cpython-embed.zip" -d "$RUNNER_TEMP/cpython-embed"
+          rm "$RUNNER_TEMP/cpython-embed/python312._pth"
+          "$RUNNER_TEMP/cpython-embed/python.exe" --version
+      - name: Frozen test files unchanged (M2_FROZEN_MANIFEST.sha256)
+        # M2_BASELINE.md section 3 exceptions (fixture/setup, security sign-off):
+        #   ee/tests/test_t8p2_session.py       – T3: CSRF HMAC independent computation
+        #   ee/tests/test_t10_multiworker.py     – T2: portable process group (os.setsid)
+        #   ee/tests/test_m1_t13_review.py       – T2: symlink skip on Windows
+        # All three are ee/ files; this job removes ee/ so all ee/ lines are filtered.
+        # Hashes are of LF content; only the Linux checkout is LF on disk.
+        if: runner.os == 'Linux' && hashFiles('docs/control-plane/M2_FROZEN_MANIFEST.sha256') != ''
+        run: grep -v '  ee/' docs/control-plane/M2_FROZEN_MANIFEST.sha256 | sha256sum -c --quiet
       - name: Run the connector (Class C) tests
+        env:
+          BARE_PYTHON: ${{ runner.os == 'Windows' && format('{0}/cpython-embed/python.exe', runner.temp) || '' }}
         run: |
           python .github/scripts/c_tests.py > "$RUNNER_TEMP/c_tests.txt"
           echo "$(wc -l < "$RUNNER_TEMP/c_tests.txt") test files"
-          python -m pytest -q -p no:logging ${{ matrix.deselect }} --junitxml "$RUNNER_TEMP/junit-connector-${{ runner.os }}.xml" $(cat "$RUNNER_TEMP/c_tests.txt")
+          PYTHONPATH=".github/scripts${PYTHONPATH:+:$PYTHONPATH}" \
+            python -m pytest -q -p no:logging -p ci_bare_python \
+            ${{ matrix.deselect }} \
+            --junitxml "$RUNNER_TEMP/junit-connector-${{ runner.os }}.xml" \
+            $(cat "$RUNNER_TEMP/c_tests.txt")
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: success() || failure()
         with:
