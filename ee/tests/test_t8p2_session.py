@@ -23,8 +23,6 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from agg_cp.auth import csrf_token_for
-
 from .t8p2_helpers import (
     T8P2Pending,
     require_t8p2,
@@ -133,9 +131,16 @@ def _extract_session_cookie_header(resp):
 
 
 def _csrf_from_session_cookie(session_val: str) -> str:
-    """Derive the CSRF token from the session cookie value using the helper."""
+    """Derive the CSRF token independently (T3: compute the HMAC in the
+    test, not by calling the code under test).
+
+    csrf_token = base64url_nopad(HMAC-SHA256(key=session_token, msg=b"agg-csrf-v1"))
+    """
+    import base64
+    import hmac as _hmac
     token = session_val.split(".", 1)[1] if "." in session_val else session_val
-    return csrf_token_for(token)
+    mac = _hmac.new(token.encode(), b"agg-csrf-v1", hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(mac).rstrip(b"=").decode("ascii")
 
 
 def _build_env(pg_url, owner_url, *, slug=None, sub=None,
