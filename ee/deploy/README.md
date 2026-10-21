@@ -89,7 +89,26 @@ Globex) and three users, plus an IdP reverse-proxy site on Caddy.
 AGG_OIDC_ALLOW_HOSTS=idp.localhost docker compose --profile demo up -d --build
 ```
 
-This starts everything from the base stack plus:
+On Windows, the host does not resolve `idp.localhost` (browsers and most
+Linux resolvers map `*.localhost` to loopback; Windows does not). Before
+running `demo.py` or logging in from a non-browser client, add this line to
+`C:\Windows\System32\drivers\etc\hosts` as administrator:
+
+```
+127.0.0.1 idp.localhost
+```
+
+`demo.py` verifies TLS against Caddy's local root CA. On Windows the
+`/ca-bundle` path does not exist, so copy the CA out and pass it:
+
+```bash
+docker compose cp proxy:/data/caddy/pki/authorities/local/root.crt ./caddy-root.crt
+python ee/deploy/demo.py --ca ee/deploy/caddy-root.crt
+```
+
+Delete `caddy-root.crt` afterwards; it is not a secret, but it is local state.
+
+The demo profile starts everything from the base stack plus:
 - `keycloak` -- Keycloak 26 with imported demo realms
 - `migrate-demo` -- bootstraps the `acme` org (OIDC config + setup code)
 

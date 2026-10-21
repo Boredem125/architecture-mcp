@@ -6,7 +6,7 @@ Usage:
     python ee/deploy/demo.py --step 2 # run only step 2
 
 Dependencies: stdlib + httpx (verify via --ca or the Caddy root CA path).
-Passwords come from the demo-realm.json (demo-only values).
+Passwords come from keycloak/acme-realm.json and globex-realm.json (demo-only values).
 
 Exit code: 0 if all steps PASS, non-zero on the first FAIL.
 """
@@ -36,18 +36,21 @@ _REPO_ROOT = _SCRIPT_DIR.parent.parent  # top of the repo
 _CA_BUNDLE_DEFAULT = "/ca-bundle/ca-certificates.crt"
 
 # ---------------------------------------------------------------------------
-# Demo passwords from keycloak/demo-realm.json (demo-only values)
+# Demo passwords from keycloak/*-realm.json (demo-only values)
 # ---------------------------------------------------------------------------
 
-_DEMO_REALM = _SCRIPT_DIR / "keycloak" / "demo-realm.json"
+_DEMO_REALMS = (
+    _SCRIPT_DIR / "keycloak" / "acme-realm.json",
+    _SCRIPT_DIR / "keycloak" / "globex-realm.json",
+)
 
 
 def _load_demo_passwords() -> dict[str, str]:
     """Read passwords from the demo realm JSON.  Never hard-coded beyond
     the demo-only values shipped in the realm file."""
-    data = json.loads(_DEMO_REALM.read_text(encoding="utf-8"))
     passwords: dict[str, str] = {}
-    for realm in data:
+    for path in _DEMO_REALMS:
+        realm = json.loads(path.read_text(encoding="utf-8"))
         for user in realm.get("users", []):
             creds = user.get("credentials", [])
             if creds:
@@ -268,7 +271,7 @@ def step2_setup_and_admin(client: httpx.Client, base_url: str, passwords: dict[s
     # 2c. Follow the Keycloak authorization redirect and log in as alice
     alice_pw = passwords.get("alice", "")
     if not alice_pw:
-        _fail("alice password not found in demo-realm.json")
+        _fail("alice password not found in the demo realm files")
     callback_resp = _keycloak_login(client, redirect_url, "alice", alice_pw)
     if callback_resp.status_code not in (200, 302):
         _fail(
@@ -360,7 +363,7 @@ def step3_bob_and_eve(
 
         bob_pw = passwords.get("bob", "")
         if not bob_pw:
-            _fail("bob password not found in demo-realm.json")
+            _fail("bob password not found in the demo realm files")
         callback_resp = _keycloak_login(bob_client, auth_url, "bob", bob_pw)
         _pass("bob logged in via Keycloak")
 
@@ -413,7 +416,7 @@ def step3_bob_and_eve(
             auth_url = eve_login.headers.get("location", "")
             eve_pw = passwords.get("eve", "")
             if not eve_pw:
-                _fail("eve password not found in demo-realm.json")
+                _fail("eve password not found in the demo realm files")
             _keycloak_login(eve_client, auth_url, "eve", eve_pw)
 
             # eve should see no Acme projects
