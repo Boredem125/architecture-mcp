@@ -1,10 +1,10 @@
 # ADR 0005: Docker Compose packaging for the self-hosted control plane
 
-Status: Accepted (18 Oct 2026) for M1, with the amendments at the bottom. Owner for implementation: devops-engineer (M1 T11).
+Status: Accepted (18 Oct 2026) for M1, with the amendments at the bottom. Owner for implementation: devops-engineer (M1 T11). Amended for M2 (21 Oct 2026, M2 T0b): see "M2 amendments".
 
 ## Next action
 
-Devops-engineer: confirm Caddy vs nginx (Decision 2) and the secrets-as-files convention (Decision 3).
+Devops-engineer (M2 T3, T4, T14): build the M2 amendments, tests first.
 
 ## Context
 
@@ -82,3 +82,21 @@ Removed: `nats`, `opa`, `redis`, `executor`. Networks: `edge` (proxy only) and `
 2. **`worker` is deferred to M2,** because M1 has nothing to deliver. M1 services are `proxy`, `api`, `migrate` and `postgres`, plus a `demo` profile with Keycloak (pinned) and two demo orgs.
 3. **The setup code is printed by `migrate`** as one JSON line. It therefore appears in `docker logs`; the docs say so, and the code is dead after use or after 30 minutes.
 4. The root `docker-compose.yml` from M0 stays for the single-folder `sandbox serve`. The control-plane stack lives in `ee/deploy/`.
+
+## M2 amendments (21 Oct 2026, M2 T0b)
+
+Source: `docs/control-plane/M2_PLAN.md` D9.4, D10.3-10.4 and founder ruling 3 (21 Oct 2026).
+
+1. **New `api` base image (founder ruling 3; replaces the `python:3.12-slim` runtime stage of `api.Dockerfile`, which `api` and `migrate` share).**
+   - Chainguard Python, pinned by digest. T4 records the tag and the update policy here.
+   - Chainguard's free images are latest-only, so the digest pin comes with a rebuild cadence. Any HIGH that remains is reported, not hidden.
+   - Fallback: a Wolfi base built with apko, also pinned by digest.
+   - The image runs as non-root and has no shell. The target is Trivy 0 HIGH/CRITICAL, fixed or unfixed (M2 gate item 4). The M1 limit (44 unfixed Debian HIGH) closes only when that is measured.
+   - The `api` healthcheck uses the exec form (`CMD`), not `CMD-SHELL`, since the image has no shell.
+2. **Bundle-signer secret.**
+   - A new Ed25519 key in its own Docker secret file, read through a `*_FILE` variable. It is mounted only into the service that signs bundles (the `api` in M2). `init-secrets` generates it with the same ownership and `0400` rules as the other secrets and refuses to overwrite it.
+   - It does not reuse the M1 `server_signing_key` file. That file is a random token, not an Ed25519 key, and no code reads it today.
+   - Its public key is the registry's `bundle_signer` (ADR 0003 M2 amendments). Rotating it needs a new registry version signed by the admin quorum.
+   - It gives integrity and origin for bundles only. It cannot loosen policy on its own: loosening needs two CLI approvals, checked by the connector (ADR 0001 A2.3).
+3. **Caddy root-cert volume (D10.4).** Caddy exports only `root.crt` to its own volume. `ca-bundle` mounts that volume instead of `caddy-data`, so it never sees Caddy's private keys and drops `DAC_READ_SEARCH`.
+4. **Security properties affected (M2).** Attack surface: smaller (no shell in `api`, one capability fewer in `ca-bundle`). Secret handling: one new secret file, never in the image, `compose.yml` or the database.
