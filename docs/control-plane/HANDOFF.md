@@ -1,4 +1,8 @@
-# Control-plane hand-off (M1 done 21 Oct 2026; M2 next)
+# Control-plane hand-off (M2 plan approved 21 Oct 2026; T## M2 planning status (21 Oct 2026)
+
+**The M2 plan was APPROVED by the founder on 21 Oct 2026** (`f732d58`): `M2_PLAN.md`, with the reviews in `REVIEW_M2.md`. Security ran 3 rounds and ended at APPROVE WITH CONDITIONS: F1 (bind the un-enroll fields) and F2 (sync never re-pins the root) go into ADR 0001 at T0b, before T5, and land as T8 tests; F3-F5 are demo and scope text. QA: APPROVE. The founder rulings are at the end of the plan: a real second person for the live step, `sandbox watch` off in managed mode, a Chainguard `api` base, no remote approvals on prod in M2, and locked on lost state. **Next action:** T0a (qa, worker tier) and T0b (lead-architect plus security, leader tier) in a fresh session.
+
+0a/T0b next)
 
 ## Laptop session status (21 Oct 2026)
 
