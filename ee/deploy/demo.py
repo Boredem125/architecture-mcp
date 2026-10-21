@@ -34,6 +34,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 _COMPOSE_DIR = _SCRIPT_DIR  # ee/deploy/
 _REPO_ROOT = _SCRIPT_DIR.parent.parent  # top of the repo
 _CA_BUNDLE_DEFAULT = "/ca-bundle/ca-certificates.crt"
+_IDP_BASE_URL = "https://idp.localhost"
 
 # ---------------------------------------------------------------------------
 # Demo passwords from keycloak/*-realm.json (demo-only values)
@@ -232,6 +233,85 @@ def _get_me(client: httpx.Client, base_url: str) -> dict:
     return r.json()
 
 
+def _get_keycloak_user_id(
+    client: httpx.Client,
+    realm: str,
+    username: str,
+) -> str:
+    """Get a Keycloak user's ID (= OIDC ``sub`` claim) via the admin API.
+
+    Uses the demo admin credentials (admin/admin) from the Keycloak
+    demo profile.  The returned ID is the UUID that Keycloak assigns
+    as the ``sub`` claim in id_tokens.
+    """
+    # Get admin access token
+    token_resp = client.post(
+        f"{_IDP_BASE_URL}/realms/master/protocol/openid-connect/token",
+        data={
+            "grant_type": "password",
+            "client_id": "admin-cli",
+            "username": "admin",
+            "password": "admin",
+        },
+    )
+    if token_resp.status_code != 200:
+        _fail(
+            f"Keycloak admin token request failed: {token_resp.status_code}: "
+            f"{token_resp.text[:200]}"
+        )
+    admin_token = token_resp.json()["access_token"]
+
+    # Look up user by exact username
+    users_resp = client.get(
+        f"{_IDP_BASE_URL}/admin/realms/{realm}/users",
+        params={"username": username, "exact": "true"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    if users_resp.status_code != 200:
+        _fail(
+            f"Keycloak user lookup for '{username}' in '{realm}' failed: "
+            f"{users_resp.status_code}: {users_resp.text[:200]}"
+        )
+    users = users_resp.json()
+    if not users:
+        _fail(f"Keycloak user '{username}' not found in realm '{realm}'")
+    return users[0]["id"]
+
+
+def _bootstrap_globex() -> str:
+    """Bootstrap the Globex org via docker compose and return its setup code."""
+    result = subprocess.run(
+        ["docker", "compose", "run", "--rm",
+         "-e", "AGG_DATABASE_URL_FILE=/run/secrets/pg_owner_url",
+         "-e", "AGG_BOOTSTRAP_ORG_SLUG=globex",
+         "-e", "AGG_BOOTSTRAP_ORG_NAME=Globex Corporation",
+         "-e", "AGG_BOOTSTRAP_ORG_ISSUER=https://idp.localhost/realms/globex",
+         "-e", "AGG_BOOTSTRAP_ORG_CLIENT_ID=agg-control-plane",
+         "migrate-demo", "python", "-m", "agg_cp.migrate"],
+        cwd=str(_COMPOSE_DIR),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    if result.returncode != 0:
+        _fail(
+            f"Globex bootstrap failed (exit {result.returncode}): "
+            f"{result.stderr[:300]}"
+        )
+    # Extract setup code from output
+    for line in (result.stdout or "").splitlines():
+        for match in re.finditer(r'\{[^}]+\}', line):
+            try:
+                obj = json.loads(match.group())
+                if obj.get("event") == "setup_code" and obj.get("org") == "globex":
+                    return obj["code"]
+            except (json.JSONDecodeError, KeyError):
+                continue
+    _fail("Could not find globex setup_code in bootstrap output")
+    return ""  # unreachable
+
+
 # ---------------------------------------------------------------------------
 # Step implementations
 # ---------------------------------------------------------------------------
@@ -302,10 +382,16 @@ def step2_setup_and_admin(client: httpx.Client, base_url: str, passwords: dict[s
     project_id = proj_resp.json().get("id")
     _pass(f"Created project 'payments' (id={project_id})")
 
-    # 2f. Add bob as a user in the org (POST /org/users)
+    # 2f. Look up bob's real Keycloak sub (UUID) via the admin API.
+    # Keycloak assigns a random UUID as the `sub` claim; passing the
+    # username string would cause a (iss, sub) mismatch at callback.
+    bob_kc_sub = _get_keycloak_user_id(client, "acme", "bob")
+    _pass(f"Looked up bob's Keycloak sub via admin API (sub={bob_kc_sub})")
+
+    # 2g. Add bob as a user in the org (POST /org/users)
     bob_user_resp = client.post(
         f"{base_url}/api/v1/org/users",
-        json={"oidc_subject": "bob", "email": "bob@acme.example"},
+        json={"oidc_subject": bob_kc_sub, "email": "bob@acme.example"},
         headers={"X-CSRF-Token": csrf},
     )
     if bob_user_resp.status_code != 201:
@@ -313,7 +399,7 @@ def step2_setup_and_admin(client: httpx.Client, base_url: str, passwords: dict[s
     bob_user_id = bob_user_resp.json().get("id")
     _pass(f"Added bob as org user (id={bob_user_id})")
 
-    # 2g. Add bob as approver on the project (POST /projects/{id}/members)
+    # 2h. Add bob as approver on the project (POST /projects/{id}/members)
     member_resp = client.post(
         f"{base_url}/api/v1/projects/{project_id}/members",
         json={"user_id": bob_user_id, "role": "approver"},
@@ -365,6 +451,11 @@ def step3_bob_and_eve(
         if not bob_pw:
             _fail("bob password not found in the demo realm files")
         callback_resp = _keycloak_login(bob_client, auth_url, "bob", bob_pw)
+        if callback_resp.status_code not in (200, 302):
+            _fail(
+                f"bob callback returned {callback_resp.status_code} "
+                f"(expected 200 or 302): {callback_resp.text[:200]}"
+            )
         _pass("bob logged in via Keycloak")
 
         # 3b. bob sees the payments project
@@ -393,55 +484,89 @@ def step3_bob_and_eve(
         _pass("bob gets 403 on role change (not admin)")
 
     # --- eve (Globex) ---
-    # eve is in a different org (globex).  She should not see Acme data.
-    # First, we need to bootstrap globex if not already done.
-    # The demo profile only bootstraps acme; globex needs a separate run.
-    # For this demo, we attempt to log eve in; if globex is not bootstrapped
-    # the login endpoint returns 404 (org not found), which is also a valid
-    # demonstration of org isolation.
+    # Bootstrap globex org if not already done, then log eve in.
     with httpx.Client(verify=ca_path, follow_redirects=False) as eve_client:
+        # 3d. Check if globex org exists; bootstrap if needed
         eve_login = eve_client.get(
             f"{base_url}/api/v1/auth/login",
             params={"org": "globex"},
             follow_redirects=False,
         )
         if eve_login.status_code == 404:
-            # Globex org not bootstrapped -- this is expected per README
-            _pass(
-                "eve (Globex): org not bootstrapped (404) -- "
-                "Acme data is isolated by design"
+            # Globex not bootstrapped -- bootstrap it now
+            globex_code = _bootstrap_globex()
+            _pass("Bootstrapped Globex org")
+
+            # POST /auth/setup for globex
+            globex_setup = eve_client.post(
+                f"{base_url}/api/v1/auth/setup",
+                json={"org": "globex", "code": globex_code},
             )
+            if globex_setup.status_code != 200:
+                _fail(
+                    f"Globex /auth/setup returned {globex_setup.status_code}: "
+                    f"{globex_setup.text[:300]}"
+                )
+            globex_redirect = globex_setup.json().get("redirect")
+            if not globex_redirect:
+                _fail("Globex /auth/setup did not return a redirect URL")
+
+            # Eve logs in via Keycloak to become globex admin
+            eve_pw = passwords.get("eve", "")
+            if not eve_pw:
+                _fail("eve password not found in the demo realm files")
+            eve_callback = _keycloak_login(
+                eve_client, globex_redirect, "eve", eve_pw,
+            )
+            if eve_callback.status_code not in (200, 302):
+                _fail(
+                    f"eve bootstrap callback returned "
+                    f"{eve_callback.status_code}: {eve_callback.text[:200]}"
+                )
+            _pass("eve logged in as Globex admin (bootstrap)")
+
         elif eve_login.status_code == 302:
-            # Globex bootstrapped -- log eve in and check isolation
+            # Globex already bootstrapped -- log eve in normally
             auth_url = eve_login.headers.get("location", "")
             eve_pw = passwords.get("eve", "")
             if not eve_pw:
                 _fail("eve password not found in the demo realm files")
-            _keycloak_login(eve_client, auth_url, "eve", eve_pw)
-
-            # eve should see no Acme projects
-            eve_projects = eve_client.get(f"{base_url}/api/v1/projects")
-            if eve_projects.status_code == 200:
-                eve_proj_list = eve_projects.json()
-                acme_projects = [p for p in eve_proj_list if p.get("name") == "payments"]
-                if acme_projects:
-                    _fail("eve (Globex) can see Acme project 'payments'")
-                _pass("eve (Globex) sees no Acme projects")
-            else:
-                _pass(f"eve /projects returned {eve_projects.status_code}")
-
-            # eve tries to access an Acme project id -- should get 404
-            eve_acme_proj = eve_client.get(
-                f"{base_url}/api/v1/projects/{project_id}"
-            )
-            if eve_acme_proj.status_code != 404:
+            eve_callback = _keycloak_login(eve_client, auth_url, "eve", eve_pw)
+            if eve_callback.status_code not in (200, 302):
                 _fail(
-                    f"eve accessing Acme project returned "
-                    f"{eve_acme_proj.status_code} (expected 404)"
+                    f"eve callback returned {eve_callback.status_code}: "
+                    f"{eve_callback.text[:200]}"
                 )
-            _pass("eve gets 404 on Acme project id")
+            _pass("eve logged in via Keycloak (Globex)")
         else:
             _fail(f"eve /login returned unexpected {eve_login.status_code}")
+
+        # 3e. eve should see no Acme projects
+        eve_projects = eve_client.get(f"{base_url}/api/v1/projects")
+        if eve_projects.status_code == 200:
+            eve_proj_list = eve_projects.json()
+            acme_projects = [p for p in eve_proj_list if p.get("name") == "payments"]
+            if acme_projects:
+                _fail("eve (Globex) can see Acme project 'payments'")
+            _pass("eve (Globex) sees no Acme projects")
+        elif eve_projects.status_code == 401:
+            _fail(
+                f"eve /projects returned 401 (session not established): "
+                f"{eve_projects.text[:200]}"
+            )
+        else:
+            _pass(f"eve /projects returned {eve_projects.status_code}")
+
+        # 3f. eve tries to access an Acme project id -- should get 404
+        eve_acme_proj = eve_client.get(
+            f"{base_url}/api/v1/projects/{project_id}"
+        )
+        if eve_acme_proj.status_code != 404:
+            _fail(
+                f"eve accessing Acme project returned "
+                f"{eve_acme_proj.status_code} (expected 404)"
+            )
+        _pass("eve gets 404 on Acme project id")
 
 
 def _find_free_port() -> int:
@@ -711,9 +836,10 @@ def step5_persistence(client: httpx.Client, base_url: str, step2_data: dict) -> 
 
     org_slug = step2_data.get("org_slug", "acme") if step2_data else "acme"
 
-    # 5a. docker compose down
+    # 5a. docker compose --profile demo down (include demo profile
+    # so keycloak and migrate-demo are also stopped)
     down_result = subprocess.run(
-        ["docker", "compose", "down"],
+        ["docker", "compose", "--profile", "demo", "down"],
         cwd=str(_COMPOSE_DIR),
         capture_output=True,
         text=True,
@@ -728,6 +854,8 @@ def step5_persistence(client: httpx.Client, base_url: str, step2_data: dict) -> 
     _pass("docker compose down succeeded")
 
     # 5b. docker compose --profile demo up -d
+    # Ensure AGG_OIDC_ALLOW_HOSTS is set for the api container
+    up_env = {**os.environ, "AGG_OIDC_ALLOW_HOSTS": "idp.localhost"}
     up_result = subprocess.run(
         ["docker", "compose", "--profile", "demo", "up", "-d"],
         cwd=str(_COMPOSE_DIR),
@@ -735,6 +863,7 @@ def step5_persistence(client: httpx.Client, base_url: str, step2_data: dict) -> 
         text=True,
         timeout=180,
         check=False,
+        env=up_env,
     )
     if up_result.returncode != 0:
         _fail(
