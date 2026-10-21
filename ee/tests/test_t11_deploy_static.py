@@ -22,6 +22,7 @@ _DEPLOY = Path(__file__).resolve().parent.parent / "deploy"
 _COMPOSE = _DEPLOY / "compose.yml"
 _CADDYFILE = _DEPLOY / "Caddyfile"
 _DOCKERFILE = _DEPLOY / "api.Dockerfile"
+_KC_DOCKERFILE = _DEPLOY / "keycloak" / "Dockerfile"
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +93,7 @@ class TestImagesPinned:
     def test_all_images_pinned(self):
         data = _load_compose()
         images = _all_images(data)
-        assert len(images) >= 3, "expected at least proxy, postgres, keycloak images"
+        assert len(images) >= 3, "expected at least proxy, postgres, init-secrets images"
         for svc, img in images.items():
             assert "@sha256:" in img, (
                 f"service '{svc}' image is not pinned by digest: {img}"
@@ -478,6 +479,74 @@ class TestDockerfilePythonPinned:
 
 
 # ---------------------------------------------------------------------------
+# 13b. Keycloak demo Dockerfile: exists, FROM pinned, read_only compatible
+# ---------------------------------------------------------------------------
+
+class TestKeycloakDockerfile:
+    """The keycloak demo Dockerfile must exist, pin its base image by
+    digest, and run kc.sh build so the container can use start --optimized
+    with read_only: true."""
+
+    def test_kc_dockerfile_exists(self):
+        assert _KC_DOCKERFILE.exists(), (
+            f"keycloak Dockerfile not found at {_KC_DOCKERFILE}"
+        )
+
+    def test_kc_base_image_pinned(self):
+        text = _KC_DOCKERFILE.read_text(encoding="utf-8")
+        from_lines = [
+            l.strip() for l in text.splitlines()
+            if l.strip().upper().startswith("FROM ")
+            and not l.strip().startswith("#")
+        ]
+        assert from_lines, "keycloak Dockerfile must have a FROM line"
+        for line in from_lines:
+            assert "@sha256:" in line, (
+                f"keycloak base image not pinned by digest: {line}"
+            )
+
+    def test_kc_build_runs_at_build_time(self):
+        """The Dockerfile must run kc.sh build so start --optimized works."""
+        text = _KC_DOCKERFILE.read_text(encoding="utf-8")
+        assert "kc.sh build" in text, (
+            "keycloak Dockerfile must run kc.sh build"
+        )
+
+    def test_compose_keycloak_uses_build(self):
+        """keycloak service must use build: (not just image:) so the
+        pre-built Dockerfile is used."""
+        data = _load_compose()
+        kc = data["services"]["keycloak"]
+        assert "build" in kc, (
+            "keycloak service must use build: directive"
+        )
+
+    def test_compose_keycloak_start_optimized(self):
+        """keycloak must use start --optimized (not start-dev) so that
+        no Quarkus augmentation runs at boot (read_only: true)."""
+        data = _load_compose()
+        kc = data["services"]["keycloak"]
+        combined = " ".join([
+            " ".join(kc.get("entrypoint", [])),
+            " ".join(kc.get("command", [])),
+        ])
+        assert "start-dev" not in combined, (
+            "keycloak must not use start-dev (it writes to /opt/keycloak/lib)"
+        )
+        assert "start" in combined and "optimized" in combined, (
+            "keycloak must use 'start --optimized'"
+        )
+
+    def test_positive_control_unpinned_kc_detected(self):
+        line = "FROM keycloak/keycloak:26.0.0"
+        assert "@sha256:" not in line
+
+    def test_positive_control_start_dev_detected(self):
+        bad = "exec /opt/keycloak/bin/kc.sh start-dev --import-realm"
+        assert "start-dev" in bad
+
+
+# ---------------------------------------------------------------------------
 # 14. Dockerfile HEALTHCHECK present
 # ---------------------------------------------------------------------------
 
@@ -741,19 +810,25 @@ class TestSecretsGitignore:
 # 19. Demo realm client security (PKCE, no implicit, no wildcard URIs)
 # ---------------------------------------------------------------------------
 
-_DEMO_REALM = _DEPLOY / "keycloak" / "demo-realm.json"
+_DEMO_REALM_DIR = _DEPLOY / "keycloak"
+_DEMO_REALM_FILES = ["acme-realm.json", "globex-realm.json"]
 
 
 class TestDemoRealmSecurity:
-    """Verify every realm/client in demo-realm.json is locked down."""
+    """Verify every realm/client in the demo realm files is locked down."""
 
     @staticmethod
     def _load_realms() -> list[dict]:
         import json
-        text = _DEMO_REALM.read_text(encoding="utf-8")
-        data = json.loads(text)
-        assert isinstance(data, list) and len(data) >= 2
-        return data
+        realms = []
+        for name in _DEMO_REALM_FILES:
+            path = _DEMO_REALM_DIR / name
+            assert path.exists(), f"{name} not found"
+            data = json.loads(path.read_text(encoding="utf-8"))
+            assert isinstance(data, dict), f"{name} must be a single realm object"
+            realms.append(data)
+        assert len(realms) >= 2
+        return realms
 
     def test_every_client_is_confidential(self):
         for realm in self._load_realms():
@@ -1040,11 +1115,11 @@ class TestAllowHostsOnlyInDemo:
 
 
 # ---------------------------------------------------------------------------
-# 25. No secret literal in demo-realm.json client objects
+# 25. No secret literal in the demo realm files (client objects)
 # ---------------------------------------------------------------------------
 
 class TestNoSecretLiteralInRealmJson:
-    """The demo-realm.json must use the Keycloak env-var placeholder
+    """The demo realm files (acme-realm.json, globex-realm.json) must use the Keycloak env-var placeholder
     ``${AGG_DEMO_OIDC_CLIENT_SECRET}`` for client secrets -- never a
     literal value.  The actual secret is injected via the Keycloak
     entrypoint at runtime from a compose secret."""
@@ -1054,10 +1129,13 @@ class TestNoSecretLiteralInRealmJson:
     @staticmethod
     def _load_realms() -> list[dict]:
         import json
-        text = _DEMO_REALM.read_text(encoding="utf-8")
-        data = json.loads(text)
-        assert isinstance(data, list) and len(data) >= 1
-        return data
+        realms = []
+        for name in _DEMO_REALM_FILES:
+            path = _DEMO_REALM_DIR / name
+            assert path.exists(), f"{name} not found"
+            realms.append(json.loads(path.read_text(encoding="utf-8")))
+        assert len(realms) >= 1
+        return realms
 
     def test_secret_is_env_placeholder(self):
         for realm in self._load_realms():
@@ -1184,15 +1262,18 @@ class TestProxyNetworks:
 # ---------------------------------------------------------------------------
 
 class TestRealmStandardFlow:
-    """Every OIDC client in demo-realm.json must have standardFlowEnabled: true."""
+    """Every OIDC client in the demo realm files must have standardFlowEnabled: true."""
 
     @staticmethod
     def _load_realms() -> list[dict]:
         import json
-        text = _DEMO_REALM.read_text(encoding="utf-8")
-        data = json.loads(text)
-        assert isinstance(data, list) and len(data) >= 1
-        return data
+        realms = []
+        for name in _DEMO_REALM_FILES:
+            path = _DEMO_REALM_DIR / name
+            assert path.exists(), f"{name} not found"
+            realms.append(json.loads(path.read_text(encoding="utf-8")))
+        assert len(realms) >= 1
+        return realms
 
     def test_every_client_has_standard_flow_enabled(self):
         for realm in self._load_realms():
