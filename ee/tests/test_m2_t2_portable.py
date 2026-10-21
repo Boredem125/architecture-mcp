@@ -62,7 +62,6 @@ def test_platform_signal_constants():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T2Pending)
 def test_popen_kwargs_on_nt():
     """On Windows, popen_kwargs includes CREATE_NEW_PROCESS_GROUP."""
     mod = _import_portable()
@@ -74,7 +73,6 @@ def test_popen_kwargs_on_nt():
         assert kw.get("start_new_session") is True
 
 
-@pytest.mark.xfail(strict=True, raises=M2T2Pending)
 def test_popen_kwargs_on_posix():
     """On POSIX, popen_kwargs includes start_new_session=True."""
     mod = _import_portable()
@@ -90,7 +88,6 @@ def test_popen_kwargs_on_posix():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T2Pending)
 def test_group_terminate_kills_tree():
     """group_terminate kills a child and its grandchild."""
     mod = _import_portable()
@@ -129,7 +126,6 @@ def test_group_terminate_kills_tree():
     assert child.returncode is not None
 
 
-@pytest.mark.xfail(strict=True, raises=M2T2Pending)
 def test_group_kill_terminates():
     """group_kill forcefully kills the process group."""
     mod = _import_portable()
@@ -157,7 +153,6 @@ def test_group_kill_terminates():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T2Pending)
 def test_symlink_probe_returns_bool():
     """symlink_privilege_probe returns (bool, reason_or_None)."""
     mod = _import_portable()
