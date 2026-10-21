@@ -94,8 +94,12 @@ Each task's new tests are committed as strict xfail (`raises=M2T<n>Pending`) bef
 | T5 | `ee/tests/test_m2_t5_schema.py` | 25 | 17 | 8 | tests-first (T5) |
 | T6 | `tests/security/test_m2_t6_registry.py` | 45 | 42 | 3 | tests-first (T6) |
 | T6 | `ee/tests/test_m2_t6_registry.py` | 8 | 6 | 2 | tests-first (T6) |
+| T7 | `tests/security/test_m2_t7_signer.py` | 37 | 34 | 3 | tests-first (T7) |
+| T7 | `ee/tests/test_m2_t7_signer.py` | 17 | 14 | 3 | tests-first (T7) |
+| T8 | `tests/security/test_m2_t8_enroll.py` | 38 | 35 | 3 | tests-first (T8) |
+| T8 | `ee/tests/test_m2_t8_enroll.py` | 19 | 17 | 2 | tests-first (T8) |
 
-M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17, T6=48. Total RED: 84.
+M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17, T6=48, T7=48, T8=52. Total RED: 184.
 
 ### Build records, T1-T5 (22 Oct 2026, orchestrator)
 
