@@ -44,45 +44,37 @@ def test_db_module_importable():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T3Pending)
 def test_make_engine_pool_size():
     """make_engine passes pool_size to the engine."""
     make_engine = _import_make_engine()
     import inspect
     sig = inspect.signature(make_engine)
     params = list(sig.parameters.keys())
-    if "pool_size" not in params:
-        raise M2T3Pending("make_engine does not accept pool_size")
+    assert "pool_size" in params
 
 
-@pytest.mark.xfail(strict=True, raises=M2T3Pending)
 def test_make_engine_max_overflow():
     """make_engine passes max_overflow to the engine."""
     make_engine = _import_make_engine()
     import inspect
     sig = inspect.signature(make_engine)
-    if "max_overflow" not in sig.parameters:
-        raise M2T3Pending("make_engine does not accept max_overflow")
+    assert "max_overflow" in sig.parameters
 
 
-@pytest.mark.xfail(strict=True, raises=M2T3Pending)
 def test_make_engine_pool_pre_ping():
     """make_engine passes pool_pre_ping to the engine."""
     make_engine = _import_make_engine()
     import inspect
     sig = inspect.signature(make_engine)
-    if "pool_pre_ping" not in sig.parameters:
-        raise M2T3Pending("make_engine does not accept pool_pre_ping")
+    assert "pool_pre_ping" in sig.parameters
 
 
-@pytest.mark.xfail(strict=True, raises=M2T3Pending)
 def test_make_engine_pool_recycle():
     """make_engine passes pool_recycle to the engine."""
     make_engine = _import_make_engine()
     import inspect
     sig = inspect.signature(make_engine)
-    if "pool_recycle" not in sig.parameters:
-        raise M2T3Pending("make_engine does not accept pool_recycle")
+    assert "pool_recycle" in sig.parameters
 
 
 # ===================================================================
@@ -91,20 +83,15 @@ def test_make_engine_pool_recycle():
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T3Pending)
 def test_pool_no_org_id_leak(pg_url, pg_roles, app_url):
     """After releasing a connection with app.org_id set, the next
     checkout must not carry the old org_id."""
-    try:
-        from sqlalchemy import create_engine, text
-    except ImportError:
-        raise M2T3Pending("sqlalchemy not available")
+    from sqlalchemy import create_engine, text
 
     make_engine_fn = _import_make_engine()
     import inspect
     sig = inspect.signature(make_engine_fn)
-    if "pool_size" not in sig.parameters:
-        raise M2T3Pending("make_engine does not accept pool_size yet")
+    assert "pool_size" in sig.parameters, "make_engine must accept pool_size"
 
     # Use sync engine for simplicity
     sync_url = app_url.replace("+psycopg", "")
@@ -113,7 +100,6 @@ def test_pool_no_org_id_leak(pg_url, pg_roles, app_url):
     )
 
     org_a = str(uuid.uuid4())
-    org_b = str(uuid.uuid4())
 
     # Connection 1: set org_id to org_a
     with eng.connect() as conn:
@@ -130,16 +116,14 @@ def test_pool_no_org_id_leak(pg_url, pg_roles, app_url):
             text("SELECT current_setting('app.org_id', true)")
         ).scalar()
         # The pool should reset the session, so org_id should be empty/null
-        if val == org_a:
-            raise M2T3Pending(
-                f"app.org_id leaked across pooled connections: got {val!r}"
-            )
+        assert val != org_a, (
+            f"app.org_id leaked across pooled connections: got {val!r}"
+        )
 
     eng.dispose()
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T3Pending)
 def test_pool_no_checkout_timeout_4_workers(pg_url, pg_roles, app_url):
     """4 concurrent workers can all get a connection without a timeout."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -147,13 +131,9 @@ def test_pool_no_checkout_timeout_4_workers(pg_url, pg_roles, app_url):
     make_engine_fn = _import_make_engine()
     import inspect
     sig = inspect.signature(make_engine_fn)
-    if "pool_size" not in sig.parameters:
-        raise M2T3Pending("make_engine does not accept pool_size yet")
+    assert "pool_size" in sig.parameters, "make_engine must accept pool_size"
 
-    try:
-        from sqlalchemy import create_engine, text
-    except ImportError:
-        raise M2T3Pending("sqlalchemy not available")
+    from sqlalchemy import create_engine, text
 
     sync_url = app_url.replace("+psycopg", "")
     eng = create_engine(

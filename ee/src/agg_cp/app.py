@@ -24,6 +24,11 @@ class Settings:
     public_url: str | None = None
     oidc_secrets_dir: str | None = None
     oidc_allow_hosts: str | None = None
+    # DB pool settings (env: AGG_DB_POOL_SIZE, AGG_DB_MAX_OVERFLOW, etc.)
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    db_pool_pre_ping: bool = True
+    db_pool_recycle: int = 3600
 
 
 def settings_from_env() -> Settings:
@@ -44,6 +49,11 @@ def settings_from_env() -> Settings:
         public_url=os.environ.get("AGG_PUBLIC_URL") or None,
         oidc_secrets_dir=os.environ.get("AGG_OIDC_SECRETS_DIR") or None,
         oidc_allow_hosts=os.environ.get("AGG_OIDC_ALLOW_HOSTS") or None,
+        db_pool_size=int(os.environ.get("AGG_DB_POOL_SIZE", "5")),
+        db_max_overflow=int(os.environ.get("AGG_DB_MAX_OVERFLOW", "10")),
+        db_pool_pre_ping=os.environ.get("AGG_DB_POOL_PRE_PING", "true").lower()
+        in ("true", "1", "yes"),
+        db_pool_recycle=int(os.environ.get("AGG_DB_POOL_RECYCLE", "3600")),
     )
 
 
@@ -94,7 +104,13 @@ def create_app(
         if settings.db_url:
             from .db import make_engine
 
-            app.state.engine = make_engine(settings.db_url)
+            app.state.engine = make_engine(
+                settings.db_url,
+                pool_size=settings.db_pool_size,
+                max_overflow=settings.db_max_overflow,
+                pool_pre_ping=settings.db_pool_pre_ping,
+                pool_recycle=settings.db_pool_recycle,
+            )
         yield
         engine = getattr(app.state, "engine", None)
         if engine is not None:

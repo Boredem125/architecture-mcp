@@ -15,12 +15,27 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 _MIGRATIONS_DIR = str(Path(__file__).resolve().parent / "migrations")
 
 
-def make_engine(url: str) -> AsyncEngine:
+def make_engine(
+    url: str,
+    *,
+    pool_size: int = 5,
+    max_overflow: int = 10,
+    pool_pre_ping: bool = True,
+    pool_recycle: int = 3600,
+) -> AsyncEngine:
     """Create an async SQLAlchemy 2 engine for *url*.
 
-    Expects ``postgresql+psycopg://`` (psycopg 3).
+    Expects ``postgresql+psycopg://`` (psycopg 3).  Pool settings
+    default to sane values and are overridable via the ``Settings``
+    dataclass (env-configurable: ``AGG_DB_POOL_SIZE`` etc.).
     """
-    return create_async_engine(url)
+    return create_async_engine(
+        url,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+        pool_pre_ping=pool_pre_ping,
+        pool_recycle=pool_recycle,
+    )
 
 
 def alembic_config(url: str) -> Config:

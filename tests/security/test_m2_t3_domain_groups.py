@@ -107,7 +107,6 @@ def test_existing_wide_groups_detected():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T3Pending)
 def test_root_exposure_warns_when_icacls_missing():
     """root_exposure warns (not None) when icacls cannot be found."""
     from sandbox.connector.keyhome import root_exposure
@@ -116,11 +115,10 @@ def test_root_exposure_warns_when_icacls_missing():
         with patch("sandbox.connector.keyhome.os.name", "nt"):
             with tempfile.TemporaryDirectory() as td:
                 result = root_exposure(Path(td))
-                if result is None:
-                    raise M2T3Pending(
-                        "root_exposure returns None when icacls is missing; "
-                        "SEC-33 says it should warn"
-                    )
+                assert result is not None, (
+                    "root_exposure returns None when icacls is missing; "
+                    "SEC-33 says it should warn"
+                )
                 assert "icacls" in result.lower() or "cannot" in result.lower()
 
 
@@ -129,7 +127,6 @@ def test_root_exposure_warns_when_icacls_missing():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T3Pending)
 def test_root_exposure_flags_domain_users():
     r"""root_exposure flags ``ACME\Domain Users`` with read access."""
     from sandbox.connector.keyhome import root_exposure
@@ -141,15 +138,12 @@ def test_root_exposure_flags_domain_users():
                 with patch("subprocess.run",
                            _fake_icacls(_DOMAIN_USERS_READ)):
                     result = root_exposure(Path(td))
-                    if result is None:
-                        raise M2T3Pending(
-                            "root_exposure does not flag "
-                            r"ACME\Domain Users grant"
-                        )
+                    assert result is not None, (
+                        r"root_exposure does not flag ACME\Domain Users grant"
+                    )
                     assert "domain users" in result.lower()
 
 
-@pytest.mark.xfail(strict=True, raises=M2T3Pending)
 def test_root_exposure_flags_domain_computers():
     r"""root_exposure flags ``ACME\Domain Computers`` with full access."""
     from sandbox.connector.keyhome import root_exposure
@@ -161,9 +155,7 @@ def test_root_exposure_flags_domain_computers():
                 with patch("subprocess.run",
                            _fake_icacls(_DOMAIN_COMPUTERS_FULL)):
                     result = root_exposure(Path(td))
-                    if result is None:
-                        raise M2T3Pending(
-                            "root_exposure does not flag "
-                            r"ACME\Domain Computers grant"
-                        )
+                    assert result is not None, (
+                        r"root_exposure does not flag ACME\Domain Computers grant"
+                    )
                     assert "domain computers" in result.lower()

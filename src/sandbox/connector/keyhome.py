@@ -130,7 +130,12 @@ def _validated_icacls() -> Path | None:
 
 
 def root_exposure(root: Path) -> str | None:
-    """Why `root` is readable by other accounts, or None when it is not (or cannot be told)."""
+    """Why `root` is readable by other accounts, or None when it is not.
+
+    Returns a warning string when the directory is too open **or** when the
+    check itself cannot run (SEC-33: no silent false negative).  Returns
+    ``None`` only when the ACL is verified safe.
+    """
     try:
         if not root.exists():
             return None
@@ -141,13 +146,18 @@ def root_exposure(root: Path) -> str | None:
 
         icacls = _validated_icacls()
         if icacls is None:
-            return None
+            return "icacls is not available; cannot verify ACL permissions"
         out = subprocess.run([str(icacls), str(root)], capture_output=True, text=True, timeout=20).stdout
         wide = ("Everyone", r"BUILTIN\Users", "Authenticated Users", r"NT AUTHORITY\INTERACTIVE")
-        hits = [w for w in wide if w.lower() in out.lower()]
+        hits: list[str] = [w for w in wide if w.lower() in out.lower()]
+        # Domain-local broad groups: any <DOMAIN>\Domain Users etc.
+        _DOMAIN_BROAD = ("Domain Users", "Domain Computers", "Domain Guests")
+        for dg in _DOMAIN_BROAD:
+            if dg.lower() in out.lower():
+                hits.append(dg)
         return f"the ACL grants access to {', '.join(hits)}" if hits else None
     except Exception:  # noqa: BLE001
-        return None
+        return "ACL check failed; cannot verify permissions"
 
 
 def _secure_new_root(root: Path) -> None:
@@ -191,13 +201,19 @@ def workspace_key_dir(layout, *, create: bool = True) -> Path:
     if create:
         try:
             fresh = not root.exists()
-            d.mkdir(parents=True, exist_ok=True)
+            if os.name != "nt":
+                # Create owner-only directories without a separate chmod:
+                # set a restrictive umask so mkdir's mode argument takes
+                # full effect (0o700 & ~0o077 == 0o700).
+                saved = os.umask(0o077)
+                try:
+                    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+                finally:
+                    os.umask(saved)
+            else:
+                d.mkdir(parents=True, exist_ok=True)
             if fresh:
                 _secure_new_root(root)
-                if os.name != "nt":
-                    os.chmod(root, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions -- 0o700 is owner-only on the freshly created root
-            if os.name != "nt":
-                os.chmod(d, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions -- 0o700 is owner-only; the rule flags any chmod
         except OSError as exc:
             raise KeyHomeError(f"the key home is not writable: {exc}") from exc
     return d
