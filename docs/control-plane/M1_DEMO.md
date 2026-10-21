@@ -187,4 +187,4 @@ Total: 27 PASS, 0 FAIL. A second run on the same database fails at step 2 by des
 | ZAP baseline on the proxy | 0 High, 0 Medium; 3 Low, 3 Informational (cache-control, storable content, COEP missing, modern web app); 63 rules passed. Run against `https://agg.localhost:8443` on the compose edge network with the proxy temporarily serving that name, because ZAP's Java client sends no SNI for the dotless name `localhost`. |
 | Keycloak demo profile | All services healthy; acme issuer `https://idp.localhost/realms/acme` served through Caddy. |
 
-Gate item 4 reads "Trivy 0 HIGH/CRITICAL (fs and `api` image)". As worded it is **not met** (44 unfixed base-image HIGH; 1 CRITICAL in an ignored local file). Founder ruling pending.
+Gate item 4 reads "Trivy 0 HIGH/CRITICAL (fs and `api` image)". Founder ruling (21 Oct 2026): for the `api` image it reads as 0 fixable HIGH/CRITICAL (`--ignore-unfixed`), so it is met; the 44 unfixed base-image HIGH are a stated limit. On a fresh clone, Trivy fs is 0, Gitleaks 0, Semgrep 0 ERROR (see `M1_BASELINE.md`, "Gate item 4 reading").

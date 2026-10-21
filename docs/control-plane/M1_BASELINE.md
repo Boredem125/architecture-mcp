@@ -532,3 +532,24 @@ Lead-architect audit (read-only): OK WITH ISSUES, no Critical or High. No frozen
 - **T10 (`211151a`):** tests, product changes and revision `0005` landed in one commit, with no strict-xfail stage. Tests-first is waived for T10 only; T13 reviewed the same tree. Future tasks keep a separate tests commit.
 - **T11 (`5de6f49`, `df75fed`), T13/T14 (`68a924d`):** static config and review tests landed with their build. Allowed exception: they test config files and review findings, not product behaviour that could be built against them.
 - **Sign-off evidence:** the per-task security sign-offs for T8, T9 and T11 are recorded only in commit messages and this file; the 12 PRs have no GitHub reviews and no transcript is in the repo. The T13 F1/F2 fixes were re-reviewed on the laptop on 21 Oct 2026 (see `M1_SECURITY_SIGNOFF.md`).
+
+### Gate item 4 reading (founder ruling, 21 Oct 2026)
+
+Gate text: "Semgrep 0 error, Gitleaks 0, Trivy 0 HIGH/CRITICAL (fs and `api` image), ZAP no High on the compose proxy". Measured on the laptop, on a fresh clone of `b1dcb1a` where a clone applies:
+- Semgrep (`semgrep/semgrep:1.178.0`, the CI configs): 0 ERROR, 6 WARNING (`unsafe-add-mask-workflow-command` in `image.yml` and `security.yml`; `insecure-file-permissions` at `src/sandbox/connector/keyhome.py:198,200`). Met.
+- Gitleaks (`git` mode, full history): no leaks. Met.
+- Trivy fs (vuln, secret, misconfig; HIGH/CRITICAL): 0. Met. A working-tree scan also flagged a Stripe `sk_test_` pattern in the git-ignored `demo/__pycache__/call_demo.cpython-312.pyc`; that file is not in a clone.
+- ZAP baseline on the proxy: 0 High, 0 Medium. Met.
+- Trivy `api` image (Debian 13.7 base): 44 HIGH, 0 CRITICAL, all in Debian packages with no fixed version (8 CVE ids: CVE-2025-69720, CVE-2026-16742, CVE-2026-54369, CVE-2026-76642, CVE-2026-78408, CVE-2026-78409, CVE-2026-78410, CVE-2026-9538; packages util-linux and its libraries, ncurses, systemd libraries, libacl1, perl-base). With `--ignore-unfixed`: 0. Python packages: 0.
+
+**Ruling (option "accept: 0 fixable"):** for the `api` image, gate item 4 reads as "Trivy 0 fixable HIGH/CRITICAL" (`--ignore-unfixed`). It is met on that reading. The unfixed ids above are published as a stated limit. Follow-up for M2: try a slimmer base image (distroless or Chainguard Python) and re-measure. The gate text itself is unchanged.
+
+### Gate items 3 (second clause) and 5, fresh clone (21 Oct 2026)
+
+Run by qa-engineer (worker tier) on a fresh clone at `2f71036` on the founder's Windows laptop.
+
+**Item 3, second clause** ("`pip install .` in a fresh E: venv runs the M0 E2E steps 1-7 headless"): a new Python 3.12 venv, `pip install <clone>` (not editable, no `ee/`), then the M0 steps in a scratch folder. 16 of 16 checks pass: CLI surface (step 1); demo folder with hooks (2); `WRITE_PROTECTED`, `WRITE_OUTSIDE` and fail-closed on unreadable hook input (3); escalate then `sandbox approve <id> --reviewer alice` runs it through the broker, and `sandbox deny` stops it (4); `/health` 200, approver 200, agent token 403, no token 401, `/api/v1/launch` 404 (6, with `--root`); `sandbox verify` 1/1 chains, evidence export verifies (manifest signature, 12 file hashes), one flipped byte fails `verify` (7). **Step 5 is partial:** the `move-more-money` call now escalates with `GOVERNANCE_UNEVALUATED` (at M0 it was allowed outright) and alice approves it, but `requires_dual` is false, so a second reviewer is not exercised. Cause: the same as at the M0 gate (Stripe allowlisted, semantic service not running in the demo folder). Reading: met for steps 1-4, 6, 7; step 5 dual control stays an open item, as at M0.
+
+**Item 5** ("Demo runs on a fresh clone, recorded"): from the clone, `init-secrets`, `npm ci && npm run build`, demo profile up (all services healthy), Caddy root CA copied, `demo.py --ca <ca>`: 27 PASS, 0 FAIL, exit 0. Met. Same 27 checks as `M1_DEMO.md`.
+
+CI at `2f71036`: tests, image and security green (the `zap-api` job failed once with `BindException: Address already in use` on the runner and passed on re-run).
