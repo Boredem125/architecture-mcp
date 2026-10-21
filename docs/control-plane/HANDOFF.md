@@ -1,4 +1,30 @@
-# Control-plane hand-off (M2 T0a and T0b done 21 Oct 2026; T1-T5 next)
+# Control-plane hand-off (M2 T1-T5 done 22 Oct 2026; T6 next)
+
+## M2 T1-T5 status (22 Oct 2026)
+
+**Done, each reviewed by security-engineer (worker tier) before its commit:**
+1. **T1** `f41af8d`: CI Windows runs the 3 SEC-27/28 ids as passed (embeddable CPython 3.12.10, sha256-pinned). CI checks `M2_FROZEN_MANIFEST.sha256` in two halves.
+2. **T2** `435a9df`: `ee/tests/_portable.py`; frozen setup edits in `test_t10_multiworker.py` and `test_m1_t13_review.py`; new `ee-windows` job (non-pg). The `ee` job matrix is Python 3.12 and 3.15 (founder ruling 6).
+3. **T3:** `ff5ff38` (code half), `e4c904f` (`_is_windows` Linux fix) and `714f6ea` (Caddy tmpfs root-cert volume). Covers domain groups, SEC-33, the Semgrep chmod removal, the pool, and the CSRF HMAC done independently.
+4. **T4** `714f6ea`: Chainguard python `api` image, digest-pinned, Python 3.15, no shell, USER 65532. Local Trivy: 0 HIGH/CRITICAL. `/ready` 200.
+5. **T5** `f1d0934`: revision `0007` with 18 tables (FORCE RLS) and 8 SECURITY DEFINER functions. Each function was reviewed (round 1 CHANGES, round 2 APPROVE). CI `ee`: 485 passed, 88% branch coverage.
+
+Records are in `M2_BASELINE.md` section 4, "Build records" (`94043c8`). CI run 39596222149, all green:
+- connector: Windows 1772 passed, 0 skipped; Linux 1736 passed, 31 skipped (named list);
+- ee: py3.12 and py3.15 495 passed each, 88% branch coverage; ee-windows 318 passed, 177 pg deselected.
+
+**Rules for T6 on (from T1-T5):**
+1. QA raises the sentinel only from one feature-absence helper at the top of a test, and writes the final assertions as plain `assert`s. The build then deletes only the markers.
+2. Tests never patch global `os` attributes; they patch a module seam instead.
+3. QA runs new connector tests on Linux too (Docker `python:3.12`) before the tests-first commit.
+
+**Open:** with Postgres on local Windows, 2 multiworker tests time out (named in the baseline; no gate environment).
+
+**Next action: T6** in a fresh session. T6 covers the envelope, the tags (D5.7: `agg/remote-approval/v1`, `agg/device-enroll/v1`, `agg/signer-assert/v1`, `agg/unenroll/v1` in `sandbox/protocol/domains.py`), the kind matrix, the registry chain and the threshold, on both the connector and the server. Steps:
+1. qa-engineer (W) writes the tests first: `tests/security/test_m2_t6_registry.py` and `ee/tests/test_m2_t6_registry.py`, `M2T6Pending`. They cover threats 8, 21-23, 29-31 (registry half) and N8 (a forged signature-count field is refused), with node ids per the `M2_BASELINE.md` section 5 matrix.
+2. backend-engineer (W) builds it.
+3. security-engineer (W) reviews the diff.
+4. git-ops commits.
 
 ## M2 T0 status (21 Oct 2026)
 
