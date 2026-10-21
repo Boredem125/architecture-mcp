@@ -3,7 +3,7 @@
 Author: qa-engineer, 18 Oct 2026. Written before any M1 fix commit (adoption-gate rule).
 
 - **Frozen at:** `8f52679` (M0 done). `tests/`, `src/` and `pyproject.toml` are identical to the M0 gate commit `b87703e` (`git diff --stat` empty).
-- **Companions:** `M1_FROZEN_MANIFEST.sha256` (all 61 tracked files under `tests/`, sha256 of the LF git blob), `M1_BASELINE_NODEIDS.txt` (679 ids), `M1_LINUX_SKIPS.txt` (21 ids).
+- **Companions:** `M1_FROZEN_MANIFEST.sha256` (all 61 tracked files under `tests/`, sha256 of the LF git blob), `M1_BASELINE_NODEIDS.txt` (679 ids), `M1_LINUX_SKIPS.txt` (21 ids at T0a; 31 since 21 Oct 2026, see "M1 gate readings").
 
 ## 1. Baseline figure per environment (Q7a)
 
@@ -509,3 +509,26 @@ ee/tests/test_t10_multiworker.py::test_module_state_lint_scans_key_files
 ### M1 wrap-up (T13 findings, T14 script, coverage gate)
 
 `ee/tests/test_m1_t13_review.py` (T13 F1/F2): valid and invalid slugs, `org_secret_path` never leaves the secrets dir (incl. a symlink), the `orgs_slug_format` CHECK (revision `0006`) refuses `../x` with a positive control. `ee/tests/test_t14_demo_static.py` (13): `demo.py` compiles, `--help`, no `verify=False`, Keycloak form parser, steps 4-5 call subprocess, with positive controls. CI `ee` job now runs under `coverage --branch` with `--fail-under=85` (measured here: 87%). ee suite (Linux cloud, native Postgres 16, `CI=true`): 412 passed, 0 skipped.
+
+### M1 gate readings (founder ruling, 21 Oct 2026)
+
+Measured in CI `tests` run 39497686931 at `e5d6665` (JUnit artifacts). The same counts and skip ids were already there at `29ed27d` (run 39461845755), so nothing in the cloud range `29ed27d..e5d6665` caused them. The founder chose option A: both gate items below count as met for the reasons given. The gate text itself is unchanged.
+
+**Gate item 1 ("CI `windows-latest` 679 + N passed, 0 skipped"; Linux "skip set equal to the frozen node-id list").** CI Windows: 1761 test cases, 3 skipped, 0 failed. The 3 skips are all in `tests/security/test_sec27_28_hook_hardening.py`, reason "needs an interpreter without the dependencies (system python)":
+- `test_sec27_shadow_package_in_project_cannot_allow`
+- `test_sec27_shadow_package_cannot_run_in_posttooluse_fallback`
+- `test_sec28_rc1_from_fallback_maps_to_2`
+
+They need a Python without the project dependencies, which the CI runner image does not provide. They are environment skips, not failures. CI Linux: 1756 test cases, 31 skipped. `M1_LINUX_SKIPS.txt` listed 22 ids (one more than the 21 frozen at T0a). The 9 missing ids are now appended: the same 3 SEC-27/28 ids, plus 6 Windows-only path forms in `tests/security/test_m1_t2_followup.py` (`test_device_prefixed_key_home_paths_are_denied[Read-file|Read-dir|Glob-dir|Grep-dir|Grep-file]`, "device-path prefixes are Windows forms"; `test_unc_paths_cause_no_filesystem_lookup`, "UNC paths are a Windows form"). The Linux skip set now equals the CI skip set (31 = 31). Follow-up (not M1): give the SEC-27/28 tests a dependency-free interpreter in CI so they run.
+
+**Gate item 3 ("with `ee/` removed, the connector suite gives the same count").** CI `connector` jobs: Windows 1737 vs 1761, Linux 1732 vs 1756, a gap of 24 on both. The connector set is a strict subset of the full set. The 24 ids are the four Class B files that `.github/scripts/c_tests.py` (`CLASS_B`) leaves out by design: `tests/integration/test_api_connector.py` (6), `tests/security/test_api_auth.py` (7), `tests/security/test_api_robustness.py` (5), `tests/unit/test_recorder_scan.py` (6). None imports `agg_cp` or reads `ee/`; removing `ee/` is not the cause. "Same count" is read as the same count for the C-class set the connector job runs. Not covered by CI: the second clause (`pip install .` in a fresh E: venv running M0 E2E steps 1-7); it stays a laptop check for the gate run.
+
+### Audit of the cloud range `29ed27d..e5d6665` (21 Oct 2026)
+
+Lead-architect audit (read-only): OK WITH ISSUES, no Critical or High. No frozen file changed, gitleaks 0, no `Co-Authored-By` lines, CI green. Recorded here as named exceptions (orchestrator sign-off, no assertion removed):
+- **T8 part 1 build (`eee3ebd`):** `ee/tests/fake_idp.py` rewrites the `kid` header when a test requests a kid (fixture edit, not an assertion).
+- **T8 part 2 build (`b0a708d`):** three CSRF tests in `ee/tests/test_t8p2_session.py` take the expected token from `agg_cp.auth.csrf_token_for`. Open (Low): they compare the code with itself; compute the HMAC in the test or read `csrf_token` from `GET /me`.
+- **T9 build (`2a543fa`):** the frozen route set gained `DELETE /org/members/{user_id}/{role}` (orchestrator ruling in `T9_DESIGN.md`); lead-architect acknowledges it, no ADR needed.
+- **T10 (`211151a`):** tests, product changes and revision `0005` landed in one commit, with no strict-xfail stage. Tests-first is waived for T10 only; T13 reviewed the same tree. Future tasks keep a separate tests commit.
+- **T11 (`5de6f49`, `df75fed`), T13/T14 (`68a924d`):** static config and review tests landed with their build. Allowed exception: they test config files and review findings, not product behaviour that could be built against them.
+- **Sign-off evidence:** the per-task security sign-offs for T8, T9 and T11 are recorded only in commit messages and this file; the 12 PRs have no GitHub reviews and no transcript is in the repo. The T13 F1/F2 fixes were re-reviewed on the laptop on 21 Oct 2026 (see `M1_SECURITY_SIGNOFF.md`).
