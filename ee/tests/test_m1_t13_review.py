@@ -7,6 +7,8 @@ import pytest
 
 from agg_cp.auth import is_valid_slug, org_secret_path
 
+from . import _portable
+
 
 @pytest.mark.parametrize("slug", ["acme", "globex", "t9-1a2b", "a", "0org", "a" * 63])
 def test_valid_slugs_accepted(slug):
@@ -28,6 +30,9 @@ def test_secret_path_stays_in_dir(tmp_path):
 
 
 def test_symlink_out_of_dir_refused(tmp_path):
+    can_symlink, reason = _portable.symlink_privilege_probe()
+    if not can_symlink:
+        pytest.skip(reason)
     outside = tmp_path / "outside"
     outside.write_text("secret")
     d = tmp_path / "secrets"

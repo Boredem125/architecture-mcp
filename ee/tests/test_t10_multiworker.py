@@ -13,7 +13,6 @@ All helpers are local to this file.  No production code is modified.
 from __future__ import annotations
 
 import os
-import signal
 import socket
 import subprocess
 import sys
@@ -25,6 +24,8 @@ from pathlib import Path
 import httpx
 import psycopg
 import pytest
+
+from . import _portable
 
 # ---------------------------------------------------------------------------
 # Named exception for real bugs found by T10
@@ -202,31 +203,8 @@ def _revoke_session(owner_url: str, org_id: uuid.UUID,
 
 
 def _child_pids(master_pid: int) -> list[int]:
-    """Return the PIDs of child processes of *master_pid* via /proc."""
-    children = []
-    try:
-        for entry in os.listdir("/proc"):
-            if not entry.isdigit():
-                continue
-            pid = int(entry)
-            if pid == master_pid:
-                continue
-            try:
-                stat_path = f"/proc/{pid}/stat"
-                with open(stat_path) as f:
-                    stat_line = f.read()
-                # Format: pid (comm) state ppid ...
-                # Find the closing paren to safely skip comm (which may contain spaces)
-                close_paren = stat_line.rfind(")")
-                fields_after = stat_line[close_paren + 2:].split()
-                ppid = int(fields_after[1])  # field 4 = ppid (index 1 after state)
-                if ppid == master_pid:
-                    children.append(pid)
-            except (OSError, ValueError, IndexError):
-                continue
-    except OSError:
-        pass
-    return children
+    """Return the PIDs of child processes of *master_pid* (portable)."""
+    return _portable.child_pids(master_pid)
 
 
 def _wait_ready(base_url: str, *, timeout: float = 30.0) -> None:
@@ -303,7 +281,7 @@ def _multiworker_env(pg_url, app_url, owner_url, pg_roles):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         # Start a new process group so we can kill the whole tree
-        preexec_fn=os.setsid,
+        **_portable.popen_kwargs(),
     )
     try:
         _wait_ready(base_url, timeout=30.0)
@@ -322,20 +300,13 @@ def _multiworker_env(pg_url, app_url, owner_url, pg_roles):
             "pg_url": pg_url,
         }
     finally:
-        # Kill the entire process group
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+        # Kill the entire process group (portable)
+        _portable.group_terminate(proc)
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            _portable.group_kill(proc)
             proc.wait(timeout=5)
-        pass
 
 
 # ===================================================================
