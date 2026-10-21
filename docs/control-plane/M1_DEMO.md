@@ -1,6 +1,6 @@
 # M1 Demo -- design partner walkthrough
 
-> Template: fill the "Result" lines on the Docker machine where the demo runs.
+> Measured 21 Oct 2026 on the founder's Windows 11 laptop (Docker Desktop 29.9.1), `main` at `65446a8` plus the T14 demo fix, after `docker compose --profile demo down -v` and a fresh `up --build`. Command: `python ee/deploy/demo.py --ca <Caddy root CA>`. Result: 27 PASS, 0 FAIL, exit 0. Windows needs `127.0.0.1 idp.localhost` in the hosts file and `--ca` (see `ee/deploy/README.md`).
 
 ## Command
 
@@ -30,9 +30,10 @@ python demo.py --ca /path/to/ca-bundle.crt  # explicit CA bundle
 **What it does:** GETs `https://localhost/ready` through the Caddy proxy
 and checks for HTTP 200.
 
-**Result (fill on the Docker machine):**
+**Result (measured 21 Oct 2026):**
 
 ```
+PASS: /ready returned 200
 ```
 
 ---
@@ -50,9 +51,17 @@ and checks for HTTP 200.
 7. Creates project `payments` (prod).
 8. Adds bob as an org user, then as approver on the project.
 
-**Result (fill on the Docker machine):**
+**Result (measured 21 Oct 2026):**
 
 ```
+PASS: Setup code read from migrate-demo logs (org=acme)
+PASS: /auth/setup accepted the setup code and returned redirect URL
+PASS: alice logged in via Keycloak (bootstrap admin)
+PASS: /me: alice is admin (org=acme)
+PASS: Created project 'payments' (id=f47d4267-7cba-44cd-91c2-9e4494795abf)
+PASS: Looked up bob's Keycloak sub via admin API (sub=2423516b-08a3-4215-9805-9656f0ef88f0)
+PASS: Added bob as org user (id=fe231163-461a-46f7-bd6f-5cd14b64cf2a)
+PASS: Added bob as approver on project 'payments'
 ```
 
 ---
@@ -66,9 +75,16 @@ and checks for HTTP 200.
 - **eve** (Globex): either the org is not bootstrapped (404 on `/login`),
   or she logs in and sees no Acme projects, gets 404 on Acme project ids.
 
-**Result (fill on the Docker machine):**
+**Result (measured 21 Oct 2026):**
 
 ```
+PASS: bob logged in via Keycloak
+PASS: bob sees project 'payments'
+PASS: bob gets 403 on role change (not admin)
+PASS: Bootstrapped Globex org
+PASS: eve logged in as Globex admin (bootstrap)
+PASS: eve (Globex) sees no Acme projects
+PASS: eve gets 404 on Acme project id
 ```
 
 ---
@@ -104,9 +120,16 @@ PASS: forged approval: signature valid but key is not pinned (refused)
 PASS: distinct_approvals refuses forged (unpinned) approval
 ```
 
-**Result (fill on the Docker machine):**
+**Result (measured 21 Oct 2026):**
 
 ```
+PASS: sandbox init created .sandbox/ in <temp dir>
+PASS: sandbox serve running on port 56388
+PASS: listed root -> 200 via connector/status
+PASS: unlisted root -> 403 via connector/status
+PASS: PreToolUse hook_eval denied Grep for seed bytes (decision=deny, reason starts: SANDBOX DENIED [SANDBOX_PROTECT] (risk 20/100): protected path: key home The .sa)
+PASS: forged approval: signature valid but key is not pinned (refused)
+PASS: distinct_approvals refuses forged (unpinned) approval
 ```
 
 ---
@@ -131,9 +154,13 @@ docker compose exec api python -m agg_cp.cli audit verify --org acme
 # Expected: {"org":"acme","ok":true,"reason":""}  exit 0
 ```
 
-**Result (fill on the Docker machine):**
+**Result (measured 21 Oct 2026):**
 
 ```
+PASS: docker compose down succeeded
+PASS: docker compose --profile demo up -d succeeded
+PASS: /ready returned 200 after restart
+PASS: agg-cp audit verify --org acme exited 0 (audit chain intact)
 ```
 
 ---
@@ -142,8 +169,22 @@ docker compose exec api python -m agg_cp.cli audit verify --org acme
 
 | Step | Description | Result |
 |------|-------------|--------|
-| 1 | /ready 200 | |
-| 2 | Setup + admin + project + member | |
-| 3 | bob RBAC + eve isolation | |
-| 4 | Connector: --root 403, key-home, forged approval | |
-| 5 | Persistence + audit verify | |
+| 1 | /ready 200 | PASS (1/1 checks) |
+| 2 | Setup + admin + project + member | PASS (8/8 checks) |
+| 3 | bob RBAC + eve isolation | PASS (7/7 checks) |
+| 4 | Connector: --root 403, key-home, forged approval | PASS (7/7 checks) |
+| 5 | Persistence + audit verify | PASS (4/4 checks) |
+
+Total: 27 PASS, 0 FAIL. A second run on the same database fails at step 2 by design: the setup code is single-use, so a repeat run needs `down -v` first.
+
+## T11 stack checks (same laptop, 21 Oct 2026)
+
+| Check | Result |
+|-------|--------|
+| Base stack up, migrations, `/ready` | 200 `{"status":"ok"}` after compose fixes in `8b85ede` and `65446a8`: Caddy file capability vs `cap_drop: ALL`, secret ownership per consumer, Keycloak built at image-build time so `read_only` holds. Each fix signed off by security-engineer. |
+| Trivy, `api` image (HIGH/CRITICAL) | 44 HIGH, 0 CRITICAL, all in Debian 13.7 base packages with no fixed version (util-linux, ncurses, systemd libs, perl-base). With `--ignore-unfixed`: 0. Python packages: 0. |
+| Trivy, filesystem (HIGH/CRITICAL) | 1 CRITICAL: a Stripe `sk_test_` pattern in `demo/__pycache__/call_demo.cpython-312.pyc`, a git-ignored local cache file of the demo script. Tracked files: 0. |
+| ZAP baseline on the proxy | 0 High, 0 Medium; 3 Low, 3 Informational (cache-control, storable content, COEP missing, modern web app); 63 rules passed. Run against `https://agg.localhost:8443` on the compose edge network with the proxy temporarily serving that name, because ZAP's Java client sends no SNI for the dotless name `localhost`. |
+| Keycloak demo profile | All services healthy; acme issuer `https://idp.localhost/realms/acme` served through Caddy. |
+
+Gate item 4 reads "Trivy 0 HIGH/CRITICAL (fs and `api` image)". As worded it is **not met** (44 unfixed base-image HIGH; 1 CRITICAL in an ignored local file). Founder ruling pending.

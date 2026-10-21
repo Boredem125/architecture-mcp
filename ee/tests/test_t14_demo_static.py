@@ -247,3 +247,102 @@ class TestStepsCallSubprocess:
                     if isinstance(child, ast.Attribute) and child.attr in ("run", "Popen"):
                         has_call = True
                 assert not has_call, "positive control: bare print should not have subprocess"
+
+
+# ---------------------------------------------------------------------------
+# 6. Callback response checked before PASS (honest reporting)
+# ---------------------------------------------------------------------------
+
+class TestCallbackResponseChecked:
+    """Every _keycloak_login call must have its response checked before
+    the script reports PASS.  A non-2xx/302 callback is a FAIL, not
+    a "logged in" success."""
+
+    def test_no_unchecked_keycloak_login_before_pass(self):
+        """After _keycloak_login, the script must check the response
+        before printing PASS."""
+        import re
+        source = _DEMO_SCRIPT.read_text(encoding="utf-8")
+        # Pattern: a line calling _keycloak_login, followed immediately
+        # (next non-blank line) by _pass -- meaning no status check.
+        pattern = r'_keycloak_login\([^)]*\)\s*\n\s*_pass\('
+        matches = re.findall(pattern, source)
+        assert not matches, (
+            "Every _keycloak_login call must check the callback response "
+            "(status_code) before calling _pass. Found unchecked pattern."
+        )
+
+    def test_step3_checks_bob_callback_status(self):
+        """step3_bob_and_eve must verify callback_resp.status_code for bob."""
+        import ast
+        source = _DEMO_SCRIPT.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        step3_source = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "step3_bob_and_eve":
+                step3_source = ast.get_source_segment(source, node)
+                break
+        assert step3_source is not None, "step3_bob_and_eve not found"
+        # After the fix, step3 must check the callback response
+        # specifically for bob (not just for the /login redirect).
+        assert "callback_resp.status_code" in step3_source, (
+            "step3_bob_and_eve must check callback_resp.status_code "
+            "for bob before reporting success"
+        )
+
+    def test_positive_control_unchecked_pattern_detected(self):
+        """A pattern with _keycloak_login directly before _pass is detected."""
+        import re
+        bad_code = (
+            "        callback = _keycloak_login(c, u, 'bob', pw)\n"
+            "        _pass('bob logged in')\n"
+        )
+        pattern = r'_keycloak_login\([^)]*\)\s*\n\s*_pass\('
+        assert re.findall(pattern, bad_code), (
+            "Positive control: unchecked login-then-pass must be caught"
+        )
+
+    def test_positive_control_checked_pattern_passes(self):
+        """A pattern with a status check between login and _pass is OK."""
+        import re
+        good_code = (
+            "        callback = _keycloak_login(c, u, 'bob', pw)\n"
+            "        if callback.status_code not in (200, 302):\n"
+            "            _fail('bad')\n"
+            "        _pass('bob logged in')\n"
+        )
+        pattern = r'_keycloak_login\([^)]*\)\s*\n\s*_pass\('
+        assert not re.findall(pattern, good_code), (
+            "Positive control: checked pattern should not be flagged"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 7. Demo uses real Keycloak sub (not hardcoded username)
+# ---------------------------------------------------------------------------
+
+class TestDemoUsesRealKeycloakSub:
+    """The demo must look up the real Keycloak user ID (sub claim) for
+    non-bootstrap users like bob, not pass the username as oidc_subject."""
+
+    def test_step2_does_not_hardcode_bob_as_oidc_subject(self):
+        """step2 must not pass a literal 'bob' as oidc_subject."""
+        import ast
+        source = _DEMO_SCRIPT.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "step2_setup_and_admin":
+                # Find dict/JSON literals with "oidc_subject": "bob"
+                step2_src = ast.get_source_segment(source, node)
+                assert step2_src is not None
+                # After the fix, "oidc_subject": "bob" must not appear
+                assert '"oidc_subject": "bob"' not in step2_src, (
+                    "step2 must use the real Keycloak sub for bob, "
+                    "not a hardcoded username string"
+                )
+                break
+
+    def test_positive_control_hardcoded_detected(self):
+        """A literal 'oidc_subject: bob' in source is detected."""
+        bad = '    json={"oidc_subject": "bob", "email": "bob@acme.example"}'
+        assert '"oidc_subject": "bob"' in bad
