@@ -343,3 +343,4 @@ Headless by default. Separate httpx sessions log in through Keycloak as differen
 3. **`api` base image:** Chainguard Python, pinned by digest. T4 records the tag and update policy. The fallback is a Wolfi base built with apko.
 4. **Proposal A accepted:** no remote approvals on `prod` projects in M2, for any key kind. Condition N9 applies.
 5. **Proposal B accepted:** if the sync state and the last bundle are both lost, the workspace goes `locked` until re-enrollment. Conditions N3 and N7 apply.
+6. **`ee` CI on the runtime Python (22 Oct 2026):** the Chainguard `api` image runs Python 3.15, so the `ee` CI job runs a matrix of 3.12 and 3.15.
