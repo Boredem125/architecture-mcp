@@ -92,8 +92,10 @@ Each task's new tests are committed as strict xfail (`raises=M2T<n>Pending`) bef
 | T3 | `ee/tests/test_t8p2_session.py` (3 CSRF tests) | 3 (changed) | 0 | 3 (HMAC independent) | tests-first (T3) |
 | T4 | `ee/tests/test_m2_t4_image.py` | 5 | 2 | 3 | tests-first (T4) |
 | T5 | `ee/tests/test_m2_t5_schema.py` | 25 | 17 | 8 | tests-first (T5) |
+| T6 | `tests/security/test_m2_t6_registry.py` | 45 | 42 | 3 | tests-first (T6) |
+| T6 | `ee/tests/test_m2_t6_registry.py` | 8 | 6 | 2 | tests-first (T6) |
 
-M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17. Total RED: 36.
+M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17, T6=48. Total RED: 84.
 
 ### Build records, T1-T5 (22 Oct 2026, orchestrator)
 
