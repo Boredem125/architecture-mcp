@@ -49,6 +49,12 @@ volumes:
   pg-data:
   caddy-data:
   caddy-config:
+  caddy-root-cert:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "uid=65532,gid=65532,mode=0755"
   ca-bundle:
 
 # ---------------------------------------------------------------------------
@@ -175,6 +181,14 @@ services:
   # Builds a combined CA bundle that includes the system CAs plus Caddy's
   # internal root CA.  The api reads SSL_CERT_FILE from the output volume
   # so that httpx trusts Caddy-issued certificates (idp.localhost demo).
+  # --- ca-bundle (one-shot) -----------------------------------------------
+  # Builds a combined CA bundle that includes the system CAs plus Caddy's
+  # internal root CA.  The api reads SSL_CERT_FILE from the output volume
+  # so that httpx trusts Caddy-issued certificates (idp.localhost demo).
+  #
+  # T3 fix: reads root.crt from the dedicated caddy-root-cert volume
+  # (populated by the proxy entrypoint), NOT from caddy-data.  This means
+  # ca-bundle never sees Caddy's private keys and DAC_READ_SEARCH is gone.
   ca-bundle:
     image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1  # python:3.12-slim
     read_only: true
@@ -184,8 +198,6 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    cap_add:
-      - DAC_READ_SEARCH  # read caddy's root CA (owned 65532, mode 0600)
     user: "0:0"  # needs write access to the ca-bundle volume
     networks:
       - internal
@@ -193,14 +205,14 @@ services:
       proxy:
         condition: service_healthy
     volumes:
-      - caddy-data:/caddy-data:ro
+      - caddy-root-cert:/caddy-root-cert:ro
       - ca-bundle:/out
     entrypoint:
       - sh
       - -c
       - |
         cat /etc/ssl/certs/ca-certificates.crt \
-            /caddy-data/caddy/pki/authorities/local/root.crt \
+            /caddy-root-cert/root.crt \
             > /out/ca-certificates.crt
 
   # --- api ----------------------------------------------------------------
@@ -244,7 +256,7 @@ services:
       AGG_OIDC_ALLOW_HOSTS: "${AGG_OIDC_ALLOW_HOSTS:-}"
       SSL_CERT_FILE: /ca-bundle/ca-certificates.crt
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\""]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -277,6 +289,20 @@ services:
       - caddy-config:/config
       # Mount the built web bundle (ee/web/dist or similar)
       - ../web/dist:/srv/web:ro
+      # Export only root.crt to a dedicated volume (T3: ca-bundle reads this
+      # instead of caddy-data, so it never sees Caddy's private keys).
+      - caddy-root-cert:/root-cert
+    entrypoint:
+      - sh
+      - -c
+      - |
+        caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
+        CADDY_PID=$$!
+        trap "kill $$CADDY_PID" TERM INT
+        while [ ! -f /data/caddy/pki/authorities/local/root.crt ]; do sleep 0.5; done
+        cp /data/caddy/pki/authorities/local/root.crt /root-cert/root.crt
+        chmod 644 /root-cert/root.crt
+        wait $$CADDY_PID
     healthcheck:
       test: ["CMD-SHELL", "curl -sfk https://localhost:8443/health || exit 1"]
       interval: 10s

@@ -44,7 +44,6 @@ def test_dockerfile_has_from():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T4Pending)
 def test_final_base_is_chainguard():
     """The final FROM must reference cgr.dev/chainguard/python pinned by digest."""
     text = _DOCKERFILE.read_text(encoding="utf-8")
@@ -101,7 +100,6 @@ def test_nonroot_user():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T4Pending)
 def test_no_shell_in_final_stage():
     """No RUN instruction in the final stage, no /bin/sh copied."""
     text = _DOCKERFILE.read_text(encoding="utf-8")
