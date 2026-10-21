@@ -85,8 +85,15 @@ Each task's new tests are committed as strict xfail (`raises=M2T<n>Pending`) bef
 | Task | File | Tests | RED now | Guards | Committed |
 |---|---|---|---|---|---|
 | T0a | `tests/security/test_m2_t0a_demo_preset.py` | 5 | 0 | 5 (passes now) | this commit |
+| T2 | `ee/tests/test_m2_t2_portable.py` | 7 | 5 | 2 | tests-first (T2) |
+| T3 | `tests/security/test_m2_t3_domain_groups.py` | 6 | 3 | 3 | tests-first (T3) |
+| T3 | `ee/tests/test_m2_t3_caddy_ca.py` | 5 | 3 | 2 | tests-first (T3) |
+| T3 | `ee/tests/test_m2_t3_pool.py` | 7 | 6 | 1 | tests-first (T3) |
+| T3 | `ee/tests/test_t8p2_session.py` (3 CSRF tests) | 3 (changed) | 0 | 3 (HMAC independent) | tests-first (T3) |
+| T4 | `ee/tests/test_m2_t4_image.py` | 5 | 2 | 3 | tests-first (T4) |
+| T5 | `ee/tests/test_m2_t5_schema.py` | 25 | 17 | 8 | tests-first (T5) |
 
-M2T<n>Pending xfail counts: all 0 at T0a. Each tests-first commit adds them.
+M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17. Total RED: 36.
 
 ## 5. Threat-to-node-id matrix (threats 21-37)
 
