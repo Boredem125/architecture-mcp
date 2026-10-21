@@ -553,24 +553,144 @@ class TestNoShellSecretLeak:
 
 
 # ---------------------------------------------------------------------------
-# 16. No service has cap_add (all caps dropped, none added back)
+# 16. Capability rules: proxy gets NET_BIND_SERVICE (caddy binary has file
+#     caps that require it in the bounding set); init-secrets gets CHOWN
+#     (to set per-consumer file ownership); all others have no cap_add.
+#     Proxy must NOT have the ip_unprivileged_port_start sysctl (redundant
+#     once NET_BIND_SERVICE is granted).
 # ---------------------------------------------------------------------------
 
 @_skip_no_yaml
-class TestNoCapAdd:
-    """With non-root users and high ports, no service needs cap_add."""
+class TestCapabilities:
+    """Verify per-service capability rules."""
 
-    def test_no_service_has_cap_add(self):
+    _ALLOWED_CAP_ADD: dict[str, list[str]] = {
+        "proxy": ["NET_BIND_SERVICE"],
+        "init-secrets": ["CHOWN", "DAC_OVERRIDE"],
+        "ca-bundle": ["DAC_READ_SEARCH"],
+    }
+
+    def test_proxy_has_net_bind_service(self):
+        data = _load_compose()
+        proxy = data["services"]["proxy"]
+        cap_add = proxy.get("cap_add", [])
+        assert cap_add == ["NET_BIND_SERVICE"], (
+            f"proxy cap_add must be exactly [NET_BIND_SERVICE], got {cap_add}"
+        )
+
+    def test_proxy_still_has_cap_drop_all(self):
+        data = _load_compose()
+        proxy = data["services"]["proxy"]
+        assert "ALL" in proxy.get("cap_drop", []), (
+            "proxy must keep cap_drop: [ALL]"
+        )
+
+    def test_proxy_no_sysctl(self):
+        """With NET_BIND_SERVICE the ip_unprivileged_port_start sysctl is
+        redundant and should be removed."""
+        data = _load_compose()
+        proxy = data["services"]["proxy"]
+        assert "sysctls" not in proxy, (
+            "proxy must not have sysctls (NET_BIND_SERVICE replaces the sysctl)"
+        )
+
+    def test_init_secrets_caps_exact(self):
+        """init-secrets needs CHOWN (fchown) and DAC_OVERRIDE (create files
+        in ./secrets/ even when owned by a non-root uid on native Linux)."""
+        data = _load_compose()
+        init = data["services"]["init-secrets"]
+        cap_add = sorted(init.get("cap_add", []))
+        assert cap_add == ["CHOWN", "DAC_OVERRIDE"], (
+            f"init-secrets cap_add must be exactly "
+            f"[CHOWN, DAC_OVERRIDE], got {cap_add}"
+        )
+
+    def test_no_other_service_has_cap_add(self):
         data = _load_compose()
         for name, svc in data["services"].items():
+            if name in self._ALLOWED_CAP_ADD:
+                continue
             assert "cap_add" not in svc, (
-                f"service '{name}' has cap_add but should not need any "
-                f"capabilities (non-root user, high ports)"
+                f"service '{name}' has cap_add but only "
+                f"{list(self._ALLOWED_CAP_ADD.keys())} may have it"
             )
 
-    def test_positive_control_cap_add_detected(self):
-        bad_svc = {"cap_add": ["NET_BIND_SERVICE"]}
+    def test_positive_control_unexpected_cap_add_detected(self):
+        bad_svc = {"cap_add": ["SYS_ADMIN"]}
         assert "cap_add" in bad_svc
+
+
+# ---------------------------------------------------------------------------
+# 16b. Secret file ownership rules in init-secrets.sh
+# ---------------------------------------------------------------------------
+
+class TestSecretOwnershipRules:
+    """init-secrets.sh must set per-consumer ownership on each secret file.
+
+    Ownership table (enforced here and in the script):
+        pg_superuser_password  999:999    0400  postgres
+        pg_owner_password      999:999    0400  postgres
+        pg_app_password        999:999    0400  postgres
+        pg_owner_url           10001:10001 0400 migrate/migrate-demo
+        pg_app_url             10001:10001 0400 api
+        oidc_client_secret     65534:30000 0440 api + keycloak (shared gid)
+        server_signing_key     10001:10001 0400 api
+    """
+
+    def test_init_secrets_calls_fchown(self):
+        text = (_DEPLOY / "init-secrets.sh").read_text(encoding="utf-8")
+        assert "os.fchown" in text, (
+            "init-secrets.sh must call os.fchown to set per-consumer ownership"
+        )
+
+    def test_init_secrets_calls_fchmod(self):
+        text = (_DEPLOY / "init-secrets.sh").read_text(encoding="utf-8")
+        assert "os.fchmod" in text, (
+            "init-secrets.sh must call os.fchmod to set restrictive mode"
+        )
+
+    def test_no_world_readable_modes(self):
+        """Secret files must never be 0644 or 0444."""
+        text = (_DEPLOY / "init-secrets.sh").read_text(encoding="utf-8")
+        # Check Python octal literals and bare octal
+        assert "0o644" not in text, "init-secrets.sh must not use mode 0o644"
+        assert "0o444" not in text, "init-secrets.sh must not use mode 0o444"
+
+    def test_shared_gid_for_oidc_secret(self):
+        """api and keycloak must have group_add for the shared secret gid."""
+        data = _load_compose()
+        api = data["services"]["api"]
+        groups = [str(g) for g in api.get("group_add", [])]
+        assert "30000" in groups, (
+            "api must have group_add including '30000' for shared oidc_client_secret"
+        )
+
+    def test_keycloak_shared_gid(self):
+        """keycloak must also have group_add for the shared secret gid."""
+        data = _load_compose()
+        kc = data["services"]["keycloak"]
+        groups = [str(g) for g in kc.get("group_add", [])]
+        assert "30000" in groups, (
+            "keycloak must have group_add including '30000' for shared oidc_client_secret"
+        )
+
+    def test_init_secrets_runs_as_root(self):
+        """init-secrets must run as root to use CAP_CHOWN on bind mounts."""
+        data = _load_compose()
+        init = data["services"]["init-secrets"]
+        user = str(init.get("user", ""))
+        assert user.startswith("0"), (
+            f"init-secrets must run as root (user '0:0'), got '{user}'"
+        )
+
+    def test_positive_control_world_readable_detected(self):
+        bad = "os.open(str(path), os.O_WRONLY, 0o644)"
+        assert "0o644" in bad
+
+    def test_positive_control_missing_group_add_detected(self):
+        bad_svc = {"user": "10001:10001"}
+        groups = [str(g) for g in bad_svc.get("group_add", [])]
+        assert "30000" not in groups
 
 
 # ---------------------------------------------------------------------------

@@ -67,7 +67,10 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    user: "65534:65534"  # nobody
+    cap_add:
+      - CHOWN         # fchown each secret file to its consumer uid/gid
+      - DAC_OVERRIDE  # create files in ./secrets/ owned by non-root uid on Linux
+    user: "0:0"  # root required for CAP_CHOWN on bind mounts; one-shot only
     volumes:
       - ./init-secrets.sh:/opt/init-secrets.sh:ro
       - ./secrets:/opt/secrets
@@ -131,7 +134,8 @@ services:
     environment:
       # migrate connects as agg_owner
       AGG_DATABASE_URL_FILE: /run/secrets/pg_owner_url
-    command: ["python", "-m", "agg_cp.migrate"]
+    entrypoint: ["python", "-m", "agg_cp.migrate"]
+    command: []
 
   # --- migrate-demo (one-shot, demo profile) ------------------------------
   # Bootstraps the "acme" org with OIDC config pointing at the Keycloak
@@ -164,7 +168,8 @@ services:
       AGG_BOOTSTRAP_ORG_NAME: "Acme Corp"
       AGG_BOOTSTRAP_ORG_ISSUER: "https://idp.localhost/realms/acme"
       AGG_BOOTSTRAP_ORG_CLIENT_ID: agg-control-plane
-    command: ["python", "-m", "agg_cp.migrate"]
+    entrypoint: ["python", "-m", "agg_cp.migrate"]
+    command: []
 
   # --- ca-bundle (one-shot) -----------------------------------------------
   # Builds a combined CA bundle that includes the system CAs plus Caddy's
@@ -179,6 +184,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cap_add:
+      - DAC_READ_SEARCH  # read caddy's root CA (owned 65532, mode 0600)
     user: "0:0"  # needs write access to the ca-bundle volume
     networks:
       - internal
@@ -209,6 +216,8 @@ services:
     cap_drop:
       - ALL
     user: "10001:10001"
+    group_add:
+      - "30000"  # shared gid for oidc_client_secret (also used by keycloak)
     networks:
       - internal
       - edge
@@ -251,10 +260,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    # Allow Caddy to bind port 443 (for IdP internal TLS) without
-    # CAP_NET_BIND_SERVICE.  This is a namespace-scoped sysctl.
-    sysctls:
-      net.ipv4.ip_unprivileged_port_start: 443
+    cap_add:
+      - NET_BIND_SERVICE  # caddy binary has file cap; required in bounding set for exec
     user: "65532:65532"  # nonroot
     ports:
       - "127.0.0.1:443:8443"
@@ -271,7 +278,7 @@ services:
       # Mount the built web bundle (ee/web/dist or similar)
       - ../web/dist:/srv/web:ro
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-check-certificate -qO- https://127.0.0.1:8443/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sfk https://localhost:8443/health || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -290,6 +297,8 @@ services:
     cap_drop:
       - ALL
     user: "1000:1000"  # default keycloak uid
+    group_add:
+      - "30000"  # shared gid for oidc_client_secret (also used by api)
     networks:
       - internal
     secrets:

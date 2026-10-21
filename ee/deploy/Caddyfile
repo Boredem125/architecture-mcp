@@ -65,9 +65,8 @@
 #
 # Listens on port 443 for internal (container-to-container) access and
 # on the default https_port (8443) for browser access via host port
-# mapping.  The proxy container needs sysctls
-# net.ipv4.ip_unprivileged_port_start=443 to bind port 443 without
-# CAP_NET_BIND_SERVICE.
+# mapping.  The proxy container has cap_add NET_BIND_SERVICE so Caddy
+# can bind port 443 as a non-root user.
 # -----------------------------------------------------------------------
 {$AGG_IDP_SITE_ADDRESS:idp.localhost}, {$AGG_IDP_SITE_ADDRESS:idp.localhost}:443 {
 	tls internal
