@@ -24,3 +24,18 @@ REGISTRY = "agg/registry/v1"
 BUNDLE = "agg/bundle/v1"
 DEVICE_ASSERT = "agg/device-assert/v1"
 AUDIT_HEAD = "agg/audit-head/v1"
+
+# --- M2 tags (ADR 0007 M2 amendment 2, D5.7) --------------------------------
+
+REMOTE_APPROVAL = "agg/remote-approval/v1"
+DEVICE_ENROLL = "agg/device-enroll/v1"
+SIGNER_ASSERT = "agg/signer-assert/v1"
+UNENROLL = "agg/unenroll/v1"
+
+# --- All known tags (for strict envelope parsing) ----------------------------
+
+ALL_TAGS: frozenset[str] = frozenset({
+    APPROVAL, RECORD, GRANT, POLICY_CHANGE, EVIDENCE,
+    REGISTRY, BUNDLE, DEVICE_ASSERT, AUDIT_HEAD,
+    REMOTE_APPROVAL, DEVICE_ENROLL, SIGNER_ASSERT, UNENROLL,
+})
