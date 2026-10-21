@@ -1,8 +1,13 @@
-# Control-plane hand-off (M2 plan approved 21 Oct 2026; T## M2 planning status (21 Oct 2026)
+# Control-plane hand-off (M2 T0a and T0b done 21 Oct 2026; T1-T5 next)
+
+## M2 T0 status (21 Oct 2026)
+
+**T0b** `031f214`: ADRs 0001, 0002, 0003, 0005 and 0007 amended per D9. security-engineer (claude-opus-5-5) APPROVE WITH CONDITIONS, quoted in ADR 0001. The condition, threat row 37 (the agent runs the sync CLIs, ADR 0001 A1.13; a High today, since `enroll`/`unenroll`/`sync`/`signer` are not in `_APPROVER_SUBCOMMANDS`), is in `M2_PLAN.md` with tests in T7 and T8. **T0a** `c548fd4`: `M2_BASELINE.md`, `M2_FROZEN_MANIFEST.sha256` (116 files, LF blob hashes), node ids (connector 1761, ee 446), demo preset `steal-env` (5 tests pass). CI still checks `M1_FROZEN_MANIFEST.sha256`; switching it to M2 belongs in T1. **Next action:** T1-T5 in a fresh session (T1-T4 depend on T0a, T5 on T0b).
+
+## M2 planning status (21 Oct 2026)
 
 **The M2 plan was APPROVED by the founder on 21 Oct 2026** (`f732d58`): `M2_PLAN.md`, with the reviews in `REVIEW_M2.md`. Security ran 3 rounds and ended at APPROVE WITH CONDITIONS: F1 (bind the un-enroll fields) and F2 (sync never re-pins the root) go into ADR 0001 at T0b, before T5, and land as T8 tests; F3-F5 are demo and scope text. QA: APPROVE. The founder rulings are at the end of the plan: a real second person for the live step, `sandbox watch` off in managed mode, a Chainguard `api` base, no remote approvals on prod in M2, and locked on lost state. **Next action:** T0a (qa, worker tier) and T0b (lead-architect plus security, leader tier) in a fresh session.
 
-0a/T0b next)
 
 ## Laptop session status (21 Oct 2026)
 
