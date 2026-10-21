@@ -95,6 +95,14 @@ Each task's new tests are committed as strict xfail (`raises=M2T<n>Pending`) bef
 
 M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17. Total RED: 36.
 
+### Build records, T1-T5 (22 Oct 2026, orchestrator)
+
+1. **T1** (`f41af8d`): CI Windows ran the 3 SEC-27/28 ids as passed (run 39586885475, 1766 passed, 0 skipped). CI checks `M2_FROZEN_MANIFEST.sha256` in two halves: connector-standalone checks the non-`ee/` lines, and the `ee` job checks the `ee/` lines minus the 3 named exceptions in section 3.
+2. **Test edits beyond marker removal, approved by stop-and-ask.** security-engineer signed off each one by node id. The T3 tests raised the sentinel from inside the body. The builds turned each such `raise` into the equivalent `assert` (`test_m2_t3_domain_groups.py`, `test_m2_t3_pool.py`). `test_m2_t3_domain_groups.py` also patched the global `os.name`, which made `Path()` a `WindowsPath` on Linux, so 4 tests failed on CI Linux from `9d734e2`. They now patch the `keyhome._is_windows` seam. **Rule from T6 on:** the sentinel is raised only by one feature-absence helper at the top of a test, the final assertions are plain `assert`s, and tests never patch global `os` attributes.
+3. **T5 test-support policy.** `0007` keeps `FOR INSERT TO agg_owner` on `enrollment_codes` and `signer_links` only because the frozen T5 tests seed rows as `agg_owner`. Security ruled to keep it.
+4. **Local Windows with Postgres (no gate environment).** `test_t10_multiworker.py::test_revoked_session_401_all_workers` and `::test_concurrent_role_grants_idempotent` time out (httpx `ReadTimeout`). uvicorn `--workers 4` on Windows spawns rather than forks, and the workers starve under 40 fresh connections. CI Windows deselects `pg`, and CI Linux runs them. This is a named local limitation, not a skip.
+5. **ee CI matrix:** Python 3.12 and 3.15 (founder, 22 Oct 2026; the Chainguard `api` runtime is 3.15).
+
 ## 5. Threat-to-node-id matrix (threats 21-37)
 
 Node ids are fixed now. The tests-first commits must use these file/name patterns.
