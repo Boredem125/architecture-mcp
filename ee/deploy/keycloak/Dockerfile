@@ -13,3 +13,7 @@ FROM keycloak/keycloak:26.0.0@sha256:db0d0f2c2eee8618a37a50e04affb69823e56687b4d
 # Runtime options (KC_HTTP_ENABLED, KC_PROXY_HEADERS, etc.) are passed via
 # environment variables at container start, not here.
 RUN /opt/keycloak/bin/kc.sh build --db=dev-file --health-enabled=true
+
+# The base image already runs as keycloak (uid 1000); name it so scanners
+# and readers see the image does not end as root (Trivy DS-0002).
+USER 1000
