@@ -75,6 +75,7 @@ All 412 ee tests pass on CI Linux with Postgres.
 | `ee/tests/test_t8p2_session.py` (3 CSRF tests) | T3 | CSRF tests compute the HMAC independently instead of comparing the code with itself | security (M1 audit Low) |
 | `ee/tests/test_t10_multiworker.py` (setup) | T2 | `os.setsid` replaced with portable process group | security |
 | `ee/tests/test_m1_t13_review.py` (setup) | T2 | Symlink test skips cleanly on Windows without privilege | security |
+| `ee/tests/test_t9_routes.py::test_frozen_route_set` | T7, T8 | the 10 new M2 routes added to the expected set, nothing removed | security (T7/T8 review) |
 
 Any other frozen test that fails: stop, list it, security decides.
 
@@ -94,10 +95,10 @@ Each task's new tests are committed as strict xfail (`raises=M2T<n>Pending`) bef
 | T5 | `ee/tests/test_m2_t5_schema.py` | 25 | 17 | 8 | tests-first (T5) |
 | T6 | `tests/security/test_m2_t6_registry.py` | 45 | 42 | 3 | tests-first (T6) |
 | T6 | `ee/tests/test_m2_t6_registry.py` | 8 | 6 | 2 | tests-first (T6) |
-| T7 | `tests/security/test_m2_t7_signer.py` | 37 | 34 | 3 | tests-first (T7) |
-| T7 | `ee/tests/test_m2_t7_signer.py` | 17 | 14 | 3 | tests-first (T7) |
-| T8 | `tests/security/test_m2_t8_enroll.py` | 38 | 35 | 3 | tests-first (T8) |
-| T8 | `ee/tests/test_m2_t8_enroll.py` | 19 | 17 | 2 | tests-first (T8) |
+| T7 | `tests/security/test_m2_t7_signer.py` | 25 | 22 (markers removed) | 3 | tests-first (T7) |
+| T7 | `ee/tests/test_m2_t7_signer.py` | 32 | 29 (markers removed) | 3 | tests-first (T7) |
+| T8 | `tests/security/test_m2_t8_enroll.py` | 38 | 35 (markers removed) | 3 | tests-first (T8) |
+| T8 | `ee/tests/test_m2_t8_enroll.py` | 25 | 23 (markers removed) | 2 | tests-first (T8) |
 
 M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17, T6=48, T7=48, T8=52. Total RED: 184.
 

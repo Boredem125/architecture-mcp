@@ -134,12 +134,12 @@ jobs:
         # The ee/ half of the manifest (connector-standalone checks the rest).
         # M2_BASELINE.md section 3 named exceptions, excluded here:
         #   ee/tests/test_t8p2_session.py (T3), ee/tests/test_t10_multiworker.py (T2),
-        #   ee/tests/test_m1_t13_review.py (T2).
+        #   ee/tests/test_m1_t13_review.py (T2), ee/tests/test_t9_routes.py (T7/T8).
         # Hashes are of LF content; only the Linux checkout is LF on disk.
         if: runner.os == 'Linux'
         run: >
           grep '  ee/' docs/control-plane/M2_FROZEN_MANIFEST.sha256
-          | grep -v -e '  ee/tests/test_t8p2_session.py$' -e '  ee/tests/test_t10_multiworker.py$' -e '  ee/tests/test_m1_t13_review.py$'
+          | grep -v -e '  ee/tests/test_t8p2_session.py$' -e '  ee/tests/test_t10_multiworker.py$' -e '  ee/tests/test_m1_t13_review.py$' -e '  ee/tests/test_t9_routes.py$'
           | sha256sum -c --quiet
       - name: Run ee tests (branch coverage; M1 gate item 2 needs >= 85%)
         env:

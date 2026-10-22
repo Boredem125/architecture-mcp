@@ -271,6 +271,27 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
     session = _read_session(layout)
     session_id = session.get("session_id", "")
 
+    # Locked mode (D1.7, N7): managed workspace with no valid bundle.
+    # Only reads inside the root (still subject to protections) are allowed.
+    # Sandbox MCP tools stay allowed (the escalation channel).
+    try:
+        from sandbox.connector.sync.state import is_locked as _is_locked
+
+        if _is_locked(layout):
+            _LOCKED_ALLOW = {"Read", "Glob", "Grep"}
+            if not tool_name.startswith("mcp__sandbox__") and tool_name not in _LOCKED_ALLOW:
+                _audit(layout, session_id, {
+                    "event": "denied", "tool": tool_name,
+                    "reason_code": "LOCKED_MODE",
+                    "reason": "workspace is locked (managed, no valid bundle); re-enroll",
+                })
+                return _pre_output("deny", (
+                    "SANDBOX DENIED [LOCKED_MODE]: this workspace is managed but has no valid "
+                    "policy bundle. Only reads inside the root are allowed. Re-enroll to restore."
+                ))
+    except ImportError:
+        pass  # sync module not available; not a managed workspace
+
     # Resolve WHO is acting — authority is granted to an identity, not a command.
     identity = from_payload(payload, layout, policy)
 

@@ -1,4 +1,57 @@
-# Control-plane hand-off (M2 T1-T5 done 22 Oct 2026; T6 next)
+# Control-plane hand-off (M2 T6-T8 done, 22 Oct 2026)
+
+## M2 T7-T8 security review (22 Oct 2026)
+
+**T7 and T8 were reviewed and committed.** security-engineer (worker tier) gave round 1 APPROVE with 2 findings, both fixed, and round 2 APPROVE.
+1. MEDIUM: the signer routes opened connections without `SET ROLE agg_app`. Fixed in `ee/src/agg_cp/sync/signer.py` at all 6 `psycopg.connect` sites, matching `enroll.py`.
+2. LOW: `check_signer_nonce`, `consume_link_code` and `store_genesis` held in-memory `_store` fakes in a product module. They are deleted, along with `LinkCodeExpired`. QA rewrote 4 ee tests to use the real paths and kept their node ids: `test_signer_nonce_replay_refused` (real `/sync/signer/token`, 409 `nonce_replay`), `test_link_code_single_use` (410), `test_link_code_15_min_expiry` (410) and `test_server_second_genesis_refused` (`agg_cp.sync.registry`, plus a `sync_alerts` row).
+3. Items 1-9 in the list below: APPROVE. Every test edit fits an approved class, and none weakens an assertion.
+4. Named exception: `test_t9_routes.py::test_frozen_route_set` gains exactly the 10 new routes. The row is in `M2_BASELINE.md` section 3, and the file is added to the `ee` CI `grep -v` list. Known debt, per security: excluded exception files are not hash-checked at all. Pinning each reviewed hash would be stronger. This does not block.
+5. Measured locally (Windows, testcontainers Postgres): connector 1888 passed, 1 skipped. ee 556 passed, 1 skipped, 3 failed. The failures are the 2 known `test_t10_multiworker.py` ReadTimeouts and `test_m2_t8_enroll.py::test_4_worker_race_exactly_1_winner`, which failed only while both suites ran at once and passed 2 of 2 runs alone. Semgrep 1.178.0 (Docker, CI rule packs) on the changed files: 0 results. gitleaks 8.30.1: 0 findings. The local `.venv` Semgrep is broken by an opentelemetry `ImportError`, so use the Docker image.
+
+## M2 T6-T8 status (22 Oct 2026, end of session)
+
+**T6 done** at `5a78299` (security round 1 CHANGES, round 2 APPROVE; CI run 39605448447 green; the `ee-windows` job result was not read, so check it). Tests-first are on `main`: T6 `78295e5`, T7 `0d3efa1`, T8 `115597e`.
+
+**T7 and T8: code complete and green locally, UNCOMMITTED in the laptop working tree, NOT security-reviewed.** Never stash, reset or checkout these files. `HANDOFF.md` is staged but not committed (founder: don't commit yet).
+
+**Files:**
+- connector (MIT): `src/sandbox/connector/sync/` (`signer.py`, `enroll.py`, `state.py`), `classify.py:64` (`_APPROVER_SUBCOMMANDS` + signer, enroll, unenroll, sync), `hook_eval.py:277-293` (locked-mode deny, a TCB change), `keyhome.py:104,126` (workspace-root registry for the re-enroll fingerprint check);
+- server: `ee/src/agg_cp/sync/signer.py`, `ee/src/agg_cp/sync/enroll.py`, `ee/src/agg_cp/app.py` (routers + a `database_url` alias), migration `0008_t8_enrollment_code_cols.py`;
+- tests: the 4 T7/T8 test files (markers removed + approved stop-and-ask fixes), `ee/tests/m2_sync_server.py`, `M2_BASELINE.md` rows.
+
+**Measured (local Windows; Linux Docker for the T7/T8 connector files):**
+- T7: connector 25 passed (Windows and Linux); ee 32 passed with pg.
+- T8: connector 38 passed (Windows and Linux); ee 25 passed with pg.
+- Full connector: 1888 passed, 1 skipped (known symlink).
+- Full ee: 556 passed, 1 skipped, 3 failed:
+  - `ee/tests/test_t9_routes.py::test_frozen_route_set`. Frozen M1 route list; the 10 new routes are extra. **Needs a security named-exception ruling** (add the 10 routes to the frozen set).
+  - `test_t10_multiworker.py::test_revoked_session_401_all_workers` and `::test_concurrent_role_grants_idempotent`. Known local-Windows ReadTimeouts (baseline section 4 record 4).
+- lint-imports: 1 kept, 0 broken.
+- **Not run yet:** Semgrep, gitleaks, CI.
+
+**Design as built (orchestrator rulings this session):**
+1. **No identity or time from the client.** There are no `X-User-Id`, `X-Auth-Time` or `X-Org-Id` headers and no body `auth_time` (grep clean). Human routes use `validate_session` (org and user from the cookie; freshness from the server-side session row). Signer routes use only the `/signer/token` bearer. A forged-header 401 test covers each human route.
+2. **Enroll:** the PoP is verified before the code is consumed, so a bad proof gives `bad_proof` and the code stays usable. Every code failure gives one uniform 400 `invalid_code` (no oracle). The client sends the code and the server hashes it. There is no RESET ROLE; `SET ROLE agg_app` follows M1 `auth.py:87`.
+3. **Codes:** admin `POST /api/v1/admin/enrollment-codes {project_id, operator_user_id}` returns `{code_id, expires_at}` and no code. Operator `GET /api/v1/enrollment-codes/{code_id}` (that operator, fresh session) generates the code in one atomic UPDATE, stores only the hash plus `code_read_at`, and returns the code once. `0008` adds `code_read_at`, makes `code_hash` nullable, adds a column `GRANT UPDATE (code_hash, code_read_at)` to agg_app, and makes the consume guard refuse a NULL hash. Its downgrade marks unissued rows dead (orchestrator fix). Revoke goes through the admin route, with a cross-org 404.
+4. **Signer links:** web `POST /api/v1/signer-links` (fresh session) returns the code once and stores only its hash. CLI `POST /api/v1/sync/signer/link` takes code + key_id + public_key. Keys are live only through `approver_keys`; `cli_key_lookup` is unchanged. All 10 new routes declare `x-agg-rbac` through `rbac_route`.
+
+**Security review items (next session, security-engineer, before any commit):**
+1. Each new route: auth, org scoping, RBAC role and scope truthful.
+2. TCB: `hook_eval.py` locked mode (N7: reads keep the protections and default denies), `keyhome.py` root registry.
+3. `0008`: grants, guard, downgrade.
+4. Threat 37 subcommand denials.
+5. F1, F2 and F5.
+6. `signer.py:90` `check_signer_nonce` in-memory store: test-only code in a product module, unused by routes. Remove or move it.
+7. `app.py` `database_url` alias.
+8. Every test edit beyond markers, by node id. These were approved stop-and-ask: T6 org seeding and `kind`; T7 uuid users, `used_at`, approver_keys seeding, the 12 tests moved to ee, the link split; T8 session cookies, the uniform invalid_code, PoP-first, revoke via the route.
+9. The `test_frozen_route_set` named exception.
+
+Then run Semgrep and gitleaks; git-ops commits T7, then T8 (HANDOFF with them), and checks CI including `ee-windows`.
+
+**Process lessons for T9 on:**
+1. QA runs new tests against the real routes and the committed schema before the tests-first commit. T7/T8 tests passed as xfail while being wrong: wrong columns, header auth, a test hook in a product API.
+2. Builders stop on any mismatch. They never edit committed migrations or frozen files, never pin dependencies to suit tests, and never take identity from the client.
 
 ## M2 T1-T5 status (22 Oct 2026)
 
