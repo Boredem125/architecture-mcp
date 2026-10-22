@@ -145,11 +145,16 @@ jobs:
         env:
           AGG_TEST_PG_URL: postgresql://postgres@localhost:5432/postgres
           COVERAGE_FILE: ${{ runner.temp }}/.coverage
-        run: python -m coverage run --branch --source=ee/src/agg_cp -m pytest -q ee/tests --junitxml "$RUNNER_TEMP/junit-ee.xml"
+          COVERAGE_PROCESS_START: ee/pyproject.toml
+        run: python -m coverage run --rcfile=ee/pyproject.toml -m pytest -q ee/tests --junitxml "$RUNNER_TEMP/junit-ee.xml"
+      - name: Combine subprocess coverage
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/.coverage
+        run: python -m coverage combine --rcfile=ee/pyproject.toml
       - name: Coverage gate (fail under 85%, no omit list)
         env:
           COVERAGE_FILE: ${{ runner.temp }}/.coverage
-        run: python -m coverage report --fail-under=85 | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
+        run: python -m coverage report --rcfile=ee/pyproject.toml --fail-under=85 | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: success() || failure()
         with:
