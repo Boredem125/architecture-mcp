@@ -32,5 +32,11 @@ dev = [
 [project.scripts]
 agg-cp = "agg_cp.cli:main"
 
+[tool.coverage.run]
+branch = true
+parallel = true
+sigterm = true
+source = ["ee/src/agg_cp"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/agg_cp"]
