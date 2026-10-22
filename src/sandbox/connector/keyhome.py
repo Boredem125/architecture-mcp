@@ -99,6 +99,8 @@ def workspace_id(layout, *, create: bool = True, audit: bool = True) -> str:
         pass
     except OSError as exc:
         raise KeyHomeError(f"cannot write the workspace id: {exc}") from exc
+    # Record workspace root in the key home so enroll() can discover it.
+    _register_workspace_root(new_id, layout.root if hasattr(layout, 'root') else layout.base.parent)
     return workspace_id(layout, create=False)
 
 
@@ -118,6 +120,44 @@ def _audit_id_created(layout, new_id: str) -> None:
              "note": "a new id means a new key folder; reviewer keys start over for this workspace"})
     except Exception as exc:  # noqa: BLE001
         raise KeyHomeError(f"cannot record workspace_id_created in the audit chain: {exc}") from exc
+
+
+def _register_workspace_root(ws_id: str, root: Path) -> None:
+    """Write the workspace root path to the key home so enroll() can discover it."""
+    try:
+        kh = key_home_root()
+        if kh is None:
+            return
+        d = kh / ws_id
+        d.mkdir(parents=True, exist_ok=True)
+        root_file = d / "workspace_root"
+        if not root_file.exists():
+            root_file.write_text(str(root), encoding="utf-8")
+    except Exception:  # noqa: BLE001 - best effort
+        pass
+
+
+def _discover_workspace_roots() -> list[Path]:
+    """Return workspace root paths registered in the key home."""
+    try:
+        kh = key_home_root()
+        if kh is None or not kh.exists():
+            return []
+        roots: list[Path] = []
+        for d in kh.iterdir():
+            if not d.is_dir() or not _ID_RE.match(d.name):
+                continue
+            root_file = d / "workspace_root"
+            if root_file.exists():
+                try:
+                    text = root_file.read_text(encoding="utf-8").strip()
+                    if text:
+                        roots.append(Path(text))
+                except OSError:
+                    pass
+        return roots
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _validated_icacls() -> Path | None:

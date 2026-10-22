@@ -80,6 +80,7 @@ def _default_oidc_http():
 def create_app(
     *,
     db_url: str | None = None,
+    database_url: str | None = None,
     settings: Settings | None = None,
     clock: object | None = None,
     oidc_http: object | None = None,
@@ -93,9 +94,11 @@ def create_app(
     T8P2 injection contract: ``clock``, ``oidc_http``, ``resolve``
     are passed through to the auth router.
     """
+    # Accept both db_url and database_url (alias)
+    effective_db_url = db_url or database_url
     if settings is None:
-        if db_url is not None:
-            settings = Settings(db_url=db_url)
+        if effective_db_url is not None:
+            settings = Settings(db_url=effective_db_url)
         else:
             settings = settings_from_env()
 
@@ -173,6 +176,20 @@ def create_app(
 
         api_router = build_api_router(db_url=settings.db_url, clock=actual_clock)
         for _r in api_router.routes:
+            app.router.routes.append(_r)
+
+        from .sync.enroll import enroll_router
+
+        _enroll_r = enroll_router(db_url=settings.db_url, clock=actual_clock)
+        for _r in _enroll_r.routes:
+            app.router.routes.append(_r)
+
+        from .sync.signer import build_signer_router
+
+        _signer_r = build_signer_router(
+            db_url=settings.db_url, clock=actual_clock
+        )
+        for _r in _signer_r.routes:
             app.router.routes.append(_r)
 
     @app.get("/health")

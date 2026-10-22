@@ -49,13 +49,27 @@ _T9_ROUTES = frozenset({
     ("GET", "/api/v1/org/audit/verify"),
 })
 
+# M2 T7/T8 named exception (M2_BASELINE.md section 3)
+_M2_T7_T8_ROUTES = frozenset({
+    ("POST", "/api/v1/signer-links"),
+    ("POST", "/api/v1/sync/signer/token"),
+    ("POST", "/api/v1/sync/signer/link"),
+    ("GET", "/api/v1/sync/signer/pending"),
+    ("POST", "/api/v1/sync/signer/signatures"),
+    ("POST", "/api/v1/sync/enroll"),
+    ("POST", "/api/v1/sync/token"),
+    ("POST", "/api/v1/admin/enrollment-codes"),
+    ("GET", "/api/v1/enrollment-codes/{code_id}"),
+    ("POST", "/api/v1/admin/devices/revoke"),
+})
+
 # Infrastructure routes
 _INFRA_ROUTES = frozenset({
     ("GET", "/health"),
     ("GET", "/ready"),
 })
 
-EXPECTED_ROUTES = _AUTH_PRE_AUTH | _AUTH_SESSION | _T9_ROUTES | _INFRA_ROUTES
+EXPECTED_ROUTES = _AUTH_PRE_AUTH | _AUTH_SESSION | _T9_ROUTES | _M2_T7_T8_ROUTES | _INFRA_ROUTES
 
 
 # ---------------------------------------------------------------------------

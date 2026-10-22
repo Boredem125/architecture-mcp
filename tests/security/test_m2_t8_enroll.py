@@ -155,7 +155,7 @@ def test_guard_fake_server_starts():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_code_single_use(tmp_path, key_home):
     """Client maps 409 to EnrollError on code reuse (threat 1)."""
     _need("sandbox.connector.sync.enroll", "enroll")
@@ -167,7 +167,7 @@ def test_code_single_use(tmp_path, key_home):
             enroll(srv.base_url, "USED-CODE", "fp-abc")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_code_expired_refused(tmp_path, key_home):
     """Client maps 410 to EnrollError on expired code (threat 1)."""
     _need("sandbox.connector.sync.enroll", "enroll")
@@ -179,7 +179,7 @@ def test_code_expired_refused(tmp_path, key_home):
             enroll(srv.base_url, "EXPIRED-CODE", "fp-abc")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_code_brute_force_rate_limited(tmp_path, key_home):
     """Client maps 429 to EnrollError on rate limit (threat 1)."""
     _need("sandbox.connector.sync.enroll", "enroll")
@@ -191,7 +191,7 @@ def test_code_brute_force_rate_limited(tmp_path, key_home):
             enroll(srv.base_url, "WRONG-CODE", "fp-abc")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_code_named_operator_fresh_session(tmp_path, key_home):
     """Client maps 403 to EnrollError when operator does not match (threat 1)."""
     _need("sandbox.connector.sync.enroll", "enroll")
@@ -203,7 +203,7 @@ def test_code_named_operator_fresh_session(tmp_path, key_home):
             enroll(srv.base_url, "WRONG-OPERATOR-CODE", "fp-abc")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_posting_hash_as_code_refused(tmp_path, key_home):
     """Posting the stored hash instead of the code itself is refused (D1.2).
 
@@ -226,7 +226,7 @@ def test_posting_hash_as_code_refused(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_missing_expect_fingerprint_refused(tmp_path, key_home):
     """enroll without --expect-fingerprint is refused (threat 2)."""
     _need("sandbox.connector.sync.enroll", "enroll")
@@ -235,7 +235,7 @@ def test_missing_expect_fingerprint_refused(tmp_path, key_home):
         enroll("https://fake.invalid", "CODE", None)  # type: ignore[arg-type]
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_fingerprint_mismatch_aborts_writes_nothing(tmp_path, key_home):
     """A fingerprint mismatch aborts and writes nothing (threat 2)."""
     _need("sandbox.connector.sync.enroll", "enroll")
@@ -256,7 +256,7 @@ def test_fingerprint_mismatch_aborts_writes_nothing(tmp_path, key_home):
     assert after_sync == before_sync, "sync state written despite fingerprint mismatch"
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_no_tty_no_interactive_accept(tmp_path, key_home):
     """With no TTY there is no interactive accept (threat 2)."""
     _need("sandbox.connector.sync.enroll", "enroll")
@@ -346,7 +346,7 @@ def _device_tool_case(case: str, lay, kh: Path, device_dir: Path):
     raise AssertionError(case)
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 @pytest.mark.parametrize("case", DEVICE_KEY_DENY_CASES)
 def test_device_key_denied_every_tool(tmp_path, monkeypatch, case):
     """Device key in key home device/ is denied for every tool (threat 3)."""
@@ -363,7 +363,7 @@ def test_device_key_denied_every_tool(tmp_path, monkeypatch, case):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_assertion_replay_refused(tmp_path, key_home):
     """Client maps 401 with iat_expired from server (threat 4, iat 2 min)."""
     _need("sandbox.connector.sync.enroll", "request_token")
@@ -381,7 +381,7 @@ def test_assertion_replay_refused(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_device_a_project_b_gets_404(tmp_path, key_home):
     """Client maps 404 from server for wrong project (threat 5)."""
     _need("sandbox.connector.sync.enroll", "request_token")
@@ -399,7 +399,7 @@ def test_device_a_project_b_gets_404(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_revocation_401_keeps_last_bundle(tmp_path, key_home):
     """A revoked device gets 401; connector keeps last bundle (client behaviour)."""
     _need("sandbox.connector.sync.state", "last_valid_bundle")
@@ -429,7 +429,7 @@ def test_revocation_401_keeps_last_bundle(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_sticky_delete_sync_state_keeps_last_bundle(tmp_path, key_home):
     """Deleting sync state: last bundle from policy_history kept (threat 26)."""
     _need("sandbox.connector.sync.state", "is_managed")
@@ -457,7 +457,7 @@ def test_sticky_delete_sync_state_keeps_last_bundle(tmp_path, key_home):
     assert bundle is not None
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_sticky_no_fallback_to_standalone(tmp_path, key_home):
     """A managed workspace never falls back to standalone policy (threat 26)."""
     _need("sandbox.connector.sync.state", "is_managed")
@@ -478,7 +478,7 @@ def test_sticky_no_fallback_to_standalone(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_locked_when_bundle_and_history_gone(tmp_path, key_home):
     """Delete sync state AND policy_history -> locked (threat 26)."""
     _need("sandbox.connector.sync.state", "is_locked")
@@ -504,7 +504,7 @@ def test_locked_when_bundle_and_history_gone(tmp_path, key_home):
     assert is_locked(lay)
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_locked_reads_hit_non_removable_protections(tmp_path, key_home):
     """Locked reads still go through non-removable protections (N7)."""
     _need("sandbox.connector.sync.state", "is_locked")
@@ -523,7 +523,7 @@ def test_locked_reads_hit_non_removable_protections(tmp_path, key_home):
     assert decision not in (None, "allow"), "locked mode allowed a read of a protected path"
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_locked_denies_writes(tmp_path, key_home):
     """Locked mode denies all writes except reads inside the root (N7)."""
     _need("sandbox.connector.sync.state", "is_locked")
@@ -547,7 +547,7 @@ def test_locked_denies_writes(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_local_unenroll_refused(tmp_path, key_home):
     """Local two-reviewer un-enroll is refused; only quorum-signed decision (threat 34)."""
     _need("sandbox.connector.sync.enroll", "unenroll")
@@ -564,7 +564,7 @@ def test_local_unenroll_refused(tmp_path, key_home):
         unenroll(lay, None)
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_forged_unenroll_decision_refused(tmp_path, key_home):
     """A forged decision file is refused (threat 34)."""
     _need("sandbox.connector.sync.enroll", "unenroll")
@@ -598,7 +598,7 @@ def test_forged_unenroll_decision_refused(tmp_path, key_home):
         unenroll(lay, str(forged))
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_unenroll_f1_field_set(tmp_path, key_home):
     """The unenroll decision has the fixed field set from F1 (threat 34)."""
     _need("sandbox.connector.sync.enroll", "UNENROLL_FIELDS")
@@ -608,7 +608,7 @@ def test_unenroll_f1_field_set(tmp_path, key_home):
     assert UNENROLL_FIELDS == expected
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_old_unenroll_file_after_reenroll_refused(tmp_path, key_home):
     """Re-enroll gives a new device_id; old un-enroll file is refused (F1)."""
     _need("sandbox.connector.sync.enroll", "unenroll")
@@ -652,7 +652,7 @@ def test_old_unenroll_file_after_reenroll_refused(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_sync_does_not_repin_deleted_registry(tmp_path, key_home):
     """After pinned registry is deleted, sync does not re-pin (F2)."""
     _need("sandbox.connector.sync.state", "pinned_root")
@@ -668,7 +668,7 @@ def test_sync_does_not_repin_deleted_registry(tmp_path, key_home):
     assert pinned_root(lay) is None
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_sync_refuses_bundle_without_pinned_root(tmp_path, key_home):
     """Until a pinned root exists, bundles and remote approvals are refused (F2)."""
     _need("sandbox.connector.sync.state", "pinned_root")
@@ -692,7 +692,7 @@ ENROLL_SHELL_FORMS = [
 ]
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 @pytest.mark.parametrize("command", ENROLL_SHELL_FORMS)
 def test_enroll_unenroll_sync_denied_through_shell(tmp_path, key_home, command):
     """sandbox enroll, unenroll, sync denied through the same forms as approve (threat 37)."""
@@ -706,7 +706,7 @@ def test_enroll_unenroll_sync_denied_through_shell(tmp_path, key_home, command):
     assert decision == "deny", f"sandbox {command.split()[1]} was not denied: {decision}"
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_reenroll_different_fingerprint_refused(tmp_path, key_home):
     """Re-enroll with a different fingerprint than the pinned root is refused (threat 37)."""
     _need("sandbox.connector.sync.enroll", "enroll")
@@ -729,7 +729,7 @@ def test_reenroll_different_fingerprint_refused(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T8Pending)
+
 def test_unenrolled_workspace_behaves_as_standalone(tmp_path, key_home):
     """An unenrolled workspace (no managed marker) behaves exactly as today (D7.4)."""
     _need("sandbox.connector.sync.state", "is_managed")
