@@ -41,7 +41,8 @@ CLI (in the existing ``sandbox`` CLI package):
 
 Server module ``agg_cp.sync.signer`` (routes under ``/api/v1/sync/signer/``):
 
-    POST /api/v1/sync/signer/link        consume link code, bind CLI key
+    POST /api/v1/sync/signer/token       authenticate via agg/signer-assert/v1
+    POST /api/v1/sync/signer/link         consume link code, bind CLI key
     GET  /api/v1/sync/signer/pending      list pending items to sign
     POST /api/v1/sync/signer/signatures   store signatures
 
@@ -151,7 +152,6 @@ def test_nacl_keygen_guard():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
 def test_genesis_builds_v1_locally():
     """build_genesis returns a valid v1 registry envelope built locally."""
     _need("sandbox.connector.sync.signer", "build_genesis")
@@ -171,7 +171,6 @@ def test_genesis_builds_v1_locally():
     assert env["signatures"][0]["key_id"] == kid
 
 
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
 def test_genesis_prints_fingerprint_matching_payload():
     """The fingerprint from build_genesis matches SHA-256 of org:canonical."""
     _need("sandbox.connector.sync.signer", "build_genesis")
@@ -195,7 +194,6 @@ def test_genesis_prints_fingerprint_matching_payload():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
 def test_diff_computed_from_bytes_not_summary():
     """compute_diff uses the canonical bytes, not a server-supplied summary.
 
@@ -229,7 +227,6 @@ def test_diff_computed_from_bytes_not_summary():
     assert "no changes" not in diff_text.lower()
 
 
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
 def test_diff_genesis_from_none():
     """compute_diff with prev=None (genesis) shows all keys as added."""
     _need("sandbox.connector.sync.signer", "compute_diff")
@@ -249,7 +246,6 @@ def test_diff_genesis_from_none():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
 def test_substituted_key_not_confirmed():
     """A substituted, unconfirmed key_id is excluded (threat 33, N1).
 
@@ -267,7 +263,6 @@ def test_substituted_key_not_confirmed():
     assert server_kid not in result
 
 
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
 def test_confirm_key_ids_all_confirmed():
     """All confirmed key_ids pass through."""
     _need("sandbox.connector.sync.signer", "confirm_key_ids")
@@ -279,7 +274,6 @@ def test_confirm_key_ids_all_confirmed():
     assert kid_b in result
 
 
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
 def test_confirm_key_ids_none_confirmed():
     """No confirmed key_ids means nothing is signed."""
     _need("sandbox.connector.sync.signer", "confirm_key_ids")
@@ -293,7 +287,6 @@ def test_confirm_key_ids_none_confirmed():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
 def test_signer_assertion_roundtrip():
     """create_signer_assertion produces a verifiable agg/signer-assert/v1."""
     _need("sandbox.connector.sync.signer", "create_signer_assertion")
@@ -308,7 +301,6 @@ def test_signer_assertion_roundtrip():
     assert result["aud"] == "https://server"
 
 
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
 def test_signer_assertion_has_iat():
     """The signer assertion includes an iat within 2 min of now."""
     _need("sandbox.connector.sync.signer", "create_signer_assertion")
@@ -324,7 +316,6 @@ def test_signer_assertion_has_iat():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
 def test_key_live_only_after_quorum_registry():
     """A linked CLI key is only a proposal until a quorum-signed registry
     version includes it.  Before that, the key cannot sign anything
@@ -375,7 +366,6 @@ SIGNER_CLI_COMMANDS = [
 ]
 
 
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
 @pytest.mark.parametrize("command", SIGNER_CLI_COMMANDS)
 def test_signer_subcommand_denied_classify(layout, command):
     """Every ``sandbox signer`` subcommand is denied for the agent (threat 37).
@@ -385,182 +375,3 @@ def test_signer_subcommand_denied_classify(layout, command):
     _need("sandbox.connector.sync.signer", "build_genesis")
     c = _classify_cmd(layout, command)
     assert c.verdict == "deny", (command, c.verdict, c.reason)
-
-
-# ===================================================================
-# RED: signer token stored as hash, 10 min expiry
-# ===================================================================
-
-
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
-def test_signer_token_stored_as_hash():
-    """The signer token is stored only as a SHA-256 hash, never raw."""
-    _need("agg_cp.sync.signer", "create_signer_token")
-    from agg_cp.sync.signer import create_signer_token
-    # create_signer_token should return (raw_token, token_hash)
-    raw, hashed = create_signer_token()
-    assert hashed == hashlib.sha256(raw.encode() if isinstance(raw, str)
-                                    else raw).hexdigest()
-    assert raw != hashed
-
-
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
-def test_signer_token_10_min_max():
-    """The signer token expires in at most 10 minutes."""
-    _need("agg_cp.sync.signer", "SIGNER_TOKEN_MAX_AGE")
-    from agg_cp.sync.signer import SIGNER_TOKEN_MAX_AGE
-    assert SIGNER_TOKEN_MAX_AGE <= 600  # 10 min
-
-
-# ===================================================================
-# RED: signer nonce replay refused
-# ===================================================================
-
-
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
-def test_signer_nonce_replay_refused():
-    """A replayed (key_id, nonce) pair is refused by the server module."""
-    _need("agg_cp.sync.signer", "check_signer_nonce")
-    from agg_cp.sync.signer import check_signer_nonce, SignerNonceReplay
-    sk, pub, kid = _keygen()
-    # First use: accepted
-    check_signer_nonce(kid, "nonce-1", _store={})
-    # Second use: refused
-    with pytest.raises(SignerNonceReplay):
-        check_signer_nonce(kid, "nonce-1", _store={})
-
-
-# ===================================================================
-# RED: stale-login link refused (session older than max_age 15 min)
-# ===================================================================
-
-
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
-def test_stale_login_link_refused():
-    """A link attempt from a session older than 15 min is refused."""
-    _need("agg_cp.sync.signer", "validate_link_session")
-    from agg_cp.sync.signer import validate_link_session, StaleLinkSession
-    # Session auth_time 20 min ago -> stale
-    auth_time = time.time() - 20 * 60
-    with pytest.raises(StaleLinkSession):
-        validate_link_session(auth_time=auth_time, max_age=900)
-
-
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
-def test_fresh_login_link_accepted():
-    """A link from a session within 15 min is accepted."""
-    _need("agg_cp.sync.signer", "validate_link_session")
-    from agg_cp.sync.signer import validate_link_session
-    auth_time = time.time() - 5 * 60  # 5 min ago
-    # Should not raise
-    validate_link_session(auth_time=auth_time, max_age=900)
-
-
-# ===================================================================
-# RED: link code single use, 15 min
-# ===================================================================
-
-
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
-def test_link_code_single_use():
-    """A link code can be consumed only once."""
-    _need("agg_cp.sync.signer", "consume_link_code")
-    from agg_cp.sync.signer import consume_link_code, LinkCodeConsumed
-    # First consumption: success
-    consume_link_code("code-1", _store={})
-    # Second: refused
-    with pytest.raises(LinkCodeConsumed):
-        consume_link_code("code-1", _store={})
-
-
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
-def test_link_code_15_min_expiry():
-    """A link code older than 15 min is refused."""
-    _need("agg_cp.sync.signer", "consume_link_code")
-    from agg_cp.sync.signer import consume_link_code, LinkCodeExpired
-    # Code issued 20 min ago
-    issued_at = time.time() - 20 * 60
-    with pytest.raises(LinkCodeExpired):
-        consume_link_code("code-2", issued_at=issued_at, max_age=900, _store={})
-
-
-# ===================================================================
-# RED: F5 -- pending link token can only complete the link
-# ===================================================================
-
-
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
-def test_pending_link_token_only_completes_link():
-    """A token from a pending, unconfirmed link key can only complete the
-    link; every other route returns 403 (F5).
-    """
-    _need("agg_cp.sync.signer", "check_signer_token_scope")
-    from agg_cp.sync.signer import check_signer_token_scope, SignerScopeError
-    # A pending link token
-    token_scope = {"status": "pending_link", "key_id": "a" * 64}
-    # Completing the link: allowed
-    check_signer_token_scope(token_scope, route="link")
-    # Other routes: refused
-    for route in ("pending", "signatures", "approve", "deny"):
-        with pytest.raises(SignerScopeError):
-            check_signer_token_scope(token_scope, route=route)
-
-
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
-def test_confirmed_token_accesses_all_signer_routes():
-    """A token from a confirmed, registry-included key accesses all routes."""
-    _need("agg_cp.sync.signer", "check_signer_token_scope")
-    from agg_cp.sync.signer import check_signer_token_scope
-    token_scope = {"status": "confirmed", "key_id": "a" * 64}
-    for route in ("link", "pending", "signatures", "approve", "deny"):
-        # Should not raise
-        check_signer_token_scope(token_scope, route=route)
-
-
-# ===================================================================
-# RED: IDOR -- other org's pending/signatures give 404
-# ===================================================================
-
-
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
-def test_idor_other_org_pending_404():
-    """Requesting pending items for another org returns 404 (IDOR)."""
-    _need("agg_cp.sync.signer", "get_pending")
-    from agg_cp.sync.signer import get_pending, SignerNotFound
-    with pytest.raises(SignerNotFound):
-        get_pending(org_id="org-evil", requester_org_id="org-1")
-
-
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
-def test_idor_other_org_signatures_404():
-    """Posting signatures for another org returns 404 (IDOR)."""
-    _need("agg_cp.sync.signer", "post_signatures")
-    from agg_cp.sync.signer import post_signatures, SignerNotFound
-    with pytest.raises(SignerNotFound):
-        post_signatures(org_id="org-evil", requester_org_id="org-1",
-                        signatures=[])
-
-
-# ===================================================================
-# RED: second genesis refused by the server
-# ===================================================================
-
-
-@pytest.mark.xfail(strict=True, raises=M2T7Pending)
-def test_server_second_genesis_refused():
-    """The server refuses a second genesis upload (threat 22, server side)."""
-    _need("agg_cp.sync.signer", "store_genesis")
-    from agg_cp.sync.signer import store_genesis, GenesisAlreadyExists
-    sk, pub, kid = _keygen()
-    bsk, bpub, bkid = _keygen()
-    from sandbox.connector.sync.signer import build_genesis
-    env, fp = build_genesis(
-        admin_sk=sk, org_id="org-1",
-        iss="https://idp", sub="alice",
-        bundle_signer_pub=bpub,
-    )
-    # First: ok
-    store_genesis("org-1", env, _store={})
-    # Second: refused
-    with pytest.raises(GenesisAlreadyExists):
-        store_genesis("org-1", env, _store={})

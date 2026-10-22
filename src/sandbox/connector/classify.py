@@ -62,7 +62,8 @@ _KEY_SEQS: tuple[tuple[str, ...], ...] = (
 _AGENT_CONFIG_GLOBS = (".mcp.json", ".claude/settings*.json")
 # Approver CLI subcommands: approvals come from a human's terminal only.
 _APPROVER_SUBCOMMANDS = frozenset(
-    {"approve", "deny", "watch", "grant", "serve", "approve-change", "keys"}
+    {"approve", "deny", "watch", "grant", "serve", "approve-change", "keys",
+     "signer", "enroll", "unenroll", "sync"}
 )
 # `2>&1`, `>/dev/null`: redirects that do not write to a file.
 _BENIGN_REDIRECT_RE = re.compile(
