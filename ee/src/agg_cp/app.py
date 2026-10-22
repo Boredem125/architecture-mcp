@@ -192,6 +192,14 @@ def create_app(
         for _r in _signer_r.routes:
             app.router.routes.append(_r)
 
+        from .sync.bundles import bundle_router
+
+        _bundle_r = bundle_router(
+            db_url=settings.db_url, clock=actual_clock
+        )
+        for _r in _bundle_r.routes:
+            app.router.routes.append(_r)
+
     @app.get("/health")
     async def health() -> JSONResponse:
         return JSONResponse({"status": "ok"})

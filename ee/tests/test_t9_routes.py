@@ -63,13 +63,19 @@ _M2_T7_T8_ROUTES = frozenset({
     ("POST", "/api/v1/admin/devices/revoke"),
 })
 
+# M2 T9 named exception (M2_BASELINE.md section 3)
+_M2_T9_ROUTES = frozenset({
+    ("GET", "/api/v1/sync/bundle"),
+    ("POST", "/api/v1/admin/bundles"),
+})
+
 # Infrastructure routes
 _INFRA_ROUTES = frozenset({
     ("GET", "/health"),
     ("GET", "/ready"),
 })
 
-EXPECTED_ROUTES = _AUTH_PRE_AUTH | _AUTH_SESSION | _T9_ROUTES | _M2_T7_T8_ROUTES | _INFRA_ROUTES
+EXPECTED_ROUTES = _AUTH_PRE_AUTH | _AUTH_SESSION | _T9_ROUTES | _M2_T7_T8_ROUTES | _M2_T9_ROUTES | _INFRA_ROUTES
 
 
 # ---------------------------------------------------------------------------

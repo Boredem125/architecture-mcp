@@ -76,6 +76,8 @@ All 412 ee tests pass on CI Linux with Postgres.
 | `ee/tests/test_t10_multiworker.py` (setup) | T2 | `os.setsid` replaced with portable process group | security |
 | `ee/tests/test_m1_t13_review.py` (setup) | T2 | Symlink test skips cleanly on Windows without privilege | security |
 | `ee/tests/test_t9_routes.py::test_frozen_route_set` | T7, T8 | the 10 new M2 routes added to the expected set, nothing removed | security (T7/T8 review) |
+| `ee/tests/test_t9_routes.py::test_frozen_route_set` | T9 | 2 bundle routes added to `_M2_T9_ROUTES` and included in `EXPECTED_ROUTES`, nothing removed | security (T9 review) |
+| `ee/tests/test_m2_t9_bundles.py` (3 admin-create tests) | T9 | autouse `_bundle_signer_key_env` fixture added (setup-only, provides `AGG_BUNDLE_SIGNER_KEY_FILE`); assertions unchanged | security (T9 review, F2) |
 
 Any other frozen test that fails: stop, list it, security decides.
 
@@ -101,6 +103,8 @@ Each task's new tests are committed as strict xfail (`raises=M2T<n>Pending`) bef
 | T8 | `ee/tests/test_m2_t8_enroll.py` | 25 | 23 (markers removed) | 2 | tests-first (T8) |
 | T9 | `tests/security/test_m2_t9_bundles.py` | 39 | 36 | 3 | tests-first (T9) |
 | T9 | `ee/tests/test_m2_t9_bundles.py` | 11 | 9 | 2 | tests-first (T9) |
+| T9 review | `tests/security/test_m2_t9_review.py` | 14 | 14 | 0 | security review (F1/F3/F4); 5 F1 rewritten to use real hook, 5 new (a-e) |
+| T9 review | `ee/tests/test_m2_t9_bundles.py` (F2 500 test) | 1 | 1 | 0 | security review (F2) |
 | T10 | `tests/security/test_m2_t10_sync.py` | 21 | 10 | 11 | tests-first (T10) |
 
 M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17, T6=48, T7=48, T8=52, T9=45, T10=10. Total RED: 239.

@@ -362,7 +362,6 @@ def test_guard_policy_versions_meet_exists():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_forged_bundle_bad_signature_refused(tmp_path, key_home):
     """A bundle signed by an untrusted key is refused (threat 6)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -377,7 +376,6 @@ def test_forged_bundle_bad_signature_refused(tmp_path, key_home):
                          org_id="org-1", project_id="proj-1")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_forged_bundle_flipped_byte_refused(tmp_path, key_home):
     """A bundle with a flipped byte in the payload is refused (threat 6)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -392,7 +390,6 @@ def test_forged_bundle_flipped_byte_refused(tmp_path, key_home):
                          org_id="org-1", project_id="proj-1")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_forged_bundle_embedded_key_ignored(tmp_path, key_home):
     """A key carried inside the bundle payload is ignored (threat 6, strict parse)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -408,7 +405,6 @@ def test_forged_bundle_embedded_key_ignored(tmp_path, key_home):
                          org_id="org-1", project_id="proj-1")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_bundle_signer_not_in_registry_refused(tmp_path, key_home):
     """A bundle signed by a key that is not the registry's bundle_signer is
     refused, even when the caller passes that key's public key (D2.2)."""
@@ -429,7 +425,6 @@ def test_bundle_signer_not_in_registry_refused(tmp_path, key_home):
                          org_id="org-1", project_id="proj-1")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_one_key_two_user_ids_counts_once(tmp_path, key_home):
     """Two approvals signed by one key under two user_ids count as one user;
     the user comes from the registry entry for key_id, not the payload."""
@@ -472,7 +467,6 @@ def _apply_first_bundle(lay, registry, bsk, bpub, admin_sks, *,
                             org_id="org-1", project_id="proj-1")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_bundle_sequence_equal_refused(tmp_path, key_home):
     """A bundle with sequence == current is refused (threat 7)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -487,7 +481,6 @@ def test_bundle_sequence_equal_refused(tmp_path, key_home):
                          org_id="org-1", project_id="proj-1")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_bundle_sequence_lower_refused(tmp_path, key_home):
     """A bundle with sequence < current is refused (threat 7)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -502,7 +495,6 @@ def test_bundle_sequence_lower_refused(tmp_path, key_home):
                          org_id="org-1", project_id="proj-1")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_bundle_stale_base_sequence_refused(tmp_path, key_home):
     """A bundle with base_sequence != current sequence is refused (threat 7)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -522,7 +514,6 @@ def test_bundle_stale_base_sequence_refused(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_bundle_sig_v_zero_refused(tmp_path, key_home):
     """sig_v: 0 is refused (threat 8)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -537,7 +528,6 @@ def test_bundle_sig_v_zero_refused(tmp_path, key_home):
                          org_id="org-1", project_id="proj-1")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_bundle_alg_none_refused(tmp_path, key_home):
     """alg: none is refused (threat 8)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -557,7 +547,6 @@ def test_bundle_alg_none_refused(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_server_signed_loosening_no_approvals_refused(tmp_path, key_home):
     """A loosening bundle with no change approvals is refused (threat 9)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -576,7 +565,6 @@ def test_server_signed_loosening_no_approvals_refused(tmp_path, key_home):
                          org_id="org-1", project_id="proj-1")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_server_loosening_one_approval_refused(tmp_path, key_home):
     """A loosening bundle with only one CLI approval is refused (threat 9)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -597,7 +585,6 @@ def test_server_loosening_one_approval_refused(tmp_path, key_home):
                          org_id="org-1", project_id="proj-1")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_tightening_bundle_one_approval_accepted(tmp_path, key_home):
     """A tightening-only bundle needs just one CLI approval (D2.3)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -623,7 +610,6 @@ def test_tightening_bundle_one_approval_accepted(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_bundle_expired_stays_enforced(tmp_path, key_home):
     """An expired bundle stays enforced and alerts policy_stale (threat 10)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -645,7 +631,6 @@ def test_bundle_expired_stays_enforced(tmp_path, key_home):
     assert result.sequence == 1
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_bundle_rejected_last_valid_kept(tmp_path, key_home):
     """An invalid bundle is refused; last valid bundle kept (threat 10)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -671,7 +656,6 @@ def test_bundle_rejected_last_valid_kept(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_oversized_bundle_refused(tmp_path, key_home):
     """A bundle over 1 MiB is refused (threat 11)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -688,7 +672,6 @@ def test_oversized_bundle_refused(tmp_path, key_home):
                          org_id="org-1", project_id="proj-1")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_malformed_bundle_unknown_fields_refused(tmp_path, key_home):
     """A bundle with unknown fields is refused (threat 11, strict parse)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -708,7 +691,6 @@ def test_malformed_bundle_unknown_fields_refused(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_property_enforced_never_looser_bundle_sequences(tmp_path, key_home):
     """Property: enforced is never looser than the last authorised base over
     random bundle sequences (D2.3, S4, threat 24).
@@ -815,7 +797,6 @@ def test_property_enforced_never_looser_bundle_sequences(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_loosening_governance_section(tmp_path, key_home):
     """Removing a governance clause is loosening (threat 25, D2.4)."""
     _need("sandbox.connector.sync.bundles", "loosened")
@@ -829,7 +810,6 @@ def test_loosening_governance_section(tmp_path, key_home):
     assert len(result["governance_policy"]) > 0
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_loosening_governance_action_weakened(tmp_path, key_home):
     """Weakening a governance clause from deny to escalate is loosening (D2.4)."""
     _need("sandbox.connector.sync.bundles", "loosened")
@@ -845,7 +825,6 @@ def test_loosening_governance_action_weakened(tmp_path, key_home):
     assert len(result["governance_policy"]) > 0
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_loosening_mcp_section(tmp_path, key_home):
     """Adding an MCP server or tool is loosening (threat 25, D2.4)."""
     _need("sandbox.connector.sync.bundles", "loosened")
@@ -859,7 +838,6 @@ def test_loosening_mcp_section(tmp_path, key_home):
     assert len(result["mcp_policy"]) > 0
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_loosening_approval_section(tmp_path, key_home):
     """local_fallback going false to true is loosening (threat 25, D2.4)."""
     _need("sandbox.connector.sync.bundles", "loosened")
@@ -875,7 +853,6 @@ def test_loosening_approval_section(tmp_path, key_home):
     assert len(result["approval"]) > 0
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_loosening_allow_requester_section(tmp_path, key_home):
     """allow_requester going false to true is loosening (D2.4)."""
     _need("sandbox.connector.sync.bundles", "loosened")
@@ -891,7 +868,6 @@ def test_loosening_allow_requester_section(tmp_path, key_home):
     assert len(result["approval"]) > 0
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_prod_to_nonprod_is_loosening(tmp_path, key_home):
     """Absent environment (= prod) to staging is loosening (D2.4)."""
     _need("sandbox.connector.sync.bundles", "loosened")
@@ -903,7 +879,6 @@ def test_prod_to_nonprod_is_loosening(tmp_path, key_home):
     assert len(result["environment"]) > 0
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_loosening_folder_section(tmp_path, key_home):
     """Loosening the folder policy section is detected (threat 25)."""
     _need("sandbox.connector.sync.bundles", "loosened")
@@ -924,7 +899,6 @@ def test_loosening_folder_section(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_cross_project_bundle_refused(tmp_path, key_home):
     """A bundle for project B is refused on project A (threat 29)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -938,7 +912,6 @@ def test_cross_project_bundle_refused(tmp_path, key_home):
                          org_id="org-1", project_id="proj-A")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_cross_org_bundle_refused(tmp_path, key_home):
     """A bundle for org B is refused on org A (threat 29)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -957,7 +930,6 @@ def test_cross_org_bundle_refused(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_hand_edit_loosening_folder_no_effect(tmp_path, key_home):
     """A hand edit that loosens the folder section has no effect (N5)."""
     _need("sandbox.connector.sync.bundles", "meet_bundle")
@@ -972,7 +944,6 @@ def test_hand_edit_loosening_folder_no_effect(tmp_path, key_home):
     assert enforced["folder_policy"]["shell"]["blocklist_action"] == "deny"
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_hand_edit_loosening_governance_no_effect(tmp_path, key_home):
     """A hand edit that removes a governance clause has no effect (N5)."""
     _need("sandbox.connector.sync.bundles", "meet_bundle")
@@ -985,7 +956,6 @@ def test_hand_edit_loosening_governance_no_effect(tmp_path, key_home):
     assert len(enforced["governance_policy"]["clauses"]) == 1
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_hand_edit_loosening_mcp_no_effect(tmp_path, key_home):
     """A hand edit that adds an MCP server has no effect (N5)."""
     _need("sandbox.connector.sync.bundles", "meet_bundle")
@@ -998,7 +968,6 @@ def test_hand_edit_loosening_mcp_no_effect(tmp_path, key_home):
     assert len(enforced["mcp_policy"]["servers"]) == 0
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_hand_edit_loosening_approval_no_effect(tmp_path, key_home):
     """A hand edit that sets local_fallback true has no effect (N5)."""
     _need("sandbox.connector.sync.bundles", "meet_bundle")
@@ -1013,7 +982,6 @@ def test_hand_edit_loosening_approval_no_effect(tmp_path, key_home):
     assert enforced["approval"]["local_fallback"] is False
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_hand_edit_loosening_environment_no_effect(tmp_path, key_home):
     """A hand edit that changes environment from prod has no effect (N5)."""
     _need("sandbox.connector.sync.bundles", "meet_bundle")
@@ -1030,7 +998,6 @@ def test_hand_edit_loosening_environment_no_effect(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_deny_all_first_base_needs_two_approvals(tmp_path, key_home):
     """No local policy -> deny-all base; first bundle needs 2 CLI approvals (N3)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -1046,7 +1013,6 @@ def test_deny_all_first_base_needs_two_approvals(tmp_path, key_home):
                          org_id="org-1", project_id="proj-1")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_deny_all_first_base_two_approvals_accepted(tmp_path, key_home):
     """First bundle with 2 CLI approvals succeeds (N3)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -1070,7 +1036,6 @@ def test_deny_all_first_base_two_approvals_accepted(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_bundle_not_before_future_refused(tmp_path, key_home):
     """A bundle with not_before in the future is refused (D2.5)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
@@ -1084,7 +1049,6 @@ def test_bundle_not_before_future_refused(tmp_path, key_home):
                          org_id="org-1", project_id="proj-1")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_bundle_older_registry_version_refused(tmp_path, key_home):
     """A bundle referencing an older registry version is refused (D2.5)."""
     _need("sandbox.connector.sync.bundles", "verify_and_apply")
