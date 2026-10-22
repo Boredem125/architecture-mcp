@@ -133,6 +133,22 @@ def last_valid_bundle(layout) -> dict[str, Any] | None:
     return None
 
 
+def current_sequence(layout) -> int | None:
+    """The sequence number of the last valid bundle, or None if no bundle."""
+    lvb = last_valid_bundle(layout)
+    if lvb is None:
+        return None
+    return lvb.get("payload", {}).get("sequence")
+
+
+def current_environment(layout) -> str:
+    """The environment from the last valid bundle; absent = 'prod' (D2.4)."""
+    lvb = last_valid_bundle(layout)
+    if lvb is None:
+        return "prod"
+    return lvb.get("payload", {}).get("environment", "prod")
+
+
 def can_accept_bundles(layout) -> bool:
     """True if the workspace has a pinned root (F2).
 

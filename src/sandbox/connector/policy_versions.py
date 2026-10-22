@@ -420,6 +420,133 @@ def current_version(layout: FolderLayout) -> dict[str, Any]:
     return version_info(layout)
 
 
+def _deny_all_folder() -> dict[str, Any]:
+    """A deny-all folder policy dict for fail-closed enforcement."""
+    return {
+        "shell": {"blocklist_action": "deny"},
+        "triggers": {"shell": "deny", "write_outside": "deny",
+                     "network": "deny", "read_outside": "deny"},
+        "unknown_tool_action": "deny",
+    }
+
+
+def _bundle_was_expected(layout: FolderLayout) -> bool:
+    """True if a bundle was previously applied (history or bundle.json present)."""
+    sync_dir = layout.root / ".sandbox" / "state" / "sync"
+    try:
+        if (sync_dir / "bundle.json").exists():
+            return True
+    except OSError:
+        pass
+    hist = layout.root / ".sandbox" / "policy_history"
+    try:
+        if hist.is_dir():
+            for f in hist.iterdir():
+                if f.name.startswith("bundle_") and f.name.endswith(".json"):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def _verified_bundle_payload(layout: FolderLayout) -> dict[str, Any] | None:
+    """Return the verified approved payload from the signed bundle envelope.
+
+    The stored envelope (from ``policy_history/`` or ``bundle.json``) is
+    re-verified against the locally pinned registry's bundle_signer every
+    time.  No hash-file fallback: verification requires the pinned
+    registry (``registry.json`` + ``pinned_root.json``).
+
+    Returns the verified payload dict, or None if no bundle, the bundle
+    is corrupt, or verification fails.
+    """
+    import hashlib as _hl
+
+    sync_dir = layout.root / ".sandbox" / "state" / "sync"
+    hist_dir = layout.root / ".sandbox" / "policy_history"
+
+    # Find the latest bundle envelope from policy_history (immutable copy).
+    # Fall back to bundle.json in sync dir if history is empty.
+    envelope = _read_latest_history_bundle(hist_dir)
+    if envelope is None:
+        try:
+            bf = sync_dir / "bundle.json"
+            if not bf.exists():
+                return None
+            envelope = json.loads(bf.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    payload = envelope.get("payload")
+    if not isinstance(payload, dict):
+        return None
+
+    # Re-verify the envelope against the pinned registry (the only path).
+    registry_file = sync_dir / "registry.json"
+    pinned_file = sync_dir / "pinned_root.json"
+    try:
+        if pinned_file.exists() and registry_file.exists():
+            root_fp = json.loads(
+                pinned_file.read_text(encoding="utf-8")
+            ).get("fingerprint")
+            if root_fp:
+                reg_data = json.loads(
+                    registry_file.read_text(encoding="utf-8")
+                )
+                from sandbox.protocol.registry import verify_chain
+                chain = reg_data if isinstance(reg_data, list) else [reg_data]
+                registry = verify_chain(chain, root_fp)
+                from sandbox.protocol.domains import BUNDLE as _BUNDLE
+                latest_bs = chain[-1].get("payload", {}).get(
+                    "bundle_signer", {}
+                )
+                bs_pub_hex = latest_bs.get("public_key", "")
+                if bs_pub_hex:
+                    bs_pub = bytes.fromhex(bs_pub_hex)
+                    bs_kid = _hl.sha256(bs_pub).hexdigest()
+                    if registry.may_sign(bs_kid, _BUNDLE, "prod"):
+                        from sandbox.connector.sync.bundles import (
+                            _verify_envelope_structure,
+                            _verify_signature,
+                        )
+                        _verify_envelope_structure(envelope)
+                        _verify_signature(envelope, bs_pub)
+                        return payload
+    except Exception:  # noqa: BLE001 -- verification failed; return None
+        pass
+
+    return None
+
+
+def _read_latest_history_bundle(hist_dir: Path) -> dict[str, Any] | None:
+    """Read the latest bundle envelope from policy_history/.
+
+    Returns the parsed envelope dict, or None.  These files are the
+    immutable copies written by verify_and_apply; they survive a hand
+    edit to bundle.json in the sync dir.
+    """
+    try:
+        if not hist_dir.is_dir():
+            return None
+        bundles = sorted(
+            (f for f in hist_dir.iterdir()
+             if f.name.startswith("bundle_") and f.name.endswith(".json")),
+            key=lambda f: f.name,
+            reverse=True,
+        )
+        for b in bundles:
+            try:
+                data = json.loads(b.read_text(encoding="utf-8"))
+                # Must be a signed envelope (has kind, sig_v, payload, signatures)
+                if isinstance(data, dict) and "payload" in data and "signatures" in data:
+                    return data
+            except (OSError, ValueError):
+                continue
+    except OSError:
+        pass
+    return None
+
+
 def enforced_policy(layout: FolderLayout) -> tuple[FolderPolicy, dict[str, Any]]:
     """The policy the gateway must enforce now, and its version info.
 
@@ -433,6 +560,77 @@ def enforced_policy(layout: FolderLayout) -> tuple[FolderPolicy, dict[str, Any]]
         store(layout, effective)
         if materialize is not None:
             store(layout, materialize)
+
+    # F1 (N5): in a managed workspace, ALWAYS enforce
+    # meet(verified_approved_bundle, local_disk_policy).  The on-disk side
+    # reads each section from the operator's local files -- never from
+    # bundle.json (which is re-verified or ignored).  If there is no verified
+    # bundle the approved side is deny-all (N3).
+    try:
+        from sandbox.connector.sync.state import is_managed as _is_managed
+
+        approved = _verified_bundle_payload(layout)
+        if approved is not None:
+            # Verified baseline: build on-disk overlay from local files.
+            disk = folder_content(layout)
+            on_disk: dict[str, Any] = {"folder_policy": effective}
+            gov_ref = disk.get("semantic", {}).get("governance_policy", "")
+            disk_gov = read_governance(layout, gov_ref)
+            on_disk["governance_policy"] = disk_gov if disk_gov is not None else {"clauses": []}
+            disk_env = disk.get("environment")
+            if disk_env is not None:
+                on_disk["environment"] = disk_env
+            # mcp_policy / approval: no separate local file; use approved
+            # so the meet is identity (operator cannot loosen via bundle.json).
+            on_disk["mcp_policy"] = approved.get("mcp_policy", {"servers": []})
+            on_disk["approval"] = approved.get("approval", {})
+
+            from sandbox.connector.sync.bundles import meet_bundle
+
+            enforced_all = meet_bundle(approved, on_disk)
+            effective = enforced_all.get("folder_policy", effective)
+            info["bundle_enforced"] = enforced_all
+        elif _is_managed(layout):
+            # Managed workspace without a verified bundle: approved side
+            # is deny-all (N3).  Set bundle_corrupt when a bundle was
+            # expected (history files or bundle.json present).
+            if _bundle_was_expected(layout):
+                info["bundle_corrupt"] = True
+                audit(layout, {
+                    "event": "bundle_corrupt", "ts": time.time(),
+                    "reason_code": "BUNDLE_CORRUPT",
+                    "reason": "approved bundle missing, unreadable, corrupt "
+                              "or failed verification; enforcing deny-all",
+                })
+            deny_all = _deny_all_folder()
+            deny_all_approved: dict[str, Any] = {
+                "folder_policy": deny_all,
+                "governance_policy": {"clauses": []},
+                "mcp_policy": {"servers": []},
+                "approval": {"local_fallback": False,
+                             "allow_requester": False},
+                "environment": "prod",
+            }
+            # On-disk overlay from local files for the meet.
+            disk = folder_content(layout)
+            on_disk_m: dict[str, Any] = {"folder_policy": effective}
+            gov_ref = disk.get("semantic", {}).get("governance_policy", "")
+            disk_gov = read_governance(layout, gov_ref)
+            on_disk_m["governance_policy"] = disk_gov if disk_gov is not None else {"clauses": []}
+            disk_env = disk.get("environment")
+            if disk_env is not None:
+                on_disk_m["environment"] = disk_env
+            on_disk_m["mcp_policy"] = deny_all_approved["mcp_policy"]
+            on_disk_m["approval"] = deny_all_approved["approval"]
+
+            from sandbox.connector.sync.bundles import meet_bundle
+
+            enforced_all = meet_bundle(deny_all_approved, on_disk_m)
+            effective = enforced_all.get("folder_policy", deny_all)
+            info["bundle_enforced"] = enforced_all
+    except ImportError:
+        pass  # sync module not available; standalone workspace
+
     policy = FolderPolicy.model_validate(effective)
     policy._inject_protections()
     if drifted:

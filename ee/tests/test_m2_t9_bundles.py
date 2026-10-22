@@ -212,7 +212,6 @@ def test_device_tokens_table_exists(pg_url, pg_roles, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_get_bundle_returns_latest(pg_url, pg_roles, app_url, owner_url):
     """GET /api/v1/sync/bundle?after=0 returns 200 with the envelope."""
     _need("agg_cp.sync.bundles", "bundle_router")
@@ -242,7 +241,6 @@ def test_get_bundle_returns_latest(pg_url, pg_roles, app_url, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_get_bundle_204_when_none(pg_url, pg_roles, app_url, owner_url):
     """GET /api/v1/sync/bundle?after=99 returns 204 when no newer bundle."""
     _need("agg_cp.sync.bundles", "bundle_router")
@@ -267,7 +265,6 @@ def test_get_bundle_204_when_none(pg_url, pg_roles, app_url, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_get_bundle_no_auth_401(pg_url, pg_roles, app_url, owner_url):
     """GET /api/v1/sync/bundle without a token returns 401."""
     _need("agg_cp.sync.bundles", "bundle_router")
@@ -279,7 +276,6 @@ def test_get_bundle_no_auth_401(pg_url, pg_roles, app_url, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_get_bundle_bad_token_401(pg_url, pg_roles, app_url, owner_url):
     """GET /api/v1/sync/bundle with an invalid token returns 401."""
     _need("agg_cp.sync.bundles", "bundle_router")
@@ -300,7 +296,6 @@ def test_get_bundle_bad_token_401(pg_url, pg_roles, app_url, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_cross_project_bundle_get_204(pg_url, pg_roles, app_url, owner_url):
     """A device for project A gets 204 for project B bundles (threat 29)."""
     _need("agg_cp.sync.bundles", "bundle_router")
@@ -327,7 +322,6 @@ def test_cross_project_bundle_get_204(pg_url, pg_roles, app_url, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_cross_org_bundle_get_204(pg_url, pg_roles, app_url, owner_url):
     """A device in org A gets 204 for org B bundles (threat 29, RLS)."""
     _need("agg_cp.sync.bundles", "bundle_router")
@@ -361,8 +355,67 @@ def test_cross_org_bundle_get_204(pg_url, pg_roles, app_url, owner_url):
 # ===================================================================
 
 
+@pytest.fixture(autouse=True)
+def _bundle_signer_key_env(tmp_path_factory, monkeypatch):
+    """F2 setup: provide AGG_BUNDLE_SIGNER_KEY_FILE for admin-create tests.
+
+    Writes a hex-encoded Ed25519 seed to a tmp file in the format that
+    ``_load_bundle_signer_key`` in ``ee/src/agg_cp/sync/bundles.py`` reads.
+    Autouse so that existing admin-create tests keep their assertions
+    unchanged (the server signs with this key instead of an ephemeral one).
+
+    Node ids touched (setup-only fixture):
+        test_admin_create_bundle
+        test_admin_create_bundle_no_csrf_403
+        test_admin_bundle_sequence_conflict_409
+    """
+    from nacl.signing import SigningKey as _SK
+    key_dir = tmp_path_factory.mktemp("bundle_signer")
+    key_file = key_dir / "bundle_signer.key"
+    sk = _SK.generate()
+    key_file.write_bytes(bytes(sk).hex().encode("ascii"))
+    monkeypatch.setenv("AGG_BUNDLE_SIGNER_KEY_FILE", str(key_file))
+
+
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
+def test_admin_create_bundle_no_signer_key_500(
+    pg_url, pg_roles, app_url, owner_url, monkeypatch,
+):
+    """F2: POST /api/v1/admin/bundles with no AGG_BUNDLE_SIGNER_KEY_FILE
+    returns 500 {error: bundle_signer_key_not_configured}; no ephemeral
+    key path."""
+    _need("agg_cp.sync.bundles", "bundle_router")
+    monkeypatch.delenv("AGG_BUNDLE_SIGNER_KEY_FILE", raising=False)
+    ensure_at_head(pg_url)
+    org_id = seed_org_with_oidc(owner_url, slug=f"t9nk-{uuid.uuid4().hex[:6]}")
+    admin_id, _ = seed_user(owner_url, org_id)
+    seed_admin_binding(owner_url, org_id, admin_id)
+    project_id = str(uuid.uuid4())
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [str(org_id)])
+        create_project(conn, str(org_id), project_id)
+
+    clock = FakeClock()
+    session_token, csrf_token, _ = seed_session(
+        owner_url, org_id, admin_id, clock=clock
+    )
+    cookie = make_session_cookie(org_id, session_token)
+
+    app, _ = _make_app(pg_url, clock=clock)
+    client = _make_client(app)
+
+    resp = client.post(
+        "/api/v1/admin/bundles",
+        json={"project_id": project_id, "bundle_payload": {},
+              "change_approvals": []},
+        headers={"X-CSRF-Token": csrf_token},
+        cookies={"__Host-agg_session": cookie},
+    )
+    assert resp.status_code == 500
+    assert resp.json().get("error") == "bundle_signer_key_not_configured"
+
+
+@pytest.mark.pg
 def test_admin_create_bundle(pg_url, pg_roles, app_url, owner_url):
     """POST /api/v1/admin/bundles returns 200 {bundle_id, sequence}."""
     _need("agg_cp.sync.bundles", "bundle_router")
@@ -414,7 +467,6 @@ def test_admin_create_bundle(pg_url, pg_roles, app_url, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_admin_create_bundle_no_csrf_403(pg_url, pg_roles, app_url, owner_url):
     """POST /api/v1/admin/bundles without CSRF token returns 403."""
     _need("agg_cp.sync.bundles", "bundle_router")
@@ -447,7 +499,6 @@ def test_admin_create_bundle_no_csrf_403(pg_url, pg_roles, app_url, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T9Pending)
 def test_admin_bundle_sequence_conflict_409(pg_url, pg_roles, app_url, owner_url):
     """POST /api/v1/admin/bundles with existing sequence returns 409."""
     _need("agg_cp.sync.bundles", "bundle_router")

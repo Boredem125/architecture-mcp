@@ -293,6 +293,42 @@ def verify_chain(
         prev_keys = cur_keys
         all_keys.update(cur_keys)
 
+    # Honour bundle_signer field from the LATEST version only (F3).
+    # An earlier version's signer is not in the key map after rotation.
+    latest_bs = envelopes[-1]["payload"].get("bundle_signer")
+    if latest_bs and isinstance(latest_bs, dict):
+        bs_kid = latest_bs.get("key_id", "")
+        bs_pub = latest_bs.get("public_key", "")
+        bs_alg = latest_bs.get("alg", "ed25519")
+        if bs_pub:
+            # Verify key_id == sha256(public_key)
+            expected_kid = hashlib.sha256(
+                bytes.fromhex(bs_pub)
+            ).hexdigest()
+            if bs_kid != expected_kid:
+                raise RegistryError(
+                    f"bundle_signer key_id mismatch: "
+                    f"{bs_kid} != sha256(public_key)"
+                )
+            # F3: bundle_signer key_id must not collide with any admin/cli key
+            if bs_kid in all_keys:
+                raise RegistryError(
+                    f"bundle_signer key_id {bs_kid} collides with "
+                    f"a key in keys"
+                )
+            # Add as a key entry with kind=bundle-signer
+            all_keys[bs_kid] = {
+                "key_id": bs_kid,
+                "public_key": bs_pub,
+                "user_id": "__bundle_signer__",
+                "iss": "",
+                "sub": "",
+                "alg": bs_alg,
+                "kind": "bundle-signer",
+                "roles": [],
+                "added_in": envelopes[-1]["payload"].get("version", 1),
+            }
+
     # Build the Registry object from the latest version
     latest = envelopes[-1]["payload"]
     return Registry(

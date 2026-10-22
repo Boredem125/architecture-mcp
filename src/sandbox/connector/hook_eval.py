@@ -260,6 +260,29 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
     # The approved policy version (or, if the file drifted, the stricter of the
     # approved and on-disk versions). _audit stamps policy_version on records.
     policy, policy_info = enforced_policy(layout)
+
+    # F1 (N5): wire all 5 bundle sections into real decision paths.
+    # bundle_enforced is set by enforced_policy when a verified bundle exists.
+    _bundle_enforced = policy_info.get("bundle_enforced")
+    if _bundle_enforced is not None:
+        # environment: the bundle's environment governs classify and context_rules.
+        # A hand edit that loosens prod to non-prod has no effect (meet_bundle).
+        _be_env = _bundle_enforced.get("environment")
+        policy.environment = _be_env if _be_env is not None else "prod"
+
+        # governance_policy: store the enforced clauses on policy_info so that
+        # _tool_governance can use them (see the governance check below).
+        # The clauses come from meet_bundle (approved + on-disk tightening).
+        policy_info["_enforced_governance"] = _bundle_enforced.get(
+            "governance_policy", {}
+        )
+
+        # approval: make the enforced values available for T12 wiring.
+        # A hand edit enabling local_fallback or allow_requester is ignored.
+        policy_info["_enforced_approval"] = _bundle_enforced.get(
+            "approval", {}
+        )
+
     # ADR 0009: `shell.allow_runners` is honoured only in the approved version of a versioned
     # folder (state approved, or drift where meet() already kept the common entries). An
     # unversioned, unknown or unreadable policy opts nothing in.
@@ -307,6 +330,32 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
         files = _written_this_session(layout, session_id)
         if files:
             result.reason += "; files written this session: " + ", ".join(files)
+
+    # F1 (N5) mcp_policy: when a bundle is enforced, MCP tool calls to a
+    # server not in the enforced set are denied.  The enforced set is the
+    # intersection of approved and on-disk (meet_bundle._meet_mcp), so a
+    # hand edit adding a server has no effect.
+    if (
+        _bundle_enforced is not None
+        and tool_name.startswith("mcp__")
+        and not tool_name.startswith("mcp__sandbox__")
+        and result.verdict != "deny"
+    ):
+        _mcp_servers = _bundle_enforced.get("mcp_policy", {}).get("servers", [])
+        _mcp_server_name = tool_name.split("__", 2)[1] if "__" in tool_name else ""
+        _mcp_allowed_names = {s.get("name") for s in _mcp_servers}
+        if _mcp_server_name not in _mcp_allowed_names:
+            _audit(layout, session_id, {
+                "event": "denied", "tool": tool_name,
+                "reason_code": "MCP_POLICY",
+                "reason": f"MCP server {_mcp_server_name!r} not in "
+                          "the enforced bundle mcp_policy",
+            })
+            return _pre_output("deny", (
+                f"SANDBOX DENIED [MCP_POLICY]: MCP server {_mcp_server_name!r} "
+                "is not in the approved policy bundle. Ask the administrator to "
+                "add it through a signed policy change."
+            ))
 
     # Rate limits: a call over its class limit is denied and not counted.
     if result.verdict != "deny":
@@ -396,10 +445,17 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
     # Governance clauses on non-shell calls (MCP tools, WebFetch). Until now no
     # clause saw them: an allowlisted mcp__stripe__create_refund ran silently.
     # Only raises scrutiny; a hard deny stays a deny.
+    #
+    # F1 (N5) governance_policy: when a bundle is enforced, the enforced
+    # governance clauses (approved clauses that can't be removed or weakened
+    # by a local edit) are checked as a floor.  A deny clause in the approved
+    # bundle stays a deny even if the disk file was edited to remove it.
     money_floor_hit = False
     if result.verdict != "deny" and _is_governed_tool(tool_name):
         gov_violations, gov_deny, unevaluated = _tool_governance(
-            policy, tool_name, tool_input, result.metadata.get("data_tags", ()))
+            policy, tool_name, tool_input, result.metadata.get("data_tags", ()),
+            enforced_governance=policy_info.get("_enforced_governance"),
+        )
         if unevaluated:
             # SEC-23: clauses apply but nothing evaluated them (service down,
             # erroring, timing out, or the evaluation raised). fail_mode is
@@ -534,6 +590,7 @@ def _is_governed_tool(tool_name: str) -> bool:
 
 def _tool_governance(
     policy: Any, tool_name: str, tool_input: dict, extra_tags: Any = (),
+    *, enforced_governance: dict | None = None,
 ) -> tuple[list[dict], dict | None, list[dict]]:
     """Governance for a non-shell call: (evidence, deny-clause-or-None, unevaluated).
 
@@ -543,9 +600,29 @@ def _tool_governance(
     no result, or anything raises, they come back in *unevaluated*, never as
     "no clauses". A governance file that can't be loaded counts as one
     unevaluated clause, since what it gates is unknown.
+
+    F1 (N5): when *enforced_governance* is provided (from the bundle meet),
+    any clause present in the enforced set but missing from the on-disk file
+    is treated as an unevaluated clause that fails closed.  This ensures a
+    hand edit removing a deny clause still denies.
     """
     sem = getattr(policy, "semantic", None)
     if not sem or not sem.enabled or not sem.governance_policy:
+        # No governance policy on disk.  If the bundle enforces governance
+        # clauses with action deny or escalate, those still apply (fail closed).
+        if enforced_governance:
+            enforced_clauses = enforced_governance.get("clauses", [])
+            if enforced_clauses:
+                deny = next(
+                    (c for c in enforced_clauses if c.get("action") == "deny"),
+                    None,
+                )
+                return [], deny, [
+                    {"clause_id": c.get("id", "enforced"),
+                     "title": c.get("text", "enforced governance clause"),
+                     "action": c.get("action", "escalate")}
+                    for c in enforced_clauses
+                ]
         return [], None, []
     try:
         from sandbox.governance.evaluate import GovernanceUnevaluated, gated_tool_clauses
@@ -571,6 +648,25 @@ def _tool_governance(
         return [], None, [_clause_ref(c) for c in gated]
     evidence = [v.evidence() for v in violations]
     deny = next((v.evidence() | {"description": v.description} for v in violations if v.action == "deny"), None)
+
+    # F1 (N5): check that enforced governance clauses were not weakened on disk.
+    # If the on-disk file removed a clause, treat it as unevaluated (fail closed).
+    if enforced_governance and deny is None:
+        disk_ids = {c.id for c in gov.clauses} if hasattr(gov, "clauses") else set()
+        enforced_clauses = enforced_governance.get("clauses", [])
+        removed = [
+            {"clause_id": c.get("id", "enforced"),
+             "title": c.get("text", "enforced governance clause"),
+             "action": c.get("action", "escalate")}
+            for c in enforced_clauses
+            if c.get("id") and c["id"] not in disk_ids
+        ]
+        if removed:
+            deny_removed = next(
+                (c for c in removed if c.get("action") == "deny"), None,
+            )
+            return evidence, deny_removed, removed
+
     return evidence, deny, []
 
 

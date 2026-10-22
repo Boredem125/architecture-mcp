@@ -1,4 +1,38 @@
-# Control-plane hand-off (M2 T6-T8 done, 22 Oct 2026)
+# Control-plane hand-off (M2 T6-T10 done, 22 Oct 2026)
+
+## M2 T9-T10 status (22 Oct 2026, end of session)
+
+**Final (22 Oct 2026): T9 and T10 were reviewed and committed.** Security round 3 is APPROVE, and F1 is closed under founder ruling A:
+1. The approved baseline is the envelope in `.sandbox/policy_history/`, re-verified against the pinned registry on every enforcement (`policy_versions._verified_bundle_payload`). There is no hash-file fallback.
+2. A managed workspace always enforces meet(verified bundle or deny-all, local files). The local files are `.sandbox/policy.json` (incl. `environment`) and the governance file; `bundle.json` is never the overlay. A missing, corrupt or bad-signature bundle gives deny-all, plus `bundle_corrupt` and an audit entry. An unmanaged workspace keeps M1 behaviour.
+3. Hook wiring (`hook_eval.py` ~264-358): environment, governance, mcp (`SANDBOX DENIED [MCP_POLICY]`), folder. **Approval:** no current decision path reads `local_fallback`/`allow_requester`. The enforced value is exposed as `_enforced_approval` in policy info, and **T12 must consume it.**
+4. `tests/security/test_m2_t9_review.py` has 14 tests, all passing on Windows and Linux.
+
+**Named follow-up (security: not a blocker; owner backend-engineer; do it before T11 or as its own task):** no product code writes `.sandbox/state/sync/managed` (or its key-home copy), `pinned_root.json` or `registry.json`. `sync/enroll.py` `enroll()` must persist the managed marker in both places, `pinned_root.json`, `registry.json` and the device key after the fingerprint check. `sync/process.py` `run_once` must persist registry updates. Until then, a real enroll leaves the laptop unmanaged (M1 local enforcement, no loosening path), and the tests hand-write these files. Write the tests first.
+
+Measured before the commit: connector 1964 passed, 1 skipped. ee 569 passed, 1 skipped, 2 failed (the known `test_t10_multiworker.py` Windows ReadTimeouts). lint-imports is clean. Semgrep has 1 LOW audit (`process.py:73`, `urlopen` of a configured URL). gitleaks found 0 leaks in the history.
+
+The history below is the state before round 3.
+
+**Committed and pushed:** `3592a02`, the T9/T10 tests first. In QA, the orchestrator fixed the T9 tests: 2 admins with threshold 2, a distinct key per approval, one key under two user_ids counts once, the bundle signer comes only from the registry, and the property test now has a model, N3, and counters against a vacuous pass. Then `a8a30ae`, the CI ee coverage fix: coverage now measures the uvicorn worker subprocesses, and the total is back to 88%. CI run 39745688470 and security run 39745688584 are green on every job, including ee-windows.
+
+**T9 and T10 are built and UNCOMMITTED. Never stash, reset or checkout them.**
+- T10: `src/sandbox/connector/sync/process.py` (new), plus the markers removed from `tests/security/test_m2_t10_sync.py` (21 pass on Windows and Linux). Security round 1 found nothing in T10. It is committed after T9, because `run_once` lazily imports T9's `verify_and_apply`.
+- T9 code: `src/sandbox/connector/sync/bundles.py` (new), `sync/state.py`, `protocol/registry.py` (TCB: bundle_signer), `policy_versions.py` (TCB: F1 wiring), `ee/src/agg_cp/sync/bundles.py` (new; `GET /api/v1/sync/bundle`, `POST /api/v1/admin/bundles`), `ee/src/agg_cp/app.py`.
+- T9 tests: the markers removed in both T9 files. `tests/security/test_m2_t9_review.py` is new (9 tests). The ee T9 file gains the `_bundle_signer_key_env` setup fixture and `test_admin_create_bundle_no_signer_key_500`. `test_t9_routes.py` gains `_M2_T9_ROUTES` (security named exception, APPROVED). `M2_BASELINE.md` sections 3 and 4 have the rows.
+- Measured: connector 1959 passed, 1 skipped. ee 569 passed, 1 skipped, 2 failed (the 2 known `test_t10_multiworker.py` Windows ReadTimeouts). lint-imports is clean. Semgrep has 0 findings, apart from 1 LOW audit on `process.py:73` (`urlopen` of a configured URL, expected). gitleaks has 0 findings. Trivy did not run, because its DB download timed out.
+
+**Security review of T9:** round 1 was CHANGES. Round 2 PASSES F2 (no ephemeral key fallback; 500 `bundle_signer_key_not_configured`), F3 (only the latest version's bundle_signer is trusted; a collision is refused) and F4 (`_meet_mcp` = approved intersect on-disk). **F1 HIGH (N5 at runtime) is still open:**
+1. (a) `.sandbox/state/sync/approved_bundle_payload.json` is unsigned and is trusted at enforcement. Fix: re-verify the stored signed envelope against the pinned registry's latest bundle_signer at enforcement, or pin its sha256 in the signed audit chain and check it on read.
+2. (c) Fail closed: a missing, unreadable or corrupt approved file must give deny-all, not the disk policy and not a crash (`policy_versions.py` ~453-465).
+3. (b) Only `folder_policy` reaches hook decisions. The governance, mcp, approval and environment results sit in `info["bundle_enforced"]`, which no decision path reads (`hook_eval.py:548-556` reads governance from the file path; classify has no mcp_policy; FolderPolicy has no approval fields; the bundle's `environment` is not mapped to `FolderPolicy.environment`).
+4. (d) 4 QA tests are vacuous: `test_m2_t9_review.py::test_f1_{governance,mcp,approval,environment}_hand_edit_enforced_unchanged` check only the info dict. They must assert the real `hook_eval` decision.
+
+**Founder ruling (22 Oct 2026): A.** All 5 sections are enforced in T9. Options as offered:
+- **A:** wire all 4 sections into the hook decisions in T9. This is a larger TCB change, and it meets the T9 exit check (N5) as written. Orchestrator recommendation.
+- **B:** wire environment now; defer governance, mcp and approval to a later task, with an ADR note, xfail tests, and the T9 exit check amended. Security's suggestion. Safe only if no doc claims those sections are centrally enforced.
+
+Items 1, 2 and 4 are code and test fixes either way. Then security round 3, git-ops commits T9 and then T10, and checks CI.
 
 ## M2 T7-T8 security review (22 Oct 2026)
 
