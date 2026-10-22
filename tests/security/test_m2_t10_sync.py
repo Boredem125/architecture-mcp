@@ -211,7 +211,6 @@ def test_guard_hook_does_not_import_sync_process(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T10Pending)
 def test_backoff_grows_exponentially():
     """Backoff intervals grow after consecutive failures."""
     _need("sandbox.connector.sync.process", "SyncProcess")
@@ -244,7 +243,6 @@ def test_backoff_grows_exponentially():
         )
 
 
-@pytest.mark.xfail(strict=True, raises=M2T10Pending)
 def test_backoff_caps_at_5_min():
     """Backoff never exceeds 300 seconds (5 minutes)."""
     _need("sandbox.connector.sync.process", "SyncProcess")
@@ -266,7 +264,6 @@ def test_backoff_caps_at_5_min():
         )
 
 
-@pytest.mark.xfail(strict=True, raises=M2T10Pending)
 def test_backoff_resets_on_success():
     """Backoff resets to base interval after a successful cycle."""
     _need("sandbox.connector.sync.process", "SyncProcess")
@@ -292,7 +289,6 @@ def test_backoff_resets_on_success():
     )
 
 
-@pytest.mark.xfail(strict=True, raises=M2T10Pending)
 def test_backoff_includes_jitter():
     """Backoff includes jitter so retries from multiple connectors do not thundering-herd."""
     _need("sandbox.connector.sync.process", "SyncProcess")
@@ -321,7 +317,6 @@ def test_backoff_includes_jitter():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T10Pending)
 def test_sync_process_constructor_accepts_seams():
     """SyncProcess accepts clock and connect seams."""
     _need("sandbox.connector.sync.process", "SyncProcess")
@@ -345,7 +340,6 @@ def test_sync_process_constructor_accepts_seams():
     assert callable(sync._connect)
 
 
-@pytest.mark.xfail(strict=True, raises=M2T10Pending)
 def test_sync_process_run_once_uses_injected_connect():
     """run_once routes HTTP calls through the injected connect seam."""
     _need("sandbox.connector.sync.process", "SyncProcess")
@@ -375,7 +369,6 @@ def test_sync_process_run_once_uses_injected_connect():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T10Pending)
 def test_server_down_escalated_call_stays_pending(tmp_path, monkeypatch):
     """When the server is down, an escalated call never auto-approves (threat 12).
 
@@ -427,7 +420,6 @@ def test_server_down_escalated_call_stays_pending(tmp_path, monkeypatch):
     )
 
 
-@pytest.mark.xfail(strict=True, raises=M2T10Pending)
 def test_no_timeout_auto_approve(tmp_path, monkeypatch):
     """No escalation is ever auto-approved on timeout (threat 12).
 
@@ -484,7 +476,6 @@ def test_no_timeout_auto_approve(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T10Pending)
 def test_decision_poll_interval_10s():
     """Decisions are polled every 10 seconds on a healthy connection."""
     _need("sandbox.connector.sync.process", "SyncProcess")
@@ -508,7 +499,6 @@ def test_decision_poll_interval_10s():
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T10Pending)
 def test_sync_module_exists():
     """The sync process module exists at sandbox.connector.sync.process."""
     _need("sandbox.connector.sync.process", "SyncProcess")
