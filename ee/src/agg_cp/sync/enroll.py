@@ -156,12 +156,18 @@ def enroll_router(db_url: str, clock=None) -> APIRouter:
                 [device_id, org_id, project_id, public_key_hex,
                  operator_user_id],
             )
+
+            # Read the registry chain for this org (ruling d)
+            from agg_cp.sync.registry import get_chain
+            registry_chain = get_chain(conn, org_id)
+
             conn.commit()
 
         return JSONResponse({
             "device_id": device_id,
             "org_id": org_id,
             "project_id": project_id,
+            "registry": registry_chain,
         })
 
     # -----------------------------------------------------------------
@@ -413,5 +419,43 @@ def enroll_router(db_url: str, clock=None) -> APIRouter:
         return JSONResponse({
             "revoked_at": _get_clock().now().isoformat(),
         })
+
+    # -----------------------------------------------------------------
+    # GET /api/v1/sync/registry  (device token auth, same-org only)
+    # -----------------------------------------------------------------
+
+    def _device_token_lookup(conn, token: str):
+        """Look up a device token via SECURITY DEFINER function.
+
+        Returns (org_id, project_id, connector_id) or None.
+        """
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        row = conn.execute(
+            "SELECT * FROM device_token_lookup(%s)",
+            [token_hash],
+        ).fetchone()
+        return row
+
+    @rbac_route(router, "get", "/api/v1/sync/registry",
+                role="device", scope="project")
+    async def get_registry(request: Request) -> JSONResponse:
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        token = auth[7:]
+
+        with _conn() as conn:
+            device = _device_token_lookup(conn, token)
+            if device is None:
+                return JSONResponse(
+                    {"error": "unauthorized"}, status_code=401,
+                )
+            d_org = str(device[0])
+
+            from agg_cp.sync.registry import get_chain
+
+            registry_chain = get_chain(conn, d_org)
+
+        return JSONResponse({"registry": registry_chain})
 
     return router

@@ -361,7 +361,6 @@ def test_guard_shell_new_state_files_denied(tmp_path, monkeypatch, command):
 # ===================================================================
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_enroll_persists_managed_marker_sync_dir(tmp_path, key_home):
     """enroll() writes .sandbox/state/sync/managed after fingerprint check (req 1)."""
     _need_persist()
@@ -379,7 +378,6 @@ def test_enroll_persists_managed_marker_sync_dir(tmp_path, key_home):
     assert (sync_dir / "managed").exists(), "managed marker not in sync dir"
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_enroll_persists_managed_marker_keyhome(tmp_path, key_home):
     """enroll() writes key-home managed marker after fingerprint check (req 1)."""
     _need_persist()
@@ -396,7 +394,6 @@ def test_enroll_persists_managed_marker_keyhome(tmp_path, key_home):
     assert is_managed(lay), "workspace is not managed after enroll"
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_enroll_persists_pinned_root(tmp_path, key_home):
     """enroll() writes pinned_root.json with the locally computed fingerprint (req 1)."""
     _need_persist()
@@ -415,7 +412,6 @@ def test_enroll_persists_pinned_root(tmp_path, key_home):
     )
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_enroll_persists_registry(tmp_path, key_home):
     """enroll() writes registry.json with the registry chain (req 1)."""
     _need_persist()
@@ -439,7 +435,6 @@ def test_enroll_persists_registry(tmp_path, key_home):
     assert registry is not None
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_enroll_persists_device_key(tmp_path, key_home):
     """enroll() writes the device key to the key home (req 1)."""
     _need_persist()
@@ -461,7 +456,6 @@ def test_enroll_persists_device_key(tmp_path, key_home):
     assert len(key_files) > 0, "no device key file written"
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_enroll_persists_device_id(tmp_path, key_home):
     """enroll() writes device_id to sync state (req 1)."""
     _need_persist()
@@ -485,7 +479,6 @@ def test_enroll_persists_device_id(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_enroll_genesis_fingerprint_mismatch_writes_nothing(tmp_path, key_home):
     """Genesis computed fingerprint differs from --expect-fingerprint: nothing persisted (req 1, c).
 
@@ -525,7 +518,6 @@ def test_enroll_genesis_fingerprint_mismatch_writes_nothing(tmp_path, key_home):
         assert not device_dir.exists(), "device key written despite fingerprint mismatch"
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_enroll_server_error_writes_nothing(tmp_path, key_home):
     """Server 500 error: nothing persisted (req 1)."""
     _need_persist()
@@ -545,7 +537,6 @@ def test_enroll_server_error_writes_nothing(tmp_path, key_home):
     assert after_sync == before_sync, "state files changed on server error"
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_enroll_consumed_code_writes_nothing(tmp_path, key_home):
     """409 code_consumed: nothing persisted (req 1)."""
     _need_persist()
@@ -570,7 +561,6 @@ def test_enroll_consumed_code_writes_nothing(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_enroll_atomic_all_files_written(tmp_path, key_home):
     """After successful enroll, ALL required files exist together (req 1)."""
     _need_persist()
@@ -599,7 +589,6 @@ def test_enroll_atomic_all_files_written(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_run_once_persists_verified_registry_update(tmp_path, key_home):
     """run_once writes an updated registry after verifying it (req 2)."""
     _need_persist()
@@ -631,7 +620,11 @@ def test_run_once_persists_verified_registry_update(tmp_path, key_home):
     (key_home / ws_id / "managed").write_text("1")
 
     # Build a v2 registry entry (update)
-    v1_hash = hashlib.sha256(_canonical_json(genesis_env["payload"])).hexdigest()
+    # prev_hash = _payload_hash(prev_payload) = sha256(org_id + ":" + canonical)
+    gp = genesis_env["payload"]
+    v1_hash = hashlib.sha256(
+        gp["org_id"].encode("utf-8") + b":" + _canonical_json(gp)
+    ).hexdigest()
     v2_payload = _make_registry_payload(
         org_id="org-1", version=2, prev_hash=v1_hash,
         threshold=2, admins=[k["key_id"] for k in genesis_env["payload"]["keys"]],
@@ -667,7 +660,6 @@ def test_run_once_persists_verified_registry_update(tmp_path, key_home):
     assert chain[-1]["payload"]["version"] == 2
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_run_once_refuses_forged_registry(tmp_path, key_home):
     """run_once does not write a forged registry update (req 2)."""
     _need_persist()
@@ -699,7 +691,10 @@ def test_run_once_refuses_forged_registry(tmp_path, key_home):
 
     # Build a forged v2 with a different (untrusted) admin key
     forged_sk = _keygen()[0]
-    v1_hash = hashlib.sha256(_canonical_json(genesis_env["payload"])).hexdigest()
+    gp = genesis_env["payload"]
+    v1_hash = hashlib.sha256(
+        gp["org_id"].encode("utf-8") + b":" + _canonical_json(gp)
+    ).hexdigest()
     v2_payload = _make_registry_payload(
         org_id="org-1", version=2, prev_hash=v1_hash,
         threshold=1, admins=[hashlib.sha256(bytes(forged_sk.verify_key)).hexdigest()],
@@ -734,7 +729,6 @@ def test_run_once_refuses_forged_registry(tmp_path, key_home):
     )
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_run_once_refuses_rollback_registry(tmp_path, key_home):
     """run_once does not write a rollback registry (older version; req 2)."""
     _need_persist()
@@ -750,7 +744,10 @@ def test_run_once_refuses_rollback_registry(tmp_path, key_home):
     fp = _registry_fingerprint(genesis_env["payload"])
 
     # Start with a v2 registry already on disk
-    v1_hash = hashlib.sha256(_canonical_json(genesis_env["payload"])).hexdigest()
+    gp = genesis_env["payload"]
+    v1_hash = hashlib.sha256(
+        gp["org_id"].encode("utf-8") + b":" + _canonical_json(gp)
+    ).hexdigest()
     v2_payload = _make_registry_payload(
         org_id="org-1", version=2, prev_hash=v1_hash,
         threshold=2, admins=[k["key_id"] for k in genesis_env["payload"]["keys"]],
@@ -800,13 +797,238 @@ def test_run_once_refuses_rollback_registry(tmp_path, key_home):
     assert reg_after == v2_chain, "registry.json was rolled back"
 
 
+def test_run_once_refuses_same_version_different_content(tmp_path, key_home):
+    """run_once does not persist a registry at the same version but with different content (req 2).
+
+    A malicious server re-sends version 1 with altered keys or
+    bundle_signer.  verify_chain catches the fingerprint mismatch and
+    the update is silently dropped; registry.json stays byte-identical.
+    """
+    from sandbox.connector.sync.process import SyncProcess, run_once
+
+    lay = _ws(tmp_path / "ws")
+
+    admin_sks = [_keygen()[0], _keygen()[0]]
+    genesis_env, admin_sks, bsk, bpub, bkid = _build_genesis(
+        admin_sks=admin_sks, threshold=2)
+    fp = _registry_fingerprint(genesis_env["payload"])
+
+    sync_dir = lay.root / ".sandbox" / "state" / "sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    (sync_dir / "managed").write_text("1")
+    (sync_dir / "pinned_root.json").write_text(
+        json.dumps({"fingerprint": fp}))
+    original_chain = json.dumps(
+        [genesis_env], sort_keys=True, separators=(",", ":"))
+    (sync_dir / "registry.json").write_text(original_chain)
+    (sync_dir / "device_id").write_text("d-sameversion-1")
+
+    ws_id_file = lay.root / ".sandbox" / "workspace_id"
+    ws_id = ws_id_file.read_text(encoding="utf-8").strip()
+    (key_home / ws_id).mkdir(parents=True, exist_ok=True)
+    (key_home / ws_id / "managed").write_text("1")
+
+    # Build a DIFFERENT genesis (same version=1 but different keys)
+    # for the same org.  This changes the content hash / fingerprint.
+    evil_sks = [_keygen()[0], _keygen()[0]]
+    evil_genesis, _, _, _, _ = _build_genesis(
+        org_id="org-1", admin_sks=evil_sks, threshold=2)
+
+    def _connect(method, url, body=None, headers=None, token=None):
+        if "/sync/token" in url:
+            return (200, {"token": "t-1", "expires_in": 600}, {})
+        if "/sync/decisions" in url:
+            return (200, {"decisions": []}, {})
+        if "/sync/registry" in url:
+            return (200, {"registry": [evil_genesis]}, {})
+        return (200, {}, {})
+
+    sync = SyncProcess(
+        layout=lay, server_url="http://localhost:0",
+        device_key=b"k", device_id="d-sameversion-1",
+        clock=time.monotonic,
+        connect=_connect,
+    )
+    try:
+        run_once(sync)
+    except Exception:
+        pass  # expected: same version different content must fail
+
+    # registry.json must be byte-identical
+    reg_after = (sync_dir / "registry.json").read_text(encoding="utf-8")
+    assert reg_after == original_chain, (
+        "registry.json was overwritten with same-version different-content chain"
+    )
+
+
+# ===================================================================
+# Req 2 -- equal-version fork: two validly signed v2 entries
+# ===================================================================
+
+
+def _build_v2(genesis_env, admin_sks, *, bundle_signer_sk=None,
+              extra_expires_delta=0):
+    """Build a valid v2 envelope chained to *genesis_env*, signed by *admin_sks*.
+
+    *extra_expires_delta* shifts ``expires_at`` so two v2 payloads differ.
+    Returns the v2 envelope.
+    """
+    g_payload = genesis_env["payload"]
+    # prev_hash must match verify_chain's _payload_hash: sha256(org_id + ":" + canonical)
+    v1_hash = hashlib.sha256(
+        g_payload["org_id"].encode("utf-8") + b":" + _canonical_json(g_payload)
+    ).hexdigest()
+    bsk = bundle_signer_sk
+    if bsk is None:
+        bsk = _keygen()[0]
+    bpub = bytes(bsk.verify_key)
+    bkid = hashlib.sha256(bpub).hexdigest()
+    v2_payload = _make_registry_payload(
+        org_id=g_payload["org_id"], version=2, prev_hash=v1_hash,
+        threshold=g_payload.get("threshold", 2),
+        admins=[k["key_id"] for k in g_payload["keys"]],
+        keys=g_payload["keys"],
+        bundle_signer={"key_id": bkid, "public_key": bpub.hex(), "alg": "ed25519"},
+        expires_at=time.time() + 7 * 86400 + extra_expires_delta,
+    )
+    return _sign_envelope("agg/registry/v1", v2_payload, admin_sks)
+
+
+def test_run_once_refuses_equal_version_fork(tmp_path, key_home):
+    """Two validly signed v2 entries that differ in content: the fork is refused (security 4).
+
+    Local registry.json holds [genesis, v2a].  The server sends [genesis, v2b]
+    where v2b is validly signed by the same admins with threshold met but has
+    different content (different expires_at).  registry.json must stay
+    byte-identical.
+    """
+    from sandbox.connector.sync.process import SyncProcess, run_once
+
+    lay = _ws(tmp_path / "ws")
+
+    admin_sks = [_keygen()[0], _keygen()[0]]
+    bsk = _keygen()[0]
+    genesis_env, admin_sks, _, bpub, bkid = _build_genesis(
+        admin_sks=admin_sks, bundle_signer_sk=bsk, threshold=2)
+    fp = _registry_fingerprint(genesis_env["payload"])
+
+    # Build two different but validly signed v2 entries
+    v2a = _build_v2(genesis_env, admin_sks, bundle_signer_sk=bsk,
+                    extra_expires_delta=0)
+    v2b = _build_v2(genesis_env, admin_sks, bundle_signer_sk=bsk,
+                    extra_expires_delta=1000)
+
+    # Sanity: v2a and v2b are different envelopes
+    assert _canonical_json(v2a["payload"]) != _canonical_json(v2b["payload"])
+
+    # Both chains must pass verify_chain
+    from sandbox.protocol.registry import verify_chain
+    verify_chain([genesis_env, v2a], fp)
+    verify_chain([genesis_env, v2b], fp)
+
+    # Write v2a chain to disk
+    sync_dir = lay.root / ".sandbox" / "state" / "sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    (sync_dir / "managed").write_text("1")
+    (sync_dir / "pinned_root.json").write_text(
+        json.dumps({"fingerprint": fp}))
+    v2a_chain = json.dumps(
+        [genesis_env, v2a], sort_keys=True, separators=(",", ":"))
+    (sync_dir / "registry.json").write_text(v2a_chain)
+    (sync_dir / "device_id").write_text("d-fork-1")
+
+    ws_id_file = lay.root / ".sandbox" / "workspace_id"
+    ws_id = ws_id_file.read_text(encoding="utf-8").strip()
+    (key_home / ws_id).mkdir(parents=True, exist_ok=True)
+    (key_home / ws_id / "managed").write_text("1")
+
+    # Server sends v2b chain (fork)
+    def _connect(method, url, body=None, headers=None, token=None):
+        if "/sync/token" in url:
+            return (200, {"token": "t-1", "expires_in": 600}, {})
+        if "/sync/decisions" in url:
+            return (200, {"decisions": []}, {})
+        if "/sync/registry" in url:
+            return (200, {"registry": [genesis_env, v2b]}, {})
+        return (200, {}, {})
+
+    sync = SyncProcess(
+        layout=lay, server_url="http://localhost:0",
+        device_key=b"k", device_id="d-fork-1",
+        clock=time.monotonic,
+        connect=_connect,
+    )
+    try:
+        run_once(sync)
+    except Exception:
+        pass
+
+    # registry.json must be byte-identical to the v2a chain
+    reg_after = (sync_dir / "registry.json").read_text(encoding="utf-8")
+    assert reg_after == v2a_chain, (
+        "registry.json was overwritten by an equal-version fork"
+    )
+
+
+def test_run_once_identical_chain_is_noop(tmp_path, key_home):
+    """Positive control: server sends the same chain already on disk -- no error, no change."""
+    from sandbox.connector.sync.process import SyncProcess, run_once
+
+    lay = _ws(tmp_path / "ws")
+
+    admin_sks = [_keygen()[0], _keygen()[0]]
+    bsk = _keygen()[0]
+    genesis_env, admin_sks, _, bpub, bkid = _build_genesis(
+        admin_sks=admin_sks, bundle_signer_sk=bsk, threshold=2)
+    fp = _registry_fingerprint(genesis_env["payload"])
+
+    v2a = _build_v2(genesis_env, admin_sks, bundle_signer_sk=bsk)
+
+    sync_dir = lay.root / ".sandbox" / "state" / "sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    (sync_dir / "managed").write_text("1")
+    (sync_dir / "pinned_root.json").write_text(
+        json.dumps({"fingerprint": fp}))
+    v2a_chain = json.dumps(
+        [genesis_env, v2a], sort_keys=True, separators=(",", ":"))
+    (sync_dir / "registry.json").write_text(v2a_chain)
+    (sync_dir / "device_id").write_text("d-noop-1")
+
+    ws_id_file = lay.root / ".sandbox" / "workspace_id"
+    ws_id = ws_id_file.read_text(encoding="utf-8").strip()
+    (key_home / ws_id).mkdir(parents=True, exist_ok=True)
+    (key_home / ws_id / "managed").write_text("1")
+
+    # Server sends the SAME v2a chain
+    def _connect(method, url, body=None, headers=None, token=None):
+        if "/sync/token" in url:
+            return (200, {"token": "t-1", "expires_in": 600}, {})
+        if "/sync/decisions" in url:
+            return (200, {"decisions": []}, {})
+        if "/sync/registry" in url:
+            return (200, {"registry": [genesis_env, v2a]}, {})
+        return (200, {}, {})
+
+    sync = SyncProcess(
+        layout=lay, server_url="http://localhost:0",
+        device_key=b"k", device_id="d-noop-1",
+        clock=time.monotonic,
+        connect=_connect,
+    )
+    # Must not raise
+    run_once(sync)
+
+    # registry.json unchanged
+    reg_after = (sync_dir / "registry.json").read_text(encoding="utf-8")
+    assert reg_after == v2a_chain, "identical chain caused a rewrite"
+
+
 # ===================================================================
 # RED: Req 3 -- after real enroll, workspace is managed
 #               (hook enforcement uses meet(bundle or deny-all, local))
 # ===================================================================
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_after_enroll_is_managed_true(tmp_path, key_home):
     """After enroll(), is_managed returns True without hand-written files (req 3)."""
     _need_persist()
@@ -823,7 +1045,6 @@ def test_after_enroll_is_managed_true(tmp_path, key_home):
     assert is_managed(lay), "workspace not managed after real enroll"
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_after_enroll_hook_enforces_deny_all_without_bundle(tmp_path, key_home):
     """After enroll with no bundle, hook enforces deny-all per T9 N3 (req 3).
 
@@ -852,7 +1073,6 @@ def test_after_enroll_hook_enforces_deny_all_without_bundle(tmp_path, key_home):
     )
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_after_enroll_sticky_mode_applies(tmp_path, key_home):
     """After enroll, deleting sync state keeps the workspace managed (req 3, T8 sticky)."""
     _need_persist()
@@ -885,7 +1105,6 @@ def test_after_enroll_sticky_mode_applies(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_after_enroll_can_accept_bundles(tmp_path, key_home):
     """After enroll, can_accept_bundles is True (pinned root written; req 3)."""
     _need_persist()
@@ -910,7 +1129,6 @@ def test_after_enroll_can_accept_bundles(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_enroll_server_echoes_fp_but_genesis_differs(tmp_path, key_home):
     """Server echoes --expect-fingerprint verbatim but the genesis computes
     to a different value.  The client must compute the fingerprint locally
@@ -949,7 +1167,6 @@ def test_enroll_server_echoes_fp_but_genesis_differs(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_enroll_chain_with_forged_later_version_refused(tmp_path, key_home):
     """Genesis is valid but a v2 in the returned chain is forged (ruling b).
 
@@ -999,7 +1216,6 @@ def test_enroll_chain_with_forged_later_version_refused(tmp_path, key_home):
 # ===================================================================
 
 
-@pytest.mark.xfail(raises=M2EnrollPersistPending, strict=True)
 def test_enroll_ignores_fingerprint_string_in_response(tmp_path, key_home):
     """The ``fingerprint`` field in the server response is ignored (ruling e).
 

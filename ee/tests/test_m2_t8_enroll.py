@@ -992,7 +992,6 @@ def _need_enroll_persist(module: str, attr: str) -> None:
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(raises=Exception, strict=True)
 def test_enroll_response_includes_registry_chain(pg_url, pg_roles, app_url, owner_url):
     """POST /api/v1/sync/enroll response includes the registry chain (ruling d).
 
@@ -1011,8 +1010,9 @@ def test_enroll_response_includes_registry_chain(pg_url, pg_roles, app_url, owne
     org_id, project_id = str(uuid.uuid4()), str(uuid.uuid4())
     operator_id = str(uuid.uuid4())
 
-    # Build and store a genesis for this org
+    # Build and store a genesis for this org (F3: separate bundle signer key)
     sk1, pub1, kid1 = keygen()
+    sk_bs, pub_bs, kid_bs = keygen()
     key_entry = {
         "key_id": kid1, "public_key": pub1.hex(), "user_id": "admin-0",
         "iss": "https://idp", "sub": "admin-0", "alg": "ed25519",
@@ -1021,7 +1021,7 @@ def test_enroll_response_includes_registry_chain(pg_url, pg_roles, app_url, owne
     genesis_payload = {
         "org_id": org_id, "version": 1, "prev_hash": "",
         "threshold": 1, "admins": [kid1], "keys": [key_entry],
-        "bundle_signer": {"key_id": kid1, "public_key": pub1.hex(), "alg": "ed25519"},
+        "bundle_signer": {"key_id": kid_bs, "public_key": pub_bs.hex(), "alg": "ed25519"},
         "expires_at": time.time() + 7 * 86400,
     }
     genesis_env = sign_envelope("agg/registry/v1", genesis_payload, sk1)
@@ -1062,7 +1062,6 @@ def test_enroll_response_includes_registry_chain(pg_url, pg_roles, app_url, owne
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(raises=Exception, strict=True)
 def test_enroll_response_registry_is_same_org(pg_url, pg_roles, app_url, owner_url):
     """Enroll response registry chain belongs to the device's org only (ruling d).
 
@@ -1080,8 +1079,9 @@ def test_enroll_response_registry_is_same_org(pg_url, pg_roles, app_url, owner_u
     project_a = str(uuid.uuid4())
     operator_id = str(uuid.uuid4())
 
-    # Build and store genesis for BOTH orgs
+    # Build and store genesis for BOTH orgs (F3: separate bundle signer key)
     sk1, pub1, kid1 = keygen()
+    sk_bs, pub_bs, kid_bs = keygen()
     for oid in (org_a, org_b):
         key_entry = {
             "key_id": kid1, "public_key": pub1.hex(), "user_id": "admin-0",
@@ -1091,7 +1091,7 @@ def test_enroll_response_registry_is_same_org(pg_url, pg_roles, app_url, owner_u
         payload = {
             "org_id": oid, "version": 1, "prev_hash": "",
             "threshold": 1, "admins": [kid1], "keys": [key_entry],
-            "bundle_signer": {"key_id": kid1, "public_key": pub1.hex(), "alg": "ed25519"},
+            "bundle_signer": {"key_id": kid_bs, "public_key": pub_bs.hex(), "alg": "ed25519"},
             "expires_at": time.time() + 7 * 86400,
         }
         env = sign_envelope("agg/registry/v1", payload, sk1)

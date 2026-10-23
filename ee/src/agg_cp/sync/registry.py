@@ -109,6 +109,26 @@ def store_registry_version(
     return version
 
 
+def get_chain(
+    conn: Any,
+    org_id: str,
+) -> list[dict[str, Any]]:
+    """Return the full registry chain for *org_id* in version order.
+
+    Sets ``app.org_id`` for the query so RLS filters correctly.
+    Returns an empty list if no registry versions exist.
+    """
+    conn.execute(
+        "SELECT set_config('app.org_id', %s, true)", [org_id]
+    )
+    rows = conn.execute(
+        "SELECT registry_blob FROM key_registry_versions "
+        "WHERE org_id = %s::uuid ORDER BY version",
+        [org_id],
+    ).fetchall()
+    return [json.loads(bytes(r[0])) for r in rows]
+
+
 def latest(
     conn: Any,
     org_id: str,

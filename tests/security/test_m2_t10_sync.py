@@ -211,11 +211,21 @@ def test_guard_hook_does_not_import_sync_process(tmp_path, monkeypatch):
 # ===================================================================
 
 
-def test_backoff_grows_exponentially():
-    """Backoff intervals grow after consecutive failures."""
+def test_backoff_grows_exponentially(monkeypatch):
+    """Backoff intervals grow after consecutive failures.
+
+    Deterministic: patches the jitter to a fixed fraction (0.9) so that
+    the exponential growth is observable without random overlap between
+    the success interval (failures=0, ~10 s) and the first backoff
+    (failures=1, ~18 s at 0.9 jitter).
+    """
     _need("sandbox.connector.sync.process", "SyncProcess")
     _need("sandbox.connector.sync.process", "next_backoff")
+    from sandbox.connector.sync import process as _proc
     from sandbox.connector.sync.process import SyncProcess, next_backoff
+
+    # Fixed jitter: always return 90% of the range
+    monkeypatch.setattr(_proc.random, "uniform", lambda a, b: a + 0.9 * (b - a))
 
     fake_time = [0.0]
 
@@ -228,19 +238,30 @@ def test_backoff_grows_exponentially():
         clock=clock,
         connect=lambda *a, **kw: (503, {"error": "unavailable"}, {}),
     )
-    # Simulate consecutive failures
+    # Simulate consecutive failures (skip 0 = success interval)
     delays = []
-    for i in range(6):
+    for i in range(1, 7):
         sync._consecutive_failures = i
         delay = next_backoff(sync)
         delays.append(delay)
         fake_time[0] += delay
 
-    # Each delay must be strictly greater than the previous (exponential)
+    # Growth: each delay >= the previous.  Strictly greater until the cap
+    # is reached; at the cap, consecutive values are equal.
     for i in range(1, len(delays)):
-        assert delays[i] > delays[i - 1], (
-            f"backoff did not grow: delays[{i}]={delays[i]} <= delays[{i-1}]={delays[i-1]}"
+        assert delays[i] >= delays[i - 1], (
+            f"backoff shrank: delays[{i+1}]={delays[i]} < delays[{i}]={delays[i-1]}"
         )
+
+    # At least one pair must show strict growth (before the cap flattens)
+    grew = any(delays[i] > delays[i - 1] for i in range(1, len(delays)))
+    assert grew, "no exponential growth at all"
+
+    # The sequence must show clear exponential growth from the base
+    assert delays[0] > 10, f"first backoff too small: {delays[0]}"
+    assert delays[-1] > delays[0] * 2, "no exponential growth visible"
+    # Cap respected
+    assert all(d <= 300 for d in delays), "delay exceeded 5 min cap"
 
 
 def test_backoff_caps_at_5_min():

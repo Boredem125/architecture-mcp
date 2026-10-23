@@ -1,5 +1,25 @@
 # Control-plane hand-off (M2 T6-T10 done, 22 Oct 2026)
 
+## Enroll-persistence follow-up (23 Oct 2026): done
+
+1. The tests were committed first in `545c031`.
+2. **Client** (`sync/enroll.py`, TCB):
+   - It no longer trusts a server `fingerprint` string. The old T8 code did, which broke threat 2.
+   - It computes the fingerprint from the genesis it receives and verifies the chain with T6 `verify_chain`.
+   - Only then does it persist the managed marker (sync dir and key home), `pinned_root.json`, `registry.json`, device_id and the device key, all through a temp file and rename.
+3. **Sync process:** `sync/process.py` `run_once` fetches the new device-token route `GET /api/v1/sync/registry` and persists only a verified chain. The version must be strictly greater; at an equal version the content must be byte-identical.
+4. **Server:**
+   - The enroll response carries `registry`, the chain for the device's org only.
+   - `agg_cp.sync.registry.get_chain` is new.
+   - `test_frozen_route_set` gains `_M2_ENROLL_PERSIST_ROUTES` as a named exception.
+5. **Security review: APPROVE.**
+   - Two LOW items were accepted: the device key gets no explicit 0o600 (its directory is 0o700), and `_stage` uses a predictable `.tmp` name in a user-owned directory.
+   - QA added `test_run_once_refuses_equal_version_fork`, checked by bypassing the guard, and made the T10 backoff test deterministic.
+   - The builder's test setup edits were ruled clean: the `prev_hash` `org_id:` prefix, and the separate bundle_signer key.
+   - Measured: connector 2001 passed, 1 skipped. ee with pg 577 passed, 1 skipped, 2 failed (the known `test_t10_multiworker.py` Windows ReadTimeouts).
+
+**Next:** T11, tests first. T12 must consume `_enforced_approval`.
+
 ## M2 T9-T10 status (22 Oct 2026, end of session)
 
 **Final (22 Oct 2026): T9 and T10 were reviewed and committed.** Security round 3 is APPROVE, and F1 is closed under founder ruling A:
