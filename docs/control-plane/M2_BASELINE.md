@@ -106,8 +106,10 @@ Each task's new tests are committed as strict xfail (`raises=M2T<n>Pending`) bef
 | T9 review | `tests/security/test_m2_t9_review.py` | 14 | 14 | 0 | security review (F1/F3/F4); 5 F1 rewritten to use real hook, 5 new (a-e) |
 | T9 review | `ee/tests/test_m2_t9_bundles.py` (F2 500 test) | 1 | 1 | 0 | security review (F2) |
 | T10 | `tests/security/test_m2_t10_sync.py` | 21 | 10 | 11 | tests-first (T10) |
+| Enroll-persist | `tests/security/test_m2_enroll_persist.py` | 34 | 20 | 14 | tests-first (enroll-persistence follow-up) |
+| Enroll-persist | `ee/tests/test_m2_t8_enroll.py` (2 registry tests) | 2 | 2 | 0 | tests-first (enroll-persistence follow-up, ruling d) |
 
-M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17, T6=48, T7=48, T8=52, T9=45, T10=10. Total RED: 239.
+M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17, T6=48, T7=48, T8=52, T9=45, T10=10, enroll-persist=22. Total RED: 261.
 
 ### Build records, T1-T5 (22 Oct 2026, orchestrator)
 
