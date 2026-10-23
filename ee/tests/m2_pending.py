@@ -41,6 +41,10 @@ class M2T10Pending(Exception):
     """T10: sandbox sync process, backoff, state denies, socket guard."""
 
 
+class M2EnrollPersistPending(Exception):
+    """Enroll-persistence follow-up: enroll response includes registry chain."""
+
+
 class M2T11Pending(Exception):
     """T11: Audit upload, checkpoints, quarantine, retention guard."""
 

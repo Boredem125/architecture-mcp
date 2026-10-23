@@ -42,6 +42,10 @@ class M2T10Pending(Exception):
     """T10: sandbox sync process, backoff, state denies, socket guard."""
 
 
+class M2EnrollPersistPending(Exception):
+    """Enroll-persistence follow-up: enroll()/run_once() must persist managed marker, pinned_root.json, registry.json, device key."""
+
+
 class M2T11Pending(Exception):
     """T11: Audit upload, checkpoints, quarantine, retention guard."""
 

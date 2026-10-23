@@ -972,3 +972,162 @@ def test_token_expires_at_10min(enroll_server):
         assert row is not None
         exp_ts = row[0].timestamp() if isinstance(row[0], datetime.datetime) else float(row[0])
         assert 540 < (exp_ts - before) < 660
+
+
+# ===================================================================
+# RED: Enroll-persistence follow-up -- enroll response includes the
+#      registry chain for the device's org (ruling d).
+# ===================================================================
+
+
+def _need_enroll_persist(module: str, attr: str) -> None:
+    """Raise M2EnrollPersistPending if *module*.*attr* is absent."""
+    from .m2_pending import M2EnrollPersistPending
+    try:
+        mod = __import__(module, fromlist=[attr])
+    except ImportError:
+        raise M2EnrollPersistPending(f"{module} not importable")
+    if not hasattr(mod, attr):
+        raise M2EnrollPersistPending(f"{module}.{attr} not found")
+
+
+@pytest.mark.pg
+@pytest.mark.xfail(raises=Exception, strict=True)
+def test_enroll_response_includes_registry_chain(pg_url, pg_roles, app_url, owner_url):
+    """POST /api/v1/sync/enroll response includes the registry chain (ruling d).
+
+    After a successful enrollment, the response body must include a
+    ``registry`` field containing the signed chain from genesis for the
+    device's org.  The chain must be verifiable with ``verify_chain``.
+    """
+    from .m2_pending import M2EnrollPersistPending
+    _need_enroll_persist("agg_cp.sync.enroll", "enroll_router")
+
+    from agg_cp.app import create_app
+    from agg_cp.sync.registry import store_registry_version
+    from sandbox.protocol.registry import verify_chain
+
+    ensure_at_head(pg_url)
+    org_id, project_id = str(uuid.uuid4()), str(uuid.uuid4())
+    operator_id = str(uuid.uuid4())
+
+    # Build and store a genesis for this org
+    sk1, pub1, kid1 = keygen()
+    key_entry = {
+        "key_id": kid1, "public_key": pub1.hex(), "user_id": "admin-0",
+        "iss": "https://idp", "sub": "admin-0", "alg": "ed25519",
+        "kind": "cli", "roles": ["admin", "approver"], "added_in": 1,
+    }
+    genesis_payload = {
+        "org_id": org_id, "version": 1, "prev_hash": "",
+        "threshold": 1, "admins": [kid1], "keys": [key_entry],
+        "bundle_signer": {"key_id": kid1, "public_key": pub1.hex(), "alg": "ed25519"},
+        "expires_at": time.time() + 7 * 86400,
+    }
+    genesis_env = sign_envelope("agg/registry/v1", genesis_payload, sk1)
+    genesis_fp = hashlib.sha256(
+        org_id.encode("utf-8") + b":" + canonical_json(genesis_payload)
+    ).hexdigest()
+
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as oconn:
+        oconn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        create_org(oconn, org_id)
+        create_project(oconn, org_id, project_id)
+        store_registry_version(oconn, org_id, genesis_env)
+        code, _, _ = _issue_code_ready(oconn, org_id, project_id, operator_id)
+
+    sk_device, pub_device, _ = keygen()
+    proof = _make_enroll_proof(code, sk_device, pub_device)
+
+    app = create_app(database_url=app_url)
+    with TestClient(app) as c:
+        resp = c.post("/api/v1/sync/enroll", json={
+            "code": code, "public_key": pub_device.hex(), "proof": proof})
+
+    assert resp.status_code == 200, f"enroll failed: {resp.text}"
+    body = resp.json()
+
+    # The response must include the registry chain
+    registry_chain = body.get("registry")
+    if registry_chain is None:
+        raise M2EnrollPersistPending(
+            "enroll response does not include 'registry' field"
+        )
+    assert isinstance(registry_chain, list), "registry must be a list"
+    assert len(registry_chain) >= 1, "registry chain must have at least the genesis"
+
+    # The chain must be verifiable against the genesis fingerprint
+    registry = verify_chain(registry_chain, genesis_fp)
+    assert registry is not None
+
+
+@pytest.mark.pg
+@pytest.mark.xfail(raises=Exception, strict=True)
+def test_enroll_response_registry_is_same_org(pg_url, pg_roles, app_url, owner_url):
+    """Enroll response registry chain belongs to the device's org only (ruling d).
+
+    A cross-org chain must never be returned.  The genesis org_id in the
+    returned chain must match the device's org.
+    """
+    from .m2_pending import M2EnrollPersistPending
+    _need_enroll_persist("agg_cp.sync.enroll", "enroll_router")
+
+    from agg_cp.app import create_app
+    from agg_cp.sync.registry import store_registry_version
+
+    ensure_at_head(pg_url)
+    org_a, org_b = str(uuid.uuid4()), str(uuid.uuid4())
+    project_a = str(uuid.uuid4())
+    operator_id = str(uuid.uuid4())
+
+    # Build and store genesis for BOTH orgs
+    sk1, pub1, kid1 = keygen()
+    for oid in (org_a, org_b):
+        key_entry = {
+            "key_id": kid1, "public_key": pub1.hex(), "user_id": "admin-0",
+            "iss": "https://idp", "sub": "admin-0", "alg": "ed25519",
+            "kind": "cli", "roles": ["admin", "approver"], "added_in": 1,
+        }
+        payload = {
+            "org_id": oid, "version": 1, "prev_hash": "",
+            "threshold": 1, "admins": [kid1], "keys": [key_entry],
+            "bundle_signer": {"key_id": kid1, "public_key": pub1.hex(), "alg": "ed25519"},
+            "expires_at": time.time() + 7 * 86400,
+        }
+        env = sign_envelope("agg/registry/v1", payload, sk1)
+        with psycopg.connect(_conninfo(owner_url), autocommit=True) as oconn:
+            oconn.execute("SELECT set_config('app.org_id', %s, false)", [oid])
+            create_org(oconn, oid)
+            if oid == org_a:
+                create_project(oconn, oid, project_a)
+            store_registry_version(oconn, oid, env)
+
+    # Enroll a device in org_a
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as oconn:
+        oconn.execute("SELECT set_config('app.org_id', %s, false)", [org_a])
+        code, _, _ = _issue_code_ready(oconn, org_a, project_a, operator_id)
+
+    sk_device, pub_device, _ = keygen()
+    proof = _make_enroll_proof(code, sk_device, pub_device)
+
+    app = create_app(database_url=app_url)
+    with TestClient(app) as c:
+        resp = c.post("/api/v1/sync/enroll", json={
+            "code": code, "public_key": pub_device.hex(), "proof": proof})
+
+    assert resp.status_code == 200, f"enroll failed: {resp.text}"
+    body = resp.json()
+
+    registry_chain = body.get("registry")
+    if registry_chain is None:
+        raise M2EnrollPersistPending(
+            "enroll response does not include 'registry' field"
+        )
+
+    # Every envelope in the chain must belong to org_a, not org_b
+    for i, env in enumerate(registry_chain):
+        env_org = env.get("payload", {}).get("org_id", "")
+        assert str(env_org) == str(org_a), (
+            f"registry chain entry {i} has org_id={env_org!r}, "
+            f"expected {org_a!r} (cross-org chain leak)"
+        )
