@@ -78,6 +78,7 @@ All 412 ee tests pass on CI Linux with Postgres.
 | `ee/tests/test_t9_routes.py::test_frozen_route_set` | T7, T8 | the 10 new M2 routes added to the expected set, nothing removed | security (T7/T8 review) |
 | `ee/tests/test_t9_routes.py::test_frozen_route_set` | T9 | 2 bundle routes added to `_M2_T9_ROUTES` and included in `EXPECTED_ROUTES`, nothing removed | security (T9 review) |
 | `ee/tests/test_m2_t9_bundles.py` (3 admin-create tests) | T9 | autouse `_bundle_signer_key_env` fixture added (setup-only, provides `AGG_BUNDLE_SIGNER_KEY_FILE`); assertions unchanged | security (T9 review, F2) |
+| `ee/tests/test_t9_routes.py::test_frozen_route_set` | Enroll-persist | 1 registry route added to `_M2_ENROLL_PERSIST_ROUTES` and included in `EXPECTED_ROUTES`, nothing removed | security (pending) |
 
 Any other frozen test that fails: stop, list it, security decides.
 
@@ -106,10 +107,12 @@ Each task's new tests are committed as strict xfail (`raises=M2T<n>Pending`) bef
 | T9 review | `tests/security/test_m2_t9_review.py` | 14 | 14 | 0 | security review (F1/F3/F4); 5 F1 rewritten to use real hook, 5 new (a-e) |
 | T9 review | `ee/tests/test_m2_t9_bundles.py` (F2 500 test) | 1 | 1 | 0 | security review (F2) |
 | T10 | `tests/security/test_m2_t10_sync.py` | 21 | 10 | 11 | tests-first (T10) |
-| Enroll-persist | `tests/security/test_m2_enroll_persist.py` | 34 | 20 | 14 | tests-first (enroll-persistence follow-up) |
-| Enroll-persist | `ee/tests/test_m2_t8_enroll.py` (2 registry tests) | 2 | 2 | 0 | tests-first (enroll-persistence follow-up, ruling d) |
+| Enroll-persist | `tests/security/test_m2_enroll_persist.py` | 35 | 0 (markers removed) | 35 | tests-first (enroll-persistence follow-up) |
+| Enroll-persist | `ee/tests/test_m2_t8_enroll.py` (2 registry tests) | 2 | 0 (markers removed) | 2 | tests-first (enroll-persistence follow-up, ruling d) |
+| Enroll-persist | `ee/tests/test_m2_sync_registry.py` | 6 | 6 | 0 | tests-first (GET /api/v1/sync/registry route) |
+| Enroll-persist | `ee/tests/test_t9_routes.py::test_frozen_route_set` | 1 (changed) | 1 (T9Pending, route missing) | 0 | named exception: `_M2_ENROLL_PERSIST_ROUTES` |
 
-M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17, T6=48, T7=48, T8=52, T9=45, T10=10, enroll-persist=22. Total RED: 261.
+M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17, T6=48, T7=48, T8=52, T9=45, T10=10, enroll-persist=6 (ee sync registry) +1 (route freeze). Total RED: 246.
 
 ### Build records, T1-T5 (22 Oct 2026, orchestrator)
 

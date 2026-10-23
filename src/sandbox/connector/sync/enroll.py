@@ -112,13 +112,41 @@ def enroll(
     except urllib.error.HTTPError as exc:
         _raise_enroll_error(exc)
 
-    # Fingerprint check (threat 2) -- mismatch writes nothing
-    returned_fp = data.get("fingerprint", "")
-    if returned_fp != expect_fingerprint:
+    # --- Fingerprint and chain verification (threat 2) ---
+    # Never trust a "fingerprint" string from the server (ruling e).
+    # Compute the fingerprint locally from the received genesis payload.
+    registry_chain = data.get("registry")
+    if not registry_chain or not isinstance(registry_chain, list):
+        raise EnrollError(
+            "server response missing registry chain; "
+            "fingerprint cannot be verified"
+        )
+
+    genesis_payload = registry_chain[0].get("payload", {})
+    computed_fp = _compute_fingerprint(genesis_payload)
+    if computed_fp != expect_fingerprint:
         raise EnrollError(
             f"fingerprint mismatch: expected {expect_fingerprint!r}, "
-            f"got {returned_fp!r}; nothing written"
+            f"computed {computed_fp!r} from genesis; nothing written"
         )
+
+    # Verify the entire chain with the real T6 function
+    from sandbox.protocol.registry import verify_chain, RegistryError
+
+    try:
+        verify_chain(registry_chain, computed_fp)
+    except (RegistryError, EnvelopeError) as exc:
+        raise EnrollError(
+            f"registry chain verification failed: {exc}; nothing written"
+        ) from exc
+
+    # --- Persist state atomically (all files or nothing) ---
+    _persist_enrollment(
+        data=data,
+        registry_chain=registry_chain,
+        fingerprint=computed_fp,
+        device_sk=sk,
+    )
 
     return data
 
@@ -292,6 +320,135 @@ def unenroll(layout, decision_path: str | None) -> None:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _compute_fingerprint(genesis_payload: dict) -> str:
+    """Compute the registry fingerprint from the genesis payload.
+
+    Same formula as ``sandbox.protocol.registry._payload_hash``:
+    ``sha256(org_id || ':' || canonical_json(payload))``.
+    """
+    canonical = json.dumps(
+        genesis_payload, sort_keys=True, separators=(",", ":")
+    ).encode()
+    org_id = genesis_payload.get("org_id", "")
+    return hashlib.sha256(
+        org_id.encode("utf-8") + b":" + canonical
+    ).hexdigest()
+
+
+def _persist_enrollment(
+    *,
+    data: dict,
+    registry_chain: list,
+    fingerprint: str,
+    device_sk: SigningKey,
+) -> None:
+    """Write managed marker, pinned_root.json, registry.json, device_id, device key.
+
+    Atomic: write temp files, then rename.  On any failure remove all temp
+    files and leave no partial state.
+    """
+    import os
+
+    from sandbox.connector.keyhome import (
+        _discover_workspace_roots,
+        key_home_root,
+    )
+    from sandbox.connector.layout import FolderLayout
+
+    # Discover workspace from the key home
+    roots = _discover_workspace_roots()
+    layout = None
+    for root in roots:
+        try:
+            lay = FolderLayout(root)
+            if lay.exists():
+                layout = lay
+                break
+        except Exception:  # noqa: BLE001
+            continue
+
+    if layout is None:
+        raise EnrollError("no initialized workspace found; run 'sandbox init' first")
+
+    sync_dir = layout.root / ".sandbox" / "state" / "sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
+
+    ws_id_file = layout.base / "workspace_id"
+    if not ws_id_file.exists():
+        raise EnrollError("workspace has no workspace_id")
+    ws_id = ws_id_file.read_text(encoding="utf-8").strip()
+
+    kh = key_home_root()
+    if kh is None:
+        raise EnrollError("key home not available")
+
+    temp_files: list[Path] = []
+    renames: list[tuple[Path, Path]] = []
+
+    try:
+        # 1. managed marker (sync dir)
+        _stage(sync_dir / "managed", "1", temp_files, renames)
+
+        # 2. pinned_root.json
+        _stage(
+            sync_dir / "pinned_root.json",
+            json.dumps({"fingerprint": fingerprint}),
+            temp_files, renames,
+        )
+
+        # 3. registry.json
+        _stage(
+            sync_dir / "registry.json",
+            json.dumps(registry_chain, sort_keys=True, separators=(",", ":")),
+            temp_files, renames,
+        )
+
+        # 4. device_id
+        _stage(
+            sync_dir / "device_id",
+            data.get("device_id", ""),
+            temp_files, renames,
+        )
+
+        # 5. device key (in key home)
+        device_dir = kh / ws_id / "device"
+        device_dir.mkdir(parents=True, exist_ok=True)
+        dk_path = device_dir / "device.key"
+        dk_tmp = Path(str(dk_path) + ".tmp")
+        dk_tmp.write_bytes(bytes(device_sk))
+        temp_files.append(dk_tmp)
+        renames.append((dk_tmp, dk_path))
+
+        # 6. managed marker (key home)
+        kh_ws_dir = kh / ws_id
+        kh_ws_dir.mkdir(parents=True, exist_ok=True)
+        _stage(kh_ws_dir / "managed", "1", temp_files, renames)
+
+        # Atomic: rename all temp files to final locations
+        for tmp, final in renames:
+            os.replace(str(tmp), str(final))
+
+    except Exception:
+        # Clean up all temp files -- leave no partial state
+        for tmp in temp_files:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+
+
+def _stage(
+    final_path: Path, content: str,
+    temp_files: list, renames: list,
+) -> None:
+    """Write *content* to a temp file beside *final_path*."""
+    tmp = Path(str(final_path) + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    temp_files.append(tmp)
+    renames.append((tmp, final_path))
+
 
 def _raise_enroll_error(exc: Exception) -> None:
     """Map an HTTPError to EnrollError.  Always raises."""
