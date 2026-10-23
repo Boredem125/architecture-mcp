@@ -278,8 +278,8 @@ def _multiworker_env(pg_url, app_url, owner_url, pg_roles):
     proc = subprocess.Popen(
         cmd,
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         # Start a new process group so we can kill the whole tree
         **_portable.popen_kwargs(),
     )

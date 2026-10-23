@@ -108,6 +108,38 @@ def _need(module: str, attr: str) -> None:
         raise M2T11Pending(f"{module}.{attr} not found")
 
 
+def _need_project_org_lookup(owner_url: str) -> None:
+    """Raise M2T11Pending if the SQL function project_org_lookup() is absent.
+
+    Migration 0009 adds this SECURITY DEFINER function.
+    """
+    conninfo = _conninfo(owner_url)
+    with psycopg.connect(conninfo) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM pg_proc WHERE proname = 'project_org_lookup'"
+        ).fetchone()
+    if row is None:
+        raise M2T11Pending(
+            "project_org_lookup not found (needs migration 0009)"
+        )
+
+
+def _need_sweep_org_ids(owner_url: str) -> None:
+    """Raise M2T11Pending if the SQL function sweep_org_ids() is absent.
+
+    Migration 0009 adds this SECURITY DEFINER function.
+    """
+    conninfo = _conninfo(owner_url)
+    with psycopg.connect(conninfo) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM pg_proc WHERE proname = 'sweep_org_ids'"
+        ).fetchone()
+    if row is None:
+        raise M2T11Pending(
+            "sweep_org_ids not found (needs migration 0009)"
+        )
+
+
 def _conninfo(url: str) -> str:
     return url.replace("+psycopg", "")
 
@@ -297,7 +329,7 @@ def test_guard_audit_quarantine_append_only(pg_url, pg_roles, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_audit_upload_success(audit_server):
     """Upload 3 audit records successfully (D3.2).
 
@@ -334,7 +366,7 @@ def test_audit_upload_success(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_audit_upload_fork_quarantined(audit_server):
     """A fork (same position, different hash) is quarantined (D3.2, threat 16).
 
@@ -393,7 +425,7 @@ def test_audit_upload_fork_quarantined(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_audit_upload_gap_refused(audit_server):
     """A gap in chain_length is refused (D3.2).
 
@@ -427,7 +459,7 @@ def test_audit_upload_gap_refused(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_audit_upload_noop_same_hash(audit_server):
     """Same position + same hash = no-op (D3.2).
 
@@ -469,7 +501,7 @@ def test_audit_upload_noop_same_hash(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_audit_upload_cross_org_refused(audit_server):
     """An audit upload for a different org gets 404 / 401 (cross-tenant).
 
@@ -504,8 +536,7 @@ def test_audit_upload_cross_org_refused(audit_server):
         assert resp.status_code == 200
 
     # Verify that org B cannot see org A's audit_records via RLS
-    with psycopg.connect(_conninfo(info["owner_url"])) as conn:
-        conn.execute("RESET ROLE")
+    with psycopg.connect(_conninfo(info["app_url"])) as conn:
         conn.execute("SET ROLE agg_app")
         conn.execute("SELECT set_config('app.org_id', %s, false)",
                      [evil_org_id])
@@ -522,7 +553,7 @@ def test_audit_upload_cross_org_refused(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_checkpoint_upload_success(audit_server):
     """A valid device-signed checkpoint is accepted (D3.3)."""
     _need("agg_cp.sync.audit_upload", "audit_upload_router")
@@ -562,7 +593,7 @@ def test_checkpoint_upload_success(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_checkpoint_replay_refused_server(audit_server):
     """A replayed checkpoint (same upload_seq) is refused (D3.3, threat 17)."""
     _need("agg_cp.sync.audit_upload", "audit_upload_router")
@@ -609,7 +640,7 @@ def test_checkpoint_replay_refused_server(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_checkpoint_skip_refused_server(audit_server):
     """A skipped upload_seq is refused (D3.3, threat 17).
 
@@ -652,7 +683,7 @@ def test_checkpoint_skip_refused_server(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_session_missing_alert(audit_server):
     """A session listed in checkpoint 1 but missing in checkpoint 2 raises
     session_missing (D3.3, threat 32).
@@ -723,7 +754,7 @@ def test_session_missing_alert(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_truncation_alert_server(audit_server):
     """A session with chain_length < previous checkpoint raises truncation (D3.3, threat 15)."""
     _need("agg_cp.sync.audit_upload", "audit_upload_router")
@@ -796,7 +827,7 @@ def test_truncation_alert_server(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_device_silent_no_alert_before_window(audit_server):
     """No device_silent alert before the checkpoint window expires (D3.5, threat 35).
 
@@ -853,7 +884,7 @@ def test_device_silent_no_alert_before_window(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_device_silent_after_missed_window(audit_server):
     """device_silent alert fires after the checkpoint window (D3.5, N6, threat 35).
 
@@ -907,7 +938,7 @@ def test_device_silent_after_missed_window(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_device_silent_no_duplicate_on_second_sweep(audit_server):
     """A second sweep does not duplicate the device_silent alert (D3.5, threat 35).
 
@@ -964,7 +995,7 @@ def test_device_silent_no_duplicate_on_second_sweep(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_device_silent_ends_on_fresh_checkpoint(audit_server):
     """A fresh checkpoint after device_silent ends the silent episode (D3.5, threat 35).
 
@@ -1051,13 +1082,17 @@ def test_device_silent_ends_on_fresh_checkpoint(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_audit_verify_cli_clean_project(audit_server):
     """``agg_cp.cli.main(["audit", "verify", "--project", <id>])`` exits 0
     on a project with a complete, consistent chain (D3.4).
+
+    The CLI connects as agg_app and calls project_org_lookup (migration
+    0009) to resolve the org_id before verifying.
     """
-    _need("agg_cp.sync.audit", "verify_project")
     info = audit_server
+    _need_project_org_lookup(info["owner_url"])
+    _need("agg_cp.sync.audit", "verify_project")
     sk, pub, kid = keygen()
     org_id = info["org_id"]
     project_id = str(uuid.uuid4())
@@ -1081,7 +1116,7 @@ def test_audit_verify_cli_clean_project(audit_server):
             json={"session_id": "sess-v", "records": records},
         )
 
-    # CLI verify should exit 0
+    # CLI verify with agg_app URL (needs project_org_lookup from 0009)
     import os
     os.environ["AGG_DATABASE_URL"] = info["app_url"]
     from agg_cp.cli import main as cli_main
@@ -1090,13 +1125,17 @@ def test_audit_verify_cli_clean_project(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_audit_verify_cli_detects_gap(audit_server):
     """``agg_cp.cli.main(["audit", "verify", "--project", <id>])`` exits
     non-zero and reports gap rows when the chain has a gap (D3.4, threat 18).
+
+    The CLI connects as agg_app and calls project_org_lookup (migration
+    0009) to resolve the org_id before verifying.
     """
-    _need("agg_cp.sync.audit", "verify_project")
     info = audit_server
+    _need_project_org_lookup(info["owner_url"])
+    _need("agg_cp.sync.audit", "verify_project")
     sk, pub, kid = keygen()
     org_id = info["org_id"]
     project_id = str(uuid.uuid4())
@@ -1146,7 +1185,7 @@ def test_audit_verify_cli_detects_gap(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_audit_upload_over_1000_records_gives_413(audit_server):
     """A batch with >1000 records is refused with 413 and nothing stored (ruling 2)."""
     _need("agg_cp.sync.audit_upload", "audit_upload_router")
@@ -1188,7 +1227,7 @@ def test_audit_upload_over_1000_records_gives_413(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_audit_upload_bad_record_in_batch_gives_400(audit_server):
     """One bad record in a batch gives 400 and nothing from the batch is stored (ruling 2)."""
     _need("agg_cp.sync.audit_upload", "audit_upload_router")
@@ -1237,7 +1276,7 @@ def test_audit_upload_bad_record_in_batch_gives_400(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_checkpoint_bad_signature_refused(audit_server):
     """A checkpoint with a bad signature is refused (400 invalid_signature, ruling 5).
 
@@ -1289,7 +1328,7 @@ def test_checkpoint_bad_signature_refused(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_checkpoint_signed_by_another_device_refused(audit_server):
     """A checkpoint signed by another device's valid key is refused (ruling 5).
 
@@ -1335,7 +1374,7 @@ def test_checkpoint_signed_by_another_device_refused(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_checkpoint_device_id_mismatch_refused(audit_server):
     """A checkpoint whose device_id differs from the token's device is refused (ruling 5).
 
@@ -1388,7 +1427,7 @@ def test_checkpoint_device_id_mismatch_refused(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_load_20_connectors_200_records(audit_server):
     """Gate item 6: 20 connectors x 200 records, 4 workers, one Postgres.
 
@@ -1398,7 +1437,11 @@ def test_load_20_connectors_200_records(audit_server):
     """
     _need("agg_cp.sync.audit_upload", "audit_upload_router")
     info = audit_server
-    org_id = info["org_id"]
+    # Use a dedicated org so the count is not contaminated by earlier tests
+    org_id = str(uuid.uuid4())
+    with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        create_org(conn, org_id, "Load Test Org")
 
     import httpx
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1484,7 +1527,7 @@ def test_load_20_connectors_200_records(audit_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
+
 def test_audit_upload_revoked_device_401(audit_server):
     """A revoked device's audit upload gets 401 (D1.5)."""
     _need("agg_cp.sync.audit_upload", "audit_upload_router")
@@ -1521,3 +1564,615 @@ def test_audit_upload_revoked_device_401(audit_server):
     assert resp.status_code == 401, (
         f"Expected 401 for revoked device, got {resp.status_code}"
     )
+
+
+# ===================================================================
+# RED: project_org_lookup -- migration 0009 (SECURITY DEFINER)
+# Allows agg_app to resolve project_id -> org_id for the CLI.
+# ===================================================================
+
+
+@pytest.mark.pg
+
+def test_project_org_lookup_known_project(audit_server):
+    """project_org_lookup(project_id) returns the correct org_id
+    for a known project (migration 0009, item 1).
+    """
+    info = audit_server
+    _need_project_org_lookup(info["owner_url"])
+    org_id = info["org_id"]
+    project_id = str(uuid.uuid4())
+
+    with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        create_project(conn, org_id, project_id)
+
+    # Call the function as agg_app (the intended consumer)
+    with psycopg.connect(_conninfo(info["app_url"])) as conn:
+        conn.execute("SET ROLE agg_app")
+        row = conn.execute(
+            "SELECT project_org_lookup(%s::uuid)", [project_id],
+        ).fetchone()
+        assert row is not None
+        assert str(row[0]) == org_id
+
+
+@pytest.mark.pg
+
+def test_project_org_lookup_unknown_project(audit_server):
+    """project_org_lookup(project_id) returns NULL for an unknown
+    project_id (migration 0009, item 1).
+    """
+    info = audit_server
+    _need_project_org_lookup(info["owner_url"])
+
+    bogus_id = str(uuid.uuid4())
+    with psycopg.connect(_conninfo(info["app_url"])) as conn:
+        conn.execute("SET ROLE agg_app")
+        row = conn.execute(
+            "SELECT project_org_lookup(%s::uuid)", [bogus_id],
+        ).fetchone()
+        assert row is not None, "expected a row with NULL, not no row"
+        assert row[0] is None, f"expected NULL, got {row[0]}"
+
+
+@pytest.mark.pg
+
+def test_project_org_lookup_security_definer_grants(audit_server):
+    """project_org_lookup is SECURITY DEFINER with a fixed search_path.
+    EXECUTE is granted to agg_app and NOT to PUBLIC (migration 0009,
+    item 2).  Verified via pg_proc and has_function_privilege.
+    """
+    info = audit_server
+    _need_project_org_lookup(info["owner_url"])
+
+    with psycopg.connect(_conninfo(info["owner_url"])) as conn:
+        # SECURITY DEFINER flag
+        row = conn.execute(
+            "SELECT prosecdef, proconfig FROM pg_proc "
+            "WHERE proname = 'project_org_lookup'",
+        ).fetchone()
+        assert row is not None, "function not in pg_proc"
+        assert row[0] is True, "project_org_lookup is not SECURITY DEFINER"
+        # proconfig must include a search_path entry
+        config = row[1] or []
+        assert any("search_path" in c for c in config), (
+            f"search_path not set in proconfig: {config}"
+        )
+
+        # EXECUTE granted to agg_app
+        has_exec = conn.execute(
+            "SELECT has_function_privilege('agg_app', "
+            "'project_org_lookup(uuid)', 'EXECUTE')",
+        ).fetchone()[0]
+        assert has_exec is True, "agg_app lacks EXECUTE on project_org_lookup"
+
+        # NOT granted to PUBLIC
+        # PUBLIC is a pseudo-role, so has_function_privilege cannot name
+        # it; read the ACL instead. A NULL proacl means the default grant,
+        # which includes EXECUTE for PUBLIC (grantee 0).
+        pub_exec = conn.execute(
+            "SELECT p.proacl IS NULL OR EXISTS ("
+            " SELECT 1 FROM aclexplode(p.proacl) a"
+            " WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE')"
+            " FROM pg_proc p WHERE p.proname = 'project_org_lookup'",
+        ).fetchone()[0]
+        assert pub_exec is False, (
+            "PUBLIC has EXECUTE on project_org_lookup (should not)"
+        )
+
+
+@pytest.mark.pg
+
+def test_audit_verify_cli_no_cross_org_rows(audit_server):
+    """CLI audit verify with app_url for org A's project never reports
+    org B's rows (cross-org isolation via RLS, migration 0009, item 4).
+
+    Org B has a gap; org A has a clean chain.  The CLI must exit 0 for
+    org A's project and not be contaminated by org B's data.
+    """
+    info = audit_server
+    _need_project_org_lookup(info["owner_url"])
+    sk_a, pub_a, _ = keygen()
+    sk_b, pub_b, _ = keygen()
+    org_a = info["org_id"]
+    org_b = info["org_evil"]
+    proj_a = str(uuid.uuid4())
+    proj_b = str(uuid.uuid4())
+
+    # Create projects in both orgs
+    with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_a])
+        create_project(conn, org_a, proj_a, name="clean-proj")
+    with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_b])
+        create_project(conn, org_b, proj_b, name="evil-proj")
+
+    # Seed org A: clean chain of 3 records
+    dev_a = _seed_connector(info["owner_url"], org_a, proj_a, pub_a)
+    tok_a = secrets.token_urlsafe(32)
+    _seed_device_token(info["owner_url"], org_a, proj_a, dev_a, tok_a)
+    records_a = _make_audit_chain("sess-clean", 3)
+
+    import httpx
+    with httpx.Client(base_url=info["base_url"], timeout=10) as client:
+        resp_a = client.post(
+            "/api/v1/sync/audit",
+            headers={"Authorization": f"Bearer {tok_a}"},
+            json={"session_id": "sess-clean", "records": records_a},
+        )
+        assert resp_a.status_code == 200
+
+    # Seed org B: chain of 3 + planted gap (record 5 with no record 4)
+    dev_b = _seed_connector(info["owner_url"], org_b, proj_b, pub_b)
+    tok_b = secrets.token_urlsafe(32)
+    _seed_device_token(info["owner_url"], org_b, proj_b, dev_b, tok_b)
+    records_b = _make_audit_chain("sess-evil", 3)
+
+    with httpx.Client(base_url=info["base_url"], timeout=10) as client:
+        resp_b = client.post(
+            "/api/v1/sync/audit",
+            headers={"Authorization": f"Bearer {tok_b}"},
+            json={"session_id": "sess-evil", "records": records_b},
+        )
+        assert resp_b.status_code == 200
+
+    # Plant a gap in org B (record 5 without record 4)
+    with psycopg.connect(_conninfo(info["owner_url"])) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_b])
+        conn.execute(
+            "INSERT INTO audit_records "
+            "(id, org_id, connector_id, session_id, chain_length, "
+            "previous_hash, record_hash, body, created_at) "
+            "VALUES (%s, %s, %s, 'sess-evil', 5, 'h4', 'h5', "
+            "'{\"event\": \"gap\"}'::jsonb, now())",
+            [str(uuid.uuid4()), org_b, dev_b],
+        )
+        conn.commit()
+
+    # CLI verify org A's clean project with agg_app URL
+    import os
+    os.environ["AGG_DATABASE_URL"] = info["app_url"]
+    from agg_cp.cli import main as cli_main
+    rc = cli_main(["audit", "verify", "--project", proj_a])
+    assert rc == 0, (
+        f"Cross-org contamination: org A clean project exited {rc}"
+    )
+
+
+@pytest.mark.pg
+
+def test_project_org_lookup_downgrade_upgrade(pg_url, pg_roles, owner_url):
+    """Alembic downgrade from 0009 drops project_org_lookup;
+    upgrade re-adds it (migration 0009, item 5).
+    """
+    ensure_at_head(pg_url)
+    _need_project_org_lookup(owner_url)
+
+    from agg_cp.db import alembic_config
+    from alembic.command import downgrade, upgrade
+
+    cfg = alembic_config(pg_url)
+
+    # Downgrade one step (from 0009 to 0008)
+    downgrade(cfg, "000000000008")
+
+    # Function should be gone
+    with psycopg.connect(_conninfo(owner_url)) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM pg_proc WHERE proname = 'project_org_lookup'"
+        ).fetchone()
+        assert row is None, "function still exists after downgrade"
+
+    # Re-upgrade to head
+    upgrade(cfg, "head")
+
+    # Function should be back
+    with psycopg.connect(_conninfo(owner_url)) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM pg_proc WHERE proname = 'project_org_lookup'"
+        ).fetchone()
+        assert row is not None, "function not restored after upgrade"
+
+
+# ===================================================================
+# Sweep task lifecycle test (ruling 4)
+# ===================================================================
+
+
+@pytest.mark.pg
+def test_sweep_task_created_and_cancelled(pg_url, pg_roles, app_url):
+    """The app lifespan creates a sweep_device_silent task and cancels it
+    on shutdown (ruling 4).  Does not wait for real time.
+    """
+    from agg_cp.app import create_app
+    from agg_cp.db import alembic_config
+    from alembic.command import upgrade
+
+    cfg = alembic_config(pg_url)
+    upgrade(cfg, "head")
+
+    app = create_app(db_url=app_url)
+
+    import asyncio
+    from starlette.testclient import TestClient
+
+    with TestClient(app) as client:
+        # The lifespan should have started the sweep task
+        task = getattr(app.state, "sweep_task", None)
+        assert task is not None, "sweep_task not created in lifespan"
+        assert isinstance(task, asyncio.Task)
+        assert not task.done(), "sweep_task ended prematurely"
+
+    # After exit, the task should be cancelled
+    assert task.done(), "sweep_task not cancelled on shutdown"
+
+
+# ===================================================================
+# RED: sweep_all_orgs multi-org sweep (D3.5, HIGH, security review item 1)
+# ===================================================================
+
+
+@pytest.mark.pg
+def test_sweep_all_orgs_fires_per_org(audit_server):
+    """sweep_all_orgs(conn, now) with 2 orgs, each having a silent device,
+    raises exactly one device_silent per org, and org A's alert carries
+    org A's id (item 1, HIGH).
+
+    Connects as agg_app with NO app.org_id set.  sweep_all_orgs iterates
+    orgs via sweep_org_ids() and sets the RLS context per org.
+    """
+    _need("agg_cp.sync.audit", "sweep_all_orgs")
+    from agg_cp.sync.audit import sweep_all_orgs
+    info = audit_server
+    sk_a, pub_a, _ = keygen()
+    sk_b, pub_b, _ = keygen()
+    org_a = info["org_id"]
+    org_b = info["org_evil"]
+    proj_a = str(uuid.uuid4())
+    proj_b = str(uuid.uuid4())
+
+    with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_a])
+        create_project(conn, org_a, proj_a, name="sweep-org-a")
+    with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_b])
+        create_project(conn, org_b, proj_b, name="sweep-org-b")
+
+    dev_a = _seed_connector(info["owner_url"], org_a, proj_a, pub_a)
+    tok_a = secrets.token_urlsafe(32)
+    _seed_device_token(info["owner_url"], org_a, proj_a, dev_a, tok_a)
+
+    dev_b = _seed_connector(info["owner_url"], org_b, proj_b, pub_b)
+    tok_b = secrets.token_urlsafe(32)
+    _seed_device_token(info["owner_url"], org_b, proj_b, dev_b, tok_b)
+
+    # Send one checkpoint per device so they appear in audit_heads
+    import httpx
+    for sk, dev, tok in [(sk_a, dev_a, tok_a), (sk_b, dev_b, tok_b)]:
+        payload = {
+            "device_id": dev,
+            "upload_seq": 1,
+            "sessions": [{"session_id": "s1", "chain_length": 1,
+                          "head_hash": "h1"}],
+            "ts": time.time(),
+        }
+        envelope = sign_envelope("agg/audit-head/v1", payload, sk)
+        with httpx.Client(base_url=info["base_url"], timeout=10) as client:
+            resp = client.post(
+                "/api/v1/sync/checkpoint",
+                headers={"Authorization": f"Bearer {tok}"},
+                json=envelope,
+            )
+            assert resp.status_code == 200
+
+    import datetime as dt
+
+    # Connect as agg_app with NO app.org_id (the bug: FORCE RLS hides rows)
+    with psycopg.connect(_conninfo(info["app_url"])) as conn:
+        conn.execute("SET ROLE agg_app")
+        # Do NOT set app.org_id -- sweep_all_orgs must handle this
+        now = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=200)
+        count = sweep_all_orgs(conn, now)
+        conn.commit()
+
+    # Exactly one device_silent per org
+    with psycopg.connect(_conninfo(info["owner_url"])) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_a])
+        cnt_a = conn.execute(
+            "SELECT count(*) FROM sync_alerts "
+            "WHERE connector_id = %s AND kind = 'device_silent'",
+            [dev_a],
+        ).fetchone()[0]
+        assert cnt_a == 1, f"org A: expected 1 device_silent, got {cnt_a}"
+
+    with psycopg.connect(_conninfo(info["owner_url"])) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_b])
+        cnt_b = conn.execute(
+            "SELECT count(*) FROM sync_alerts "
+            "WHERE connector_id = %s AND kind = 'device_silent'",
+            [dev_b],
+        ).fetchone()[0]
+        assert cnt_b == 1, f"org B: expected 1 device_silent, got {cnt_b}"
+
+    # Org A's alert carries org A's id
+    with psycopg.connect(_conninfo(info["owner_url"])) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_a])
+        alert_org = conn.execute(
+            "SELECT org_id FROM sync_alerts "
+            "WHERE connector_id = %s AND kind = 'device_silent'",
+            [dev_a],
+        ).fetchone()
+        assert str(alert_org[0]) == org_a, (
+            f"org A alert has org_id {alert_org[0]}, expected {org_a}"
+        )
+
+
+@pytest.mark.pg
+def test_sweep_org_ids_security_definer_grants(audit_server):
+    """sweep_org_ids is SECURITY DEFINER with a fixed search_path;
+    agg_app has EXECUTE and PUBLIC does not (item 1, HIGH).
+
+    Same aclexplode check as test_project_org_lookup_security_definer_grants.
+    """
+    info = audit_server
+    _need_sweep_org_ids(info["owner_url"])
+
+    with psycopg.connect(_conninfo(info["owner_url"])) as conn:
+        # SECURITY DEFINER flag
+        row = conn.execute(
+            "SELECT prosecdef, proconfig FROM pg_proc "
+            "WHERE proname = 'sweep_org_ids'",
+        ).fetchone()
+        assert row is not None, "function not in pg_proc"
+        assert row[0] is True, "sweep_org_ids is not SECURITY DEFINER"
+        config = row[1] or []
+        assert any("search_path" in c for c in config), (
+            f"search_path not set in proconfig: {config}"
+        )
+
+        # EXECUTE granted to agg_app
+        has_exec = conn.execute(
+            "SELECT has_function_privilege('agg_app', "
+            "'sweep_org_ids()', 'EXECUTE')",
+        ).fetchone()[0]
+        assert has_exec is True, "agg_app lacks EXECUTE on sweep_org_ids"
+
+        # NOT granted to PUBLIC
+        pub_exec = conn.execute(
+            "SELECT p.proacl IS NULL OR EXISTS ("
+            " SELECT 1 FROM aclexplode(p.proacl) a"
+            " WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE')"
+            " FROM pg_proc p WHERE p.proname = 'sweep_org_ids'",
+        ).fetchone()[0]
+        assert pub_exec is False, (
+            "PUBLIC has EXECUTE on sweep_org_ids (should not)"
+        )
+
+
+@pytest.mark.pg
+def test_lifespan_calls_sweep_all_orgs(pg_url, pg_roles, app_url, monkeypatch):
+    """The lifespan sweep task calls sweep_all_orgs once per interval
+    (item 1, HIGH).  Monkeypatched to fire quickly; no real-time wait.
+    """
+    _need("agg_cp.sync.audit", "sweep_all_orgs")
+
+    import agg_cp.sync.audit as audit_mod
+    sweep_calls = []
+
+    def recording_sweep(conn, now, **kw):
+        sweep_calls.append(now)
+        return 0
+
+    monkeypatch.setattr(audit_mod, "sweep_all_orgs", recording_sweep)
+
+    from agg_cp.app import create_app
+    from agg_cp.db import alembic_config
+    from alembic.command import upgrade
+    import asyncio
+
+    cfg = alembic_config(pg_url)
+    upgrade(cfg, "head")
+
+    _orig_sleep = asyncio.sleep
+    _count = {"n": 0}
+
+    async def quick_sleep(secs):
+        _count["n"] += 1
+        if _count["n"] <= 2:
+            await _orig_sleep(0.01)
+        else:
+            await _orig_sleep(120)
+
+    monkeypatch.setattr(asyncio, "sleep", quick_sleep)
+
+    app = create_app(db_url=app_url)
+
+    from starlette.testclient import TestClient
+    with TestClient(app) as client:
+        import time as tm
+        tm.sleep(0.5)
+
+    assert len(sweep_calls) >= 1, (
+        "sweep_all_orgs not called by the lifespan sweep task"
+    )
+
+
+# ===================================================================
+# RED: concurrent checkpoint conflict (item 2, MEDIUM)
+# ===================================================================
+
+
+@pytest.mark.pg
+def test_concurrent_checkpoint_same_seq_409(audit_server):
+    """Two concurrent POST /api/v1/sync/checkpoint with the same
+    upload_seq: one gets 200, the other gets 409 (not 500), and
+    exactly one row is stored (item 2, MEDIUM).
+
+    Uses 2 threads against the real route.
+    """
+    info = audit_server
+    sk, pub, _ = keygen()
+    org_id = info["org_id"]
+    project_id = str(uuid.uuid4())
+
+    with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        create_project(conn, org_id, project_id)
+
+    device_id = _seed_connector(info["owner_url"], org_id, project_id, pub)
+    token = secrets.token_urlsafe(32)
+    _seed_device_token(info["owner_url"], org_id, project_id, device_id, token)
+
+    # Baseline: checkpoint at seq 1
+    payload1 = {
+        "device_id": device_id,
+        "upload_seq": 1,
+        "sessions": [{"session_id": "s1", "chain_length": 1,
+                       "head_hash": "h1"}],
+        "ts": time.time(),
+    }
+    env1 = sign_envelope("agg/audit-head/v1", payload1, sk)
+
+    import httpx
+    with httpx.Client(base_url=info["base_url"], timeout=10) as client:
+        resp = client.post(
+            "/api/v1/sync/checkpoint",
+            headers={"Authorization": f"Bearer {token}"},
+            json=env1,
+        )
+        assert resp.status_code == 200
+
+    # Race: two threads send upload_seq=2 concurrently
+    payload2 = {
+        "device_id": device_id,
+        "upload_seq": 2,
+        "sessions": [{"session_id": "s1", "chain_length": 2,
+                       "head_hash": "h2"}],
+        "ts": time.time(),
+    }
+    env2 = sign_envelope("agg/audit-head/v1", payload2, sk)
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def send_checkpoint():
+        with httpx.Client(base_url=info["base_url"], timeout=10) as c:
+            return c.post(
+                "/api/v1/sync/checkpoint",
+                headers={"Authorization": f"Bearer {token}"},
+                json=env2,
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(send_checkpoint) for _ in range(2)]
+        results = [f.result() for f in as_completed(futures)]
+
+    codes = sorted([r.status_code for r in results])
+    assert 200 in codes, f"No 200 response: {codes}"
+    assert 409 in codes, f"Expected one 409, got {codes}"
+    assert 500 not in codes, f"Got 500 (unhandled conflict): {codes}"
+
+    # Exactly one row for upload_seq=2
+    with psycopg.connect(_conninfo(info["owner_url"])) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        count = conn.execute(
+            "SELECT count(*) FROM audit_heads "
+            "WHERE connector_id = %s AND upload_seq = 2",
+            [device_id],
+        ).fetchone()[0]
+        assert count == 1, f"Expected 1 row for seq 2, got {count}"
+
+
+# ===================================================================
+# RED: sweep partial failure continues (item 5, INFO)
+# ===================================================================
+
+
+@pytest.mark.pg
+def test_sweep_partial_failure_continues(audit_server):
+    """A sweep where one alert insert fails (e.g. by conflict) still
+    records the other orgs' and devices' alerts (item 5, INFO).
+
+    No aborted-transaction cascade: each org's alert is independent.
+    """
+    _need("agg_cp.sync.audit", "sweep_all_orgs")
+    from agg_cp.sync.audit import sweep_all_orgs
+    info = audit_server
+    sk_a, pub_a, _ = keygen()
+    sk_b, pub_b, _ = keygen()
+    org_a = info["org_id"]
+    org_b = info["org_evil"]
+    proj_a = str(uuid.uuid4())
+    proj_b = str(uuid.uuid4())
+
+    with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_a])
+        create_project(conn, org_a, proj_a, name="partial-a")
+    with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_b])
+        create_project(conn, org_b, proj_b, name="partial-b")
+
+    dev_a = _seed_connector(info["owner_url"], org_a, proj_a, pub_a)
+    tok_a = secrets.token_urlsafe(32)
+    _seed_device_token(info["owner_url"], org_a, proj_a, dev_a, tok_a)
+
+    dev_b = _seed_connector(info["owner_url"], org_b, proj_b, pub_b)
+    tok_b = secrets.token_urlsafe(32)
+    _seed_device_token(info["owner_url"], org_b, proj_b, dev_b, tok_b)
+
+    import httpx
+    for sk, dev, tok in [(sk_a, dev_a, tok_a), (sk_b, dev_b, tok_b)]:
+        payload = {
+            "device_id": dev,
+            "upload_seq": 1,
+            "sessions": [{"session_id": "s1", "chain_length": 1,
+                          "head_hash": "h1"}],
+            "ts": time.time(),
+        }
+        envelope = sign_envelope("agg/audit-head/v1", payload, sk)
+        with httpx.Client(base_url=info["base_url"], timeout=10) as client:
+            resp = client.post(
+                "/api/v1/sync/checkpoint",
+                headers={"Authorization": f"Bearer {tok}"},
+                json=envelope,
+            )
+            assert resp.status_code == 200
+
+    import datetime as dt
+    now = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=200)
+
+    # Pre-insert a device_silent alert for org A to cause a conflict
+    with psycopg.connect(_conninfo(info["owner_url"])) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_a])
+        conn.execute(
+            "INSERT INTO sync_alerts "
+            "(id, org_id, project_id, connector_id, kind, detail, "
+            "created_at) "
+            "VALUES (%s, %s::uuid, %s::uuid, %s::uuid, 'device_silent', "
+            "%s::jsonb, %s)",
+            [
+                str(uuid.uuid4()), org_a, proj_a, dev_a,
+                '{"pre_inserted": true}',
+                now,
+            ],
+        )
+        conn.commit()
+
+    # sweep_all_orgs should still record org B's alert despite org A's
+    # pre-existing alert preventing a duplicate
+    with psycopg.connect(_conninfo(info["app_url"])) as conn:
+        conn.execute("SET ROLE agg_app")
+        sweep_all_orgs(conn, now)
+        conn.commit()
+
+    # Org B must have a device_silent alert
+    with psycopg.connect(_conninfo(info["owner_url"])) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_b])
+        cnt_b = conn.execute(
+            "SELECT count(*) FROM sync_alerts "
+            "WHERE connector_id = %s AND kind = 'device_silent'",
+            [dev_b],
+        ).fetchone()[0]
+        assert cnt_b >= 1, (
+            "Org B's alert not recorded after partial failure in org A"
+        )

@@ -74,13 +74,19 @@ _M2_ENROLL_PERSIST_ROUTES = frozenset({
     ("GET", "/api/v1/sync/registry"),
 })
 
+# M2 T11 named exception (M2_BASELINE.md section 3)
+_M2_T11_ROUTES = frozenset({
+    ("POST", "/api/v1/sync/audit"),
+    ("POST", "/api/v1/sync/checkpoint"),
+})
+
 # Infrastructure routes
 _INFRA_ROUTES = frozenset({
     ("GET", "/health"),
     ("GET", "/ready"),
 })
 
-EXPECTED_ROUTES = _AUTH_PRE_AUTH | _AUTH_SESSION | _T9_ROUTES | _M2_T7_T8_ROUTES | _M2_T9_ROUTES | _M2_ENROLL_PERSIST_ROUTES | _INFRA_ROUTES
+EXPECTED_ROUTES = _AUTH_PRE_AUTH | _AUTH_SESSION | _T9_ROUTES | _M2_T7_T8_ROUTES | _M2_T9_ROUTES | _M2_ENROLL_PERSIST_ROUTES | _M2_T11_ROUTES | _INFRA_ROUTES
 
 
 # ---------------------------------------------------------------------------

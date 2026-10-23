@@ -18,7 +18,27 @@
    - The builder's test setup edits were ruled clean: the `prev_hash` `org_id:` prefix, and the separate bundle_signer key.
    - Measured: connector 2001 passed, 1 skipped. ee with pg 577 passed, 1 skipped, 2 failed (the known `test_t10_multiworker.py` Windows ReadTimeouts).
 
-**Next:** T11, tests first. T12 must consume `_enforced_approval`.
+## M2 T11 (23 Oct 2026): done
+
+1. The tests were committed first in `0ed4ff2`.
+2. **Server:**
+   - Device-token `POST /api/v1/sync/audit`: batch, all-or-nothing, 1 MiB and 1000 records (413).
+   - `POST /api/v1/sync/checkpoint`: `agg/audit-head/v1` signed by the device key. `upload_seq` must be exactly +1, and a repeat or concurrent equal seq gets 409. Truncation and session_missing raise alerts, and a fork is quarantined.
+   - Migration `0009` adds 2 SECURITY DEFINER functions, `project_org_lookup` and `sweep_org_ids` (agg_app EXECUTE only), plus `projects_owner_select`.
+   - `agg-cp audit verify --project` runs as agg_app under RLS.
+   - `device_silent` is server-side: the lifespan task runs `sweep_all_orgs` every 60 s (per-org `app.org_id`, advisory lock, a SAVEPOINT per insert).
+3. **Connector:**
+   - `sync.audit_upload` is lazy-imported from `run_once`, managed only. A failure is logged and never blocks escalations.
+   - Managed-mode retention deletes nothing locally (fail closed).
+4. **Root cause of the old ee Windows ReadTimeouts:** the test servers used `subprocess.PIPE` and never read it, so the pipe buffer filled and the workers blocked. The fix is `DEVNULL` in `m2_sync_server.py`, `test_m2_t7_signer.py` and `test_t10_multiworker.py` (frozen; a named exception in M2_BASELINE section 3).
+5. **Security:** round 1 CHANGES (1 HIGH: the sweep saw no rows under RLS), round 2 APPROVE. Measured: connector 2040 passed, 1 skipped. ee 618 passed, 1 skipped, **0 failed**. lint-imports is clean, and Semgrep found nothing new.
+
+**Follow-ups (not blockers):**
+- (a) Managed-mode retention keeps every local record. Add deletion of fully acknowledged sessions (`cursor_acknowledges_session`) with a tested size bound.
+- (b) D3.3 says a repeat or skip is "refused and alerted". It is refused with 409 but writes no `sync_alerts` row. Decide whether to add one.
+- (c) The test servers now discard stdout and stderr; consider logging to a temp file for diagnostics.
+
+**Next:** T12, tests first. T12 must consume `_enforced_approval`.
 
 ## M2 T9-T10 status (22 Oct 2026, end of session)
 

@@ -78,8 +78,9 @@ All 412 ee tests pass on CI Linux with Postgres.
 | `ee/tests/test_t9_routes.py::test_frozen_route_set` | T7, T8 | the 10 new M2 routes added to the expected set, nothing removed | security (T7/T8 review) |
 | `ee/tests/test_t9_routes.py::test_frozen_route_set` | T9 | 2 bundle routes added to `_M2_T9_ROUTES` and included in `EXPECTED_ROUTES`, nothing removed | security (T9 review) |
 | `ee/tests/test_m2_t9_bundles.py` (3 admin-create tests) | T9 | autouse `_bundle_signer_key_env` fixture added (setup-only, provides `AGG_BUNDLE_SIGNER_KEY_FILE`); assertions unchanged | security (T9 review, F2) |
-| `ee/tests/test_t9_routes.py::test_frozen_route_set` | Enroll-persist | 1 registry route added to `_M2_ENROLL_PERSIST_ROUTES` and included in `EXPECTED_ROUTES`, nothing removed | security (pending) |
-| `ee/tests/test_t9_routes.py::test_frozen_route_set` | T11 | 2 audit routes added to `_M2_T11_ROUTES` and included in `EXPECTED_ROUTES`, nothing removed | security (pending) |
+| `ee/tests/test_t9_routes.py::test_frozen_route_set` | Enroll-persist | 1 registry route added to `_M2_ENROLL_PERSIST_ROUTES` and included in `EXPECTED_ROUTES`, nothing removed | security (enroll-persist review, APPROVE) |
+| `ee/tests/test_t9_routes.py::test_frozen_route_set` | T11 | 2 audit routes added to `_M2_T11_ROUTES` and included in `EXPECTED_ROUTES`, nothing removed | security (T11 round 2, APPROVE) |
+| `ee/tests/test_t10_multiworker.py` (server start) | T11 | `stdout`/`stderr` `subprocess.PIPE` to `subprocess.DEVNULL` at ~281-282. The pipes were never read, so the Windows pipe buffer filled and uvicorn workers blocked (the known ReadTimeouts). No assertion changed | security (T11 round 2, APPROVE) |
 
 Any other frozen test that fails: stop, list it, security decides.
 
