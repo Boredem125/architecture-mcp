@@ -114,7 +114,65 @@ def create_app(
                 pool_pre_ping=settings.db_pool_pre_ping,
                 pool_recycle=settings.db_pool_recycle,
             )
+
+        # Start periodic device_silent sweep (T11, ruling 4)
+        sweep_task = None
+        if settings.db_url:
+            import asyncio
+
+            async def _sweep_loop():
+                """Run sweep_all_orgs every 60 s.
+
+                Uses its own short-lived psycopg connection as agg_app.
+                ``sweep_all_orgs`` iterates orgs via the SECURITY DEFINER
+                ``sweep_org_ids()`` and sets ``app.org_id`` per org.
+                Errors are logged and swallowed so the task never dies.
+
+                The sync DB work runs in a thread via
+                ``asyncio.to_thread`` so the event loop stays
+                responsive for incoming HTTP requests.
+                """
+                import datetime as dt
+                import logging
+                import psycopg
+
+                _log = logging.getLogger("agg_cp.sweep")
+                conninfo = settings.db_url.replace("+psycopg", "")
+
+                def _do_sweep():
+                    from .sync.audit import sweep_all_orgs
+                    with psycopg.connect(conninfo) as conn:
+                        conn.execute("SET ROLE agg_app")
+                        now = dt.datetime.now(dt.timezone.utc)
+                        sweep_all_orgs(conn, now)
+                        conn.commit()
+
+                while True:
+                    try:
+                        await asyncio.sleep(60)
+                    except asyncio.CancelledError:
+                        return
+                    try:
+                        await asyncio.to_thread(_do_sweep)
+                    except asyncio.CancelledError:
+                        return
+                    except Exception:
+                        _log.exception("sweep_all_orgs error")
+
+            sweep_task = asyncio.create_task(_sweep_loop())
+            app.state.sweep_task = sweep_task
+
         yield
+
+        # Cancel the sweep task cleanly on shutdown
+        if sweep_task is not None:
+            sweep_task.cancel()
+            import asyncio
+            try:
+                await sweep_task
+            except asyncio.CancelledError:
+                pass
+
         engine = getattr(app.state, "engine", None)
         if engine is not None:
             await engine.dispose()
@@ -198,6 +256,14 @@ def create_app(
             db_url=settings.db_url, clock=actual_clock
         )
         for _r in _bundle_r.routes:
+            app.router.routes.append(_r)
+
+        from .sync.audit_upload import audit_upload_router
+
+        _audit_r = audit_upload_router(
+            db_url=settings.db_url, clock=actual_clock
+        )
+        for _r in _audit_r.routes:
             app.router.routes.append(_r)
 
     @app.get("/health")

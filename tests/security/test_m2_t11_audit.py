@@ -333,7 +333,6 @@ def test_guard_hook_does_not_import_sync_audit_upload(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_upload_records_in_order(tmp_path, monkeypatch):
     """Audit records are uploaded in session/chain_length order (D3.2).
 
@@ -373,7 +372,6 @@ def test_upload_records_in_order(tmp_path, monkeypatch):
         assert rec["chain_length"] == i + 1
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_upload_resumes_from_cursor(tmp_path, monkeypatch):
     """Upload resumes from where the cursor left off (D3.1).
 
@@ -424,7 +422,6 @@ def test_upload_resumes_from_cursor(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_forked_chain_detected(tmp_path, monkeypatch):
     """A forked chain (same position, different hash) is quarantined (D3.2, threat 16).
 
@@ -458,7 +455,6 @@ def test_forked_chain_detected(tmp_path, monkeypatch):
         upload_records(uploader, fake_connect, "tok-1", "http://fake")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_reordered_chain_refused(tmp_path, monkeypatch):
     """Records uploaded out of order are refused by the server (D3.2).
 
@@ -491,7 +487,6 @@ def test_reordered_chain_refused(tmp_path, monkeypatch):
         upload_records(uploader, fake_connect, "tok-1", "http://fake")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_truncated_chain_upload(tmp_path, monkeypatch):
     """A truncated local chain (fewer records than cursor) is detected (D3.2).
 
@@ -539,7 +534,6 @@ def test_truncated_chain_upload(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_checkpoint_upload_seq_increments(tmp_path, monkeypatch):
     """Checkpoint upload_seq increments by exactly 1 each time (D3.3, S11, threat 17)."""
     _need("sandbox.connector.sync.audit_upload", "AuditUploader")
@@ -573,7 +567,6 @@ def test_checkpoint_upload_seq_increments(tmp_path, monkeypatch):
     assert seq2 == seq1 + 1
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_checkpoint_replay_refused(tmp_path, monkeypatch):
     """A replayed checkpoint (same upload_seq) is refused (D3.3, threat 17).
 
@@ -610,7 +603,6 @@ def test_checkpoint_replay_refused(tmp_path, monkeypatch):
         send_checkpoint(uploader, fake_connect, "tok-1", "http://fake")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_checkpoint_skip_refused(tmp_path, monkeypatch):
     """A skipped upload_seq is refused (D3.3, threat 17).
 
@@ -641,7 +633,6 @@ def test_checkpoint_skip_refused(tmp_path, monkeypatch):
         send_checkpoint(uploader, fake_connect, "tok-1", "http://fake")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_checkpoint_lists_all_sessions(tmp_path, monkeypatch):
     """Checkpoint lists every local session, uploaded or not (S12, threat 32).
 
@@ -681,7 +672,6 @@ def test_checkpoint_lists_all_sessions(tmp_path, monkeypatch):
     assert session_ids == {"sess-a", "sess-b", "sess-c"}
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_checkpoint_signed_by_device_key(tmp_path, monkeypatch):
     """Checkpoint is signed with the device key, tag agg/audit-head/v1 (D3.3)."""
     _need("sandbox.connector.sync.audit_upload", "AuditUploader")
@@ -724,7 +714,6 @@ def test_checkpoint_signed_by_device_key(tmp_path, monkeypatch):
     vk.verify(msg, sig_bytes)  # raises if invalid
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_session_missing_alert(tmp_path, monkeypatch):
     """A session listed in an earlier checkpoint but missing later raises
     session_missing (D3.3, threat 32).
@@ -781,7 +770,6 @@ def test_session_missing_alert(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_truncation_alert_on_shorter_chain(tmp_path, monkeypatch):
     """A session with chain_length below an earlier checkpoint raises
     truncation (D3.3, threat 15).
@@ -838,7 +826,6 @@ def test_truncation_alert_on_shorter_chain(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_server_head_mismatch_detected(tmp_path, monkeypatch):
     """The connector raises server_head_mismatch when the server's head is
     behind what was acknowledged (D3.4, threat 18).
@@ -889,7 +876,6 @@ def test_server_head_mismatch_detected(tmp_path, monkeypatch):
         verify_head(uploader, rewound_head)
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_same_position_same_hash_is_noop(tmp_path, monkeypatch):
     """Uploading a record the server already has (same position, same hash)
     is a no-op (D3.2).
@@ -928,7 +914,6 @@ def test_same_position_same_hash_is_noop(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_retention_refuses_past_cursor(tmp_path, monkeypatch):
     """In managed mode, retention.apply never deletes past the cursor (D3.6).
 
@@ -991,7 +976,6 @@ def test_retention_refuses_past_cursor(tmp_path, monkeypatch):
     assert "sess-b" not in deleted, "retention deleted sess-b past cursor"
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_retention_unmanaged_deletes_normally(tmp_path, monkeypatch):
     """In unmanaged mode, retention.apply deletes expired sessions normally.
 
@@ -1040,7 +1024,6 @@ def test_retention_unmanaged_deletes_normally(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_quarantine_not_silently_cleared(tmp_path, monkeypatch):
     """Quarantined records are never silently cleared (D3.2).
 
@@ -1090,7 +1073,6 @@ def test_quarantine_not_silently_cleared(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_upload_from_revoked_device_refused(tmp_path, monkeypatch):
     """An upload from a revoked device gets 401 (D1.5).
 
@@ -1125,7 +1107,6 @@ def test_upload_from_revoked_device_refused(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T11Pending)
 def test_upload_cross_org_refused(tmp_path, monkeypatch):
     """An audit upload to a server that returns 404 (cross-org) is
     handled as an error.
@@ -1151,3 +1132,402 @@ def test_upload_cross_org_refused(tmp_path, monkeypatch):
     uploader = AuditUploader(lay, device_id, bytes(sk))
     with pytest.raises(AuditUploadError):
         upload_records(uploader, fake_connect, "tok-1", "http://fake")
+
+
+# ===================================================================
+# run_once wires audit_upload in managed mode (ruling 5)
+# ===================================================================
+
+
+def test_run_once_uploads_audit_in_managed_mode(tmp_path, monkeypatch):
+    """run_once calls audit_upload and send_checkpoint when managed (ruling 5).
+
+    A managed workspace with audit records should produce POST calls
+    to /sync/audit and /sync/checkpoint during run_once.
+    """
+    from sandbox.connector.sync.process import SyncProcess, run_once
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
+    lay = _ws(tmp_path / "ws")
+
+    # Mark as managed
+    sync_dir = lay.root / ".sandbox" / "state" / "sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    (sync_dir / "managed").write_text("1")
+
+    sk, pub, kid, device_id = _device_keygen()
+    _write_audit_records(lay.audit_dir, "sess-m", 3)
+
+    calls = []
+
+    def fake_connect(method, url, body=None, headers=None, token=None):
+        calls.append((method, url))
+        if "/sync/token" in url:
+            return (200, {"token": "tok", "expires_in": 600}, {})
+        if "/sync/decisions" in url:
+            return (200, {"decisions": []}, {})
+        if "/sync/audit" in url:
+            data = body if isinstance(body, dict) else json.loads(body)
+            return (200, {"server_head": {
+                "session_id": "sess-m",
+                "chain_length": data.get("chain_length", 1),
+                "head_hash": data.get("record_hash", ""),
+            }}, {})
+        if "/sync/checkpoint" in url:
+            return (200, {"upload_seq": 1}, {})
+        return (200, {}, {})
+
+    sync = SyncProcess(
+        layout=lay, server_url="http://fake.invalid",
+        device_key=bytes(sk), device_id=device_id,
+        connect=fake_connect,
+    )
+    run_once(sync)
+
+    audit_calls = [u for _, u in calls if "/sync/audit" in u]
+    checkpoint_calls = [u for _, u in calls if "/sync/checkpoint" in u]
+    assert len(audit_calls) == 3, f"Expected 3 audit POSTs, got {len(audit_calls)}"
+    assert len(checkpoint_calls) == 1, f"Expected 1 checkpoint POST, got {len(checkpoint_calls)}"
+
+
+def test_run_once_skips_audit_when_not_managed(tmp_path, monkeypatch):
+    """run_once does NOT call audit_upload when workspace is not managed."""
+    from sandbox.connector.sync.process import SyncProcess, run_once
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
+    lay = _ws(tmp_path / "ws")
+
+    # NOT managed -- no marker
+
+    sk, pub, kid, device_id = _device_keygen()
+    _write_audit_records(lay.audit_dir, "sess-u", 2)
+
+    calls = []
+
+    def fake_connect(method, url, body=None, headers=None, token=None):
+        calls.append((method, url))
+        if "/sync/token" in url:
+            return (200, {"token": "tok", "expires_in": 600}, {})
+        if "/sync/decisions" in url:
+            return (200, {"decisions": []}, {})
+        return (200, {}, {})
+
+    sync = SyncProcess(
+        layout=lay, server_url="http://fake.invalid",
+        device_key=bytes(sk), device_id=device_id,
+        connect=fake_connect,
+    )
+    run_once(sync)
+
+    audit_calls = [u for _, u in calls if "/sync/audit" in u]
+    checkpoint_calls = [u for _, u in calls if "/sync/checkpoint" in u]
+    assert len(audit_calls) == 0, "audit_upload called when not managed"
+    assert len(checkpoint_calls) == 0, "checkpoint called when not managed"
+
+
+def test_run_once_audit_failure_does_not_block(tmp_path, monkeypatch):
+    """An audit upload failure in run_once does not block the cycle or
+    affect backoff (ruling 5).  The cycle still succeeds.
+    """
+    from sandbox.connector.sync.process import SyncProcess, run_once
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
+    lay = _ws(tmp_path / "ws")
+
+    # Mark as managed
+    sync_dir = lay.root / ".sandbox" / "state" / "sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    (sync_dir / "managed").write_text("1")
+
+    sk, pub, kid, device_id = _device_keygen()
+    _write_audit_records(lay.audit_dir, "sess-f", 2)
+
+    def fake_connect(method, url, body=None, headers=None, token=None):
+        if "/sync/token" in url:
+            return (200, {"token": "tok", "expires_in": 600}, {})
+        if "/sync/decisions" in url:
+            return (200, {"decisions": []}, {})
+        if "/sync/audit" in url:
+            return (500, {"error": "server_error"}, {})
+        return (200, {}, {})
+
+    sync = SyncProcess(
+        layout=lay, server_url="http://fake.invalid",
+        device_key=bytes(sk), device_id=device_id,
+        connect=fake_connect,
+    )
+    # run_once should complete without raising, despite audit failure
+    run_once(sync)
+    assert sync._consecutive_failures == 0, (
+        "audit upload failure affected backoff counter"
+    )
+
+
+# ===================================================================
+# RED: _upload_audit error logging (item 3, LOW)
+# ===================================================================
+
+
+def test_upload_audit_error_logged_in_run_once(tmp_path, monkeypatch):
+    """When _upload_audit raises inside run_once, a log record is emitted
+    at ERROR or above and run_once still completes (item 3, LOW).
+
+    Captures log records via a manual handler (caplog is unavailable
+    with ``-p no:logging``).
+    """
+    from sandbox.connector.sync.process import SyncProcess, run_once
+    import logging
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
+    lay = _ws(tmp_path / "ws")
+
+    # Mark as managed
+    sync_dir = lay.root / ".sandbox" / "state" / "sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    (sync_dir / "managed").write_text("1")
+
+    sk, pub, kid, device_id = _device_keygen()
+    _write_audit_records(lay.audit_dir, "sess-log", 2)
+
+    def fake_connect(method, url, body=None, headers=None, token=None):
+        if "/sync/token" in url:
+            return (200, {"token": "tok", "expires_in": 600}, {})
+        if "/sync/decisions" in url:
+            return (200, {"decisions": []}, {})
+        if "/sync/audit" in url:
+            raise ConnectionError("simulated upload failure")
+        return (200, {}, {})
+
+    sync = SyncProcess(
+        layout=lay, server_url="http://fake.invalid",
+        device_key=bytes(sk), device_id=device_id,
+        connect=fake_connect,
+    )
+
+    # Capture log records manually (caplog not available with -p no:logging)
+    captured = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            captured.append(record)
+
+    handler = _Capture()
+    handler.setLevel(logging.DEBUG)
+    logger = logging.getLogger("sandbox.connector.sync.process")
+    logger.addHandler(handler)
+    old_level = logger.level
+    logger.setLevel(logging.DEBUG)
+    try:
+        run_once(sync)
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+
+    # Must have an ERROR-level log record about the audit upload failure
+    error_records = [
+        r for r in captured
+        if r.levelno >= logging.ERROR and "audit" in r.getMessage().lower()
+    ]
+    assert len(error_records) >= 1, (
+        f"No ERROR log about audit upload failure; "
+        f"records: {[r.getMessage() for r in captured]}"
+    )
+
+    # run_once must still have completed successfully
+    assert sync._consecutive_failures == 0, (
+        "audit upload failure affected backoff counter"
+    )
+
+
+# ===================================================================
+# RED: retention fail-closed in managed mode (item 4, LOW)
+# ===================================================================
+
+
+def test_retention_managed_never_uploaded_not_deleted(tmp_path, monkeypatch):
+    """In managed mode, retention must NOT delete a session absent from
+    cursor.json (never uploaded).  Fail-closed: if the cursor does not
+    acknowledge it, keep it (item 4, LOW).
+    """
+
+    from sandbox.connector.retention import plan as retention_plan
+    from sandbox.connector.retention import apply as retention_apply
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
+    lay = _ws(tmp_path / "ws")
+
+    # Mark as managed
+    sync_dir = lay.root / ".sandbox" / "state" / "sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    (sync_dir / "managed").write_text("1")
+
+    # Write an expired session (old timestamps)
+    sess_dir = lay.audit_dir / "sess-never"
+    sess_dir.mkdir(parents=True, exist_ok=True)
+    rec = {
+        "event": "test", "ts": 1.0,
+        "previous_hash": "", "chain_length": 1,
+        "record_hash": hashlib.sha256(b'{"event":"test","ts":1.0}').hexdigest(),
+    }
+    (sess_dir / "records.jsonl").write_text(json.dumps(rec) + "\n")
+
+    # Active session
+    active_dir = lay.audit_dir / "sess-active"
+    active_dir.mkdir(parents=True, exist_ok=True)
+    (active_dir / "records.jsonl").write_text(json.dumps(rec) + "\n")
+
+    session_file = lay.root / ".sandbox" / "session.json"
+    session_file.write_text(json.dumps({"session_id": "sess-active"}))
+
+    # cursor.json is EMPTY (no sessions acknowledged)
+    (sync_dir / "cursor.json").write_text(json.dumps({"sessions": {}}))
+
+    from sandbox.connector.policy import AuditPolicy
+    audit_policy = AuditPolicy(retention_days=1,
+                                retention_days_reviewed=1,
+                                retention_days_incident=1)
+
+    now = time.time() + 86400 * 2  # 2 days later -- expired
+    rows = retention_plan(lay, audit_policy, now=now)
+    deleted = retention_apply(lay, rows, by="test")
+
+    # sess-never must NOT be deleted: never uploaded, fail closed
+    assert "sess-never" not in deleted, (
+        "retention deleted a never-uploaded session in managed mode"
+    )
+
+
+def test_retention_managed_partial_ack_not_deleted(tmp_path, monkeypatch):
+    """In managed mode, retention must NOT delete a session that is only
+    partly acknowledged by the cursor (item 4, LOW).
+
+    A session with chain_length 5 where the cursor only acknowledges
+    chain_length 3 must be kept.
+    """
+
+    from sandbox.connector.retention import plan as retention_plan
+    from sandbox.connector.retention import apply as retention_apply
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
+    lay = _ws(tmp_path / "ws")
+
+    # Mark as managed
+    sync_dir = lay.root / ".sandbox" / "state" / "sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    (sync_dir / "managed").write_text("1")
+
+    # Write session with 5 records, all with ts=1.0 (expired)
+    sess_dir = lay.audit_dir / "sess-partial"
+    sess_dir.mkdir(parents=True, exist_ok=True)
+    recs = []
+    prev_hash = ""
+    for i in range(1, 6):
+        body = {"event": "test", "ts": 1.0, "seq": i}
+        body_bytes = json.dumps(body, separators=(",", ":"),
+                                sort_keys=True).encode()
+        record_hash = hashlib.sha256(body_bytes).hexdigest()
+        rec = {**body, "previous_hash": prev_hash,
+               "chain_length": i, "record_hash": record_hash}
+        recs.append(rec)
+        prev_hash = record_hash
+    with open(sess_dir / "records.jsonl", "w", encoding="utf-8") as f:
+        for rec in recs:
+            f.write(json.dumps(rec) + "\n")
+
+    # Active session
+    active_dir = lay.audit_dir / "sess-active"
+    active_dir.mkdir(parents=True, exist_ok=True)
+    active_body = {"event": "test", "ts": 1.0, "seq": 1}
+    active_bytes = json.dumps(active_body, separators=(",", ":"),
+                              sort_keys=True).encode()
+    active_hash = hashlib.sha256(active_bytes).hexdigest()
+    active_rec = {**active_body, "previous_hash": "",
+                  "chain_length": 1, "record_hash": active_hash}
+    (active_dir / "records.jsonl").write_text(
+        json.dumps(active_rec) + "\n"
+    )
+
+    session_file = lay.root / ".sandbox" / "session.json"
+    session_file.write_text(json.dumps({"session_id": "sess-active"}))
+
+    # Cursor acknowledges only chain_length 3 (partial)
+    cursor = {
+        "sessions": {
+            "sess-partial": {"chain_length": 3,
+                              "head_hash": recs[2]["record_hash"]},
+        }
+    }
+    (sync_dir / "cursor.json").write_text(json.dumps(cursor))
+
+    from sandbox.connector.policy import AuditPolicy
+    audit_policy = AuditPolicy(retention_days=1,
+                                retention_days_reviewed=1,
+                                retention_days_incident=1)
+
+    now = time.time() + 86400 * 2
+    rows = retention_plan(lay, audit_policy, now=now)
+    deleted = retention_apply(lay, rows, by="test")
+
+    # sess-partial must NOT be deleted: only partly acknowledged
+    assert "sess-partial" not in deleted, (
+        "retention deleted a partly-acknowledged session in managed mode"
+    )
+
+
+def test_guard_retention_unmanaged_deletes_never_uploaded(tmp_path, monkeypatch):
+    """Guard: in unmanaged mode, retention deletes expired sessions
+    regardless of cursor state.  M1 behaviour preserved (item 4).
+    """
+    from sandbox.connector.retention import plan as retention_plan
+    from sandbox.connector.retention import apply as retention_apply
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
+    lay = _ws(tmp_path / "ws")
+
+    # NOT managed -- no marker
+
+    # Write an expired session with no cursor entry
+    sess_dir = lay.audit_dir / "sess-old"
+    sess_dir.mkdir(parents=True, exist_ok=True)
+    rec = {
+        "event": "test", "ts": 1.0,
+        "previous_hash": "", "chain_length": 1,
+        "record_hash": hashlib.sha256(b'{"event":"test","ts":1.0}').hexdigest(),
+    }
+    (sess_dir / "records.jsonl").write_text(json.dumps(rec) + "\n")
+
+    # Active session
+    active_dir = lay.audit_dir / "sess-active"
+    active_dir.mkdir(parents=True, exist_ok=True)
+    (active_dir / "records.jsonl").write_text(json.dumps(rec) + "\n")
+
+    session_file = lay.root / ".sandbox" / "session.json"
+    session_file.write_text(json.dumps({"session_id": "sess-active"}))
+
+    from sandbox.connector.policy import AuditPolicy
+    audit_policy = AuditPolicy(retention_days=1,
+                                retention_days_reviewed=1,
+                                retention_days_incident=1)
+
+    now = time.time() + 86400 * 2
+    rows = retention_plan(lay, audit_policy, now=now)
+    deleted = retention_apply(lay, rows, by="test")
+
+    # In unmanaged mode, expired non-active sessions are deleted normally
+    assert "sess-old" in deleted, (
+        "unmanaged retention should delete expired sessions"
+    )

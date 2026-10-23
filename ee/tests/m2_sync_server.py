@@ -169,7 +169,7 @@ def make_sync_server(pg_url: str, app_url: str, owner_url: str,
 
     proc = subprocess.Popen(
         cmd, env=env,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         **_portable.popen_kwargs(),
     )
     try:

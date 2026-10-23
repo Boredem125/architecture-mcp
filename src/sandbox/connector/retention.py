@@ -92,14 +92,86 @@ def plan(layout: FolderLayout, audit_policy: Any, now: float | None = None) -> l
     return out
 
 
+def _is_managed(layout: FolderLayout) -> bool:
+    """Return True if the workspace is in managed mode."""
+    sync_dir = layout.root / ".sandbox" / "state" / "sync"
+    return (sync_dir / "managed").exists()
+
+
+def _load_cursor(layout: FolderLayout) -> dict:
+    """Load the upload cursor dict, or empty dict on any error."""
+    cursor_file = layout.root / ".sandbox" / "state" / "sync" / "cursor.json"
+    if not cursor_file.exists():
+        return {}
+    try:
+        return json.loads(cursor_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def cursor_acknowledges_session(
+    layout: FolderLayout,
+    session_id: str,
+) -> bool:
+    """Return True only if the cursor fully acknowledges the session's chain.
+
+    Fail-closed (D3.6, item 4): returns False when the session is absent
+    from the cursor (never uploaded) or when the cursor's ``chain_length``
+    is less than the local chain length (partly acknowledged).
+    """
+    cursor = _load_cursor(layout)
+    sessions = cursor.get("sessions", {})
+    entry = sessions.get(session_id)
+    if entry is None:
+        return False  # never uploaded -- keep
+
+    cursor_length = entry.get("chain_length", 0)
+
+    # Read the local chain length
+    records_file = layout.audit_dir / session_id / "records.jsonl"
+    if not records_file.exists():
+        return True  # no local file, cursor says it's done
+
+    local_length = 0
+    try:
+        with open(records_file, encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        rec = json.loads(line)
+                        cl = rec.get("chain_length", 0)
+                        if cl > local_length:
+                            local_length = cl
+                    except (ValueError, json.JSONDecodeError):
+                        continue
+    except OSError:
+        return False  # can't read -- fail closed
+
+    return cursor_length >= local_length
+
+
 def apply(layout: FolderLayout, rows: list[dict[str, Any]], by: str) -> list[str]:
-    """Delete the expired, inactive sessions in *rows*; record each deletion."""
+    """Delete the expired, inactive sessions in *rows*; record each deletion.
+
+    In managed mode, no session is deleted: the control plane owns the
+    retention decision.  ``cursor_acknowledges_session`` is the
+    authoritative check -- it returns True only when the full chain has
+    been uploaded and acknowledged.  Even then, local retention does not
+    delete: the server may still need the records for replay, and
+    fail-closed means keeping data (D3.6).  Unmanaged mode is unchanged.
+    """
     active = _active_session(layout) or "default"
+    managed = _is_managed(layout)
     removed = []
     for row in rows:
         if not row["expired"] or row["active"]:
             continue
         sid = row["session_id"]
+        # In managed mode, never delete locally -- the control plane
+        # owns retention.  cursor_acknowledges_session exists for
+        # programmatic queries but retention always keeps.
+        if managed:
+            continue
         d = layout.audit_dir / sid
         chain = verify_records_bytes((d / "records.jsonl").read_bytes())
         FolderAudit(layout.audit_dir, active).append({

@@ -193,6 +193,9 @@ def run_once(sync: SyncProcess) -> None:
         # ---- 4. Upload pending escalations ----
         _upload_escalations(sync)
 
+        # ---- 5. Upload audit records and checkpoint (managed only, T11) ----
+        _upload_audit(sync)
+
         # Success: reset failure counter
         sync._consecutive_failures = 0
 
@@ -373,3 +376,40 @@ def _upload_escalations(sync: SyncProcess) -> None:
         except Exception:
             # Upload failure does not change escalation status
             pass
+
+
+def _upload_audit(sync: SyncProcess) -> None:
+    """Upload audit records and send a checkpoint (D3, T11).
+
+    Only runs in managed mode.  Lazy-imports ``audit_upload`` so the
+    hook never loads it (socket guard).  An upload or checkpoint failure
+    is logged but does **not** block the sync cycle or affect escalation
+    status -- it simply means the next cycle will retry.
+    """
+    if sync.layout is None:
+        return
+
+    # Only upload in managed mode
+    from sandbox.connector.sync.state import is_managed
+    if not is_managed(sync.layout):
+        return
+
+    try:
+        from sandbox.connector.sync.audit_upload import (
+            AuditUploader, upload_records, send_checkpoint,
+        )
+    except ImportError:
+        return  # module not yet available
+
+    import logging
+    _log = logging.getLogger(__name__)
+
+    try:
+        uploader = AuditUploader(sync.layout, sync.device_id, sync.device_key)
+        upload_records(uploader, sync._connect, sync._token, sync.server_url)
+        send_checkpoint(uploader, sync._connect, sync._token, sync.server_url)
+    except Exception:
+        # Audit upload/checkpoint failure must not block the cycle,
+        # auto-approve escalations, or affect backoff.  The next
+        # cycle will retry from the cursor.
+        _log.exception("audit upload/checkpoint failed")
