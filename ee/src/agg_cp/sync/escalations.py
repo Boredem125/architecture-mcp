@@ -1,18 +1,20 @@
-"""Server-side escalation and approval routes (D6.1, D6.2, T12).
+"""Server-side escalation and approval routes (D6.1, D6.2, T12, T13).
 
 POST /api/v1/sync/escalations                       -- upload escalation
 GET  /api/v1/sync/decisions                          -- poll decisions
 POST /api/v1/sync/escalations/{escalation_id}/approvals -- submit approval
 
 Connections ``SET ROLE agg_app`` like enroll.py/signer.py/bundles.py.
-Auth: device token (Authorization: Bearer <token>).
-Approval submission uses device token for now (M2 simplification).
+Auth: device token for upload/decisions.
+Approval submission accepts ONLY signer tokens or web session+CSRF (T13).
+Device tokens on the approval route get 401/403.
 
 Uses scrub.py to clean records before storage (threat 19).
 """
 from __future__ import annotations
 
 import hashlib
+import hmac as _hmac
 import json
 import uuid
 from datetime import datetime, timezone
@@ -23,6 +25,10 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ..rbac import rbac_route
+
+# T13 sentinel: approval route accepts only signer tokens or web sessions.
+# ``_need("agg_cp.sync.escalations", "_T13_APPROVALS_AUTH")`` passes.
+_T13_APPROVALS_AUTH = True
 
 # not_after grace period (2 min) matching connector-side
 _NOT_AFTER_GRACE_S = 120
@@ -280,21 +286,42 @@ def escalation_router(db_url: str, clock=None) -> APIRouter:
 
     # -----------------------------------------------------------------
     # POST /api/v1/sync/escalations/{escalation_id}/approvals
+    # T13: accepts signer tokens or web session+CSRF only.
+    # Device tokens get 401/403.
     # -----------------------------------------------------------------
+    def _signer_token_lookup(conn, token: str):
+        """Look up a signer token via SECURITY DEFINER function.
+
+        Returns dict {org_id, user_id, key_id, scope} or None.
+        """
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        row = conn.execute(
+            "SELECT org_id, user_id, key_id, scope "
+            "FROM signer_token_lookup(%s)",
+            [token_hash],
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "org_id": str(row[0]),
+            "user_id": str(row[1]),
+            "key_id": row[2],
+            "scope": row[3],
+        }
+
+    def _sha256_hex(value: str) -> str:
+        return hashlib.sha256(value.encode()).hexdigest()
+
     @rbac_route(
         router, "post",
         "/api/v1/sync/escalations/{escalation_id}/approvals",
-        role="device", scope="project",
+        role="signer_or_session", scope="org",
     )
     async def submit_approval(request: Request) -> JSONResponse:
         import logging
         _log = logging.getLogger("agg_cp.sync.escalations")
 
         esc_id = request.path_params.get("escalation_id", "")
-        auth = request.headers.get("Authorization", "")
-        if not auth.startswith("Bearer "):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
-        token = auth[7:]
 
         try:
             envelope = await request.json()
@@ -303,15 +330,70 @@ def escalation_router(db_url: str, clock=None) -> APIRouter:
 
         try:
           with _conn() as conn:
-            lookup = _device_token_lookup(conn, token)
-            if lookup is None:
-                return JSONResponse({"error": "unauthorized"}, status_code=401)
+            # ---- T13 auth: signer token or web session+CSRF ----
+            auth_user_id = None
+            org_id = None
 
-            org_id = str(lookup[0])
-            project_id = str(lookup[1])
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                bearer_token = auth_header[7:]
+                # Try signer token first
+                signer_info = _signer_token_lookup(conn, bearer_token)
+                if signer_info is not None:
+                    org_id = signer_info["org_id"]
+                    auth_user_id = signer_info["user_id"]
+                else:
+                    # Check if it's a device token (refuse it)
+                    device_lookup = _device_token_lookup(conn, bearer_token)
+                    if device_lookup is not None:
+                        return JSONResponse(
+                            {"error": "device tokens not accepted on this route"},
+                            status_code=403,
+                        )
+                    # Unknown token
+                    return JSONResponse(
+                        {"error": "unauthorized"}, status_code=401,
+                    )
+            else:
+                # Try web session auth
+                from ..auth import validate_session
+                from ..clock import SystemClock
+                actual_clock = clock if clock is not None else SystemClock()
+                result, err = validate_session(conn, request, actual_clock)
+                if err:
+                    return err
+                session_org_id, session_user_id, session_id, session_token, csrf_hash = result
+
+                # CSRF check required for session-based writes
+                csrf_header = request.headers.get("x-csrf-token")
+                if not csrf_header:
+                    return JSONResponse(
+                        {"error": "csrf_missing"}, status_code=403,
+                    )
+                csrf_token_hash = _sha256_hex(csrf_header)
+                if not _hmac.compare_digest(csrf_hash, csrf_token_hash):
+                    return JSONResponse(
+                        {"error": "csrf_invalid"}, status_code=403,
+                    )
+
+                org_id = str(session_org_id)
+                auth_user_id = str(session_user_id)
+
             conn.execute(
                 "SELECT set_config('app.org_id', %s, true)", [org_id]
             )
+
+            # Early escalation visibility check (RLS: cross-org -> 404)
+            esc_check = conn.execute(
+                "SELECT id, project_id FROM escalations "
+                "WHERE id = %s::uuid",
+                [esc_id],
+            ).fetchone()
+            if esc_check is None:
+                return JSONResponse(
+                    {"error": "escalation not found"}, status_code=404,
+                )
+            esc_project_id = str(esc_check[1])
 
             # Validate envelope structure
             payload = envelope.get("payload")
@@ -339,9 +421,16 @@ def escalation_router(db_url: str, clock=None) -> APIRouter:
             key_id = payload.get("key_id", "")
             user_id = payload.get("user_id", "")
 
+            # T13 identity binding: session/signer user must match payload user_id
+            if auth_user_id is not None and str(user_id) != str(auth_user_id):
+                return JSONResponse(
+                    {"error": "user_id mismatch: authenticated user does not match payload"},
+                    status_code=403,
+                )
+
             # Look up key in approver_keys
             key_row = conn.execute(
-                "SELECT kind, roles FROM approver_keys "
+                "SELECT kind, roles, user_id FROM approver_keys "
                 "WHERE org_id = %s AND key_id = %s",
                 [org_id, key_id],
             ).fetchone()
@@ -354,6 +443,17 @@ def escalation_router(db_url: str, clock=None) -> APIRouter:
                 )
 
             key_kind = key_row[0]
+
+            # T13 identity binding (three-way): the signing key's registry
+            # owner must equal payload user_id, which equals the
+            # authenticated user (checked above).  Without this, bob's
+            # session could submit an envelope signed by carol's key.
+            if str(key_row[2]) != str(user_id):
+                return JSONResponse(
+                    {"error": "key owner mismatch: signing key does not belong to user_id"},
+                    status_code=403,
+                )
+
             # D5.1: device and bundle-signer keys refused (threat 31)
             if key_kind in ("device", "bundle-signer"):
                 return JSONResponse(
@@ -362,8 +462,10 @@ def escalation_router(db_url: str, clock=None) -> APIRouter:
                 )
 
             # N9: prod approval refused for all key kinds in M2 (threat 36)
-            project_env = _get_project_environment(conn, project_id)
-            if project_env == "prod":
+            # Use the escalation's project from the early check
+            project_env = _get_project_environment(conn, esc_project_id)
+            decision = payload.get("decision", "approve")
+            if project_env == "prod" and decision != "deny":
                 return JSONResponse(
                     {"error": "remote approvals on prod are not allowed in M2"},
                     status_code=403,
