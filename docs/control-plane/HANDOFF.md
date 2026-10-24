@@ -1,5 +1,15 @@
 # Control-plane hand-off (M2 T6-T10 done, 22 Oct 2026)
 
+## M2 T14 (24 Oct 2026): done
+
+1. Tests first in `91dc6ac` (16 tests: 13 static, 1 live docker, guards).
+2. **Build (`ee/deploy/`):** the bundle-signer key is a compose file secret mounted only into `api` (`AGG_BUNDLE_SIGNER_KEY_FILE`); `init-secrets` generates it as a 32-byte hex Ed25519 seed (uid 10001, mode 0400, O_EXCL so it never rotates silently); carol is in the acme realm (demo-only password, no admin realm role) and is made an org admin by `demo.py`; `payments-staging` (staging) is a second project and `payments` stays prod (orchestrator ruling: only the signed bundle switches the connector to non-prod, D2.4).
+3. Named test edit (orchestrator): the live test uses `https://localhost/ready` (Caddy's internal cert is for localhost, not 127.0.0.1).
+4. **Security:** APPROVE (narrow review). Measured: T14 16 passed incl. the live stack (`down -v`, `init-secrets`, `up`, `/ready` 200); ee 673 passed, 1 skipped before the URL fix. The ZAP exit item is covered by the CI `security / zap-api` job.
+5. Founder by phone (24 Oct): start T14, keep tokens low, update call after 45 minutes.
+
+**Next:** T15 (hostile review of the M2 diff, security at leader tier), then T16 (gate run, demo incl. step 11), then T17 (quickstart and M2_DONE.md). Wait for the founder before T15.
+
 ## M2 T13 (24 Oct 2026): done
 
 1. Tests: `1abffaa` (first cut), `52fbbac` (full bodies; the first cut's 16 pg tests were sentinel-only stubs and were rewritten before the build).

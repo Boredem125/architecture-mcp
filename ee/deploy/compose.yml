@@ -28,6 +28,8 @@ secrets:
     file: ./secrets/oidc_client_secret
   server_signing_key:
     file: ./secrets/server_signing_key
+  bundle_signer_key:
+    file: ./secrets/bundle_signer_key
 
 # ---------------------------------------------------------------------------
 # Networks
@@ -243,6 +245,7 @@ services:
       - pg_app_url
       - oidc_client_secret
       - server_signing_key
+      - bundle_signer_key
     volumes:
       - ca-bundle:/ca-bundle:ro
       # Mount the OIDC client secret as /oidc-secrets/<org-slug> for auth.py
@@ -255,6 +258,7 @@ services:
       AGG_OIDC_SECRETS_DIR: /oidc-secrets
       AGG_OIDC_ALLOW_HOSTS: "${AGG_OIDC_ALLOW_HOSTS:-}"
       SSL_CERT_FILE: /ca-bundle/ca-certificates.crt
+      AGG_BUNDLE_SIGNER_KEY_FILE: /run/secrets/bundle_signer_key
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
       interval: 10s

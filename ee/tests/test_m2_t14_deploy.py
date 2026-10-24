@@ -92,7 +92,7 @@ def test_acme_realm_exists():
 
 
 @_skip_no_yaml
-@pytest.mark.xfail(raises=M2T14Pending, strict=True)
+
 def test_bundle_signer_secret_in_compose_secrets():
     """Compose top-level ``secrets`` must define ``bundle_signer_key``
     as a file secret (``file: ./secrets/bundle_signer_key``)."""
@@ -113,7 +113,7 @@ def test_bundle_signer_secret_in_compose_secrets():
 
 
 @_skip_no_yaml
-@pytest.mark.xfail(raises=M2T14Pending, strict=True)
+
 def test_api_mounts_bundle_signer_secret():
     """The ``api`` service must list ``bundle_signer_key`` in its
     ``secrets`` array so the file is mounted at ``/run/secrets/``."""
@@ -129,7 +129,7 @@ def test_api_mounts_bundle_signer_secret():
 
 
 @_skip_no_yaml
-@pytest.mark.xfail(raises=M2T14Pending, strict=True)
+
 def test_api_env_uses_bundle_signer_file_convention():
     """The ``api`` environment must set ``AGG_BUNDLE_SIGNER_KEY_FILE``
     pointing to ``/run/secrets/bundle_signer_key`` and must NOT contain
@@ -163,7 +163,7 @@ def test_api_env_uses_bundle_signer_file_convention():
 
 
 @_skip_no_yaml
-@pytest.mark.xfail(raises=M2T14Pending, strict=True)
+
 def test_bundle_signer_not_in_any_service_env_literal():
     """No service should have a plain ``AGG_BUNDLE_SIGNER_KEY`` (without
     the ``_FILE`` suffix) in its ``environment``."""
@@ -198,7 +198,7 @@ def test_bundle_signer_not_in_any_service_env_literal():
 # ===================================================================
 
 
-@pytest.mark.xfail(raises=M2T14Pending, strict=True)
+
 def test_init_secrets_generates_bundle_signer_key():
     """init-secrets.sh must include ``bundle_signer_key`` in its
     SECRET_FILES list so the key file is generated."""
@@ -215,7 +215,7 @@ def test_init_secrets_generates_bundle_signer_key():
     ), "bundle_signer_key must appear as a string literal in init-secrets"
 
 
-@pytest.mark.xfail(raises=M2T14Pending, strict=True)
+
 def test_init_secrets_bundle_signer_key_ownership():
     """The OWNERSHIP table in init-secrets must set bundle_signer_key
     to api uid (10001) with mode 0o400 (single consumer, restrictive)."""
@@ -244,7 +244,7 @@ def test_init_secrets_bundle_signer_key_ownership():
 # ===================================================================
 
 
-@pytest.mark.xfail(raises=M2T14Pending, strict=True)
+
 def test_carol_in_acme_realm():
     """The acme-realm.json must define a user named ``carol``."""
     data = json.loads(_ACME_REALM.read_text(encoding="utf-8"))
@@ -268,7 +268,7 @@ def test_carol_in_acme_realm():
 # ===================================================================
 
 
-@pytest.mark.xfail(raises=M2T14Pending, strict=True)
+
 def test_payments_staging_in_demo_bootstrap():
     """The demo bootstrap (migrate-demo or demo.py) must create a project
     named ``payments-staging`` with ``environment: staging``."""
@@ -292,7 +292,7 @@ def test_payments_staging_in_demo_bootstrap():
     )
 
 
-@pytest.mark.xfail(raises=M2T14Pending, strict=True)
+
 def test_carol_added_as_admin_in_demo():
     """The demo bootstrap must add carol as an admin user.
 
@@ -395,7 +395,7 @@ _skip_no_compose = pytest.mark.skipif(
 
 
 @_skip_no_compose
-@pytest.mark.xfail(raises=M2T14Pending, strict=True)
+
 @pytest.mark.timeout(300)
 def test_live_stack_ready():
     """Live: compose has T14 features and the stack comes up with /ready 200.
@@ -454,7 +454,7 @@ def test_live_stack_ready():
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        req = urllib.request.Request("https://127.0.0.1/ready")
+        req = urllib.request.Request("https://localhost/ready")
         with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
             assert resp.status == 200, f"/ready returned {resp.status}"
     finally:
