@@ -466,7 +466,6 @@ def test_guard_ts_signed_envelope_verifies():
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T13Pending)
 def test_escalation_list_route_exists(web_server):
     """GET /api/v1/escalations returns pending escalations for the web user.
 
@@ -521,7 +520,6 @@ def test_escalation_list_route_exists(web_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T13Pending)
 def test_escalation_list_filtered_by_org(web_server):
     """The escalation list is filtered by the user's org (RLS)."""
     _need("agg_cp.web.escalations", "router")
@@ -566,7 +564,6 @@ def test_escalation_list_filtered_by_org(web_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T13Pending)
 def test_escalation_list_shows_environment(web_server):
     """The escalation list includes the project environment for prod-guard display."""
     _need("agg_cp.web.escalations", "router")
@@ -612,7 +609,6 @@ def test_escalation_list_shows_environment(web_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T13Pending)
 def test_escalation_list_marks_prod(web_server):
     """Prod escalations are marked in the list so the UI can hide approve.
 
@@ -666,7 +662,6 @@ def test_escalation_list_marks_prod(web_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T13Pending)
 def test_browser_key_link_creates_pending(web_server):
     """POST /api/v1/signer-links with kind=browser creates a pending key entry.
 
@@ -713,7 +708,6 @@ def test_browser_key_link_creates_pending(web_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T13Pending)
 def test_browser_key_link_requires_session(web_server):
     """Browser key linking requires a valid user session, not a device token."""
     _need("agg_cp.web.browser_keys", "link_browser_key")
@@ -764,7 +758,6 @@ def test_browser_key_link_requires_session(web_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T13Pending)
 def test_approval_via_browser_session_accepted(web_server):
     """A browser-session user can submit an approval to the existing T12 route.
 
@@ -828,7 +821,6 @@ def test_approval_via_browser_session_accepted(web_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T13Pending)
 def test_deny_via_browser_session_accepted(web_server):
     """A browser-session user can submit a deny decision."""
     _need("agg_cp.web.escalations", "submit_browser_approval")
@@ -891,7 +883,6 @@ def test_deny_via_browser_session_accepted(web_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T13Pending)
 def test_csp_header_on_web_responses(web_server):
     """The server sets a strict CSP header on web-served HTML and API responses.
 
@@ -926,7 +917,6 @@ def test_csp_header_on_web_responses(web_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T13Pending)
 def test_no_private_key_in_escalation_list_response(web_server):
     """The escalation list response must not contain any private key material.
 
@@ -967,7 +957,6 @@ def test_no_private_key_in_escalation_list_response(web_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T13Pending)
 def test_no_private_key_in_approval_response(web_server):
     """The approval response must not leak private key material."""
     _need("agg_cp.web.escalations", "submit_browser_approval")
@@ -1045,7 +1034,6 @@ def test_no_private_key_in_approval_response(web_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T13Pending)
 def test_approvals_route_refuses_device_token(web_server):
     """POST /api/v1/sync/escalations/{id}/approvals with a device token
     gets 401 or 403 after T13 lifts the named limit (REVIEW_M2 item 7).
@@ -1104,7 +1092,6 @@ def test_approvals_route_refuses_device_token(web_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T13Pending)
 def test_approvals_route_accepts_signer_token(web_server):
     """POST /api/v1/sync/escalations/{id}/approvals with a signer token
     (from POST /api/v1/sync/signer/token, agg/signer-assert/v1) is accepted.
@@ -1180,7 +1167,6 @@ def test_approvals_route_accepts_signer_token(web_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T13Pending)
 def test_approvals_route_session_without_csrf_refused(web_server):
     """POST /api/v1/sync/escalations/{id}/approvals with a valid session
     cookie but no X-CSRF-Token header gets 403.
@@ -1244,7 +1230,6 @@ def test_approvals_route_session_without_csrf_refused(web_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T13Pending)
 def test_approvals_route_cross_org_session_404(web_server):
     """Eve's session (Evil Org) cannot reach Acme's escalation via RLS.
 
@@ -1301,7 +1286,6 @@ def test_approvals_route_cross_org_session_404(web_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T13Pending)
 def test_escalation_list_requires_session(web_server):
     """GET /api/v1/escalations without a session gets 401.
     GET /api/v1/escalations with a device token (Authorization: Bearer)
@@ -1352,7 +1336,6 @@ def test_escalation_list_requires_session(web_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T13Pending)
 def test_approval_user_mismatch_refused(web_server):
     """The session user must equal payload user_id AND the key's registry
     user_id.  Alice's session submits an envelope where payload user_id

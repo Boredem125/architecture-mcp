@@ -392,6 +392,21 @@ def build_signer_router(db_url: str, clock: Any = None) -> APIRouter:
                 return err
             org_id, user_id, session_id, _token, _csrf_hash = result
 
+            # Check if this is a browser key enrollment (T13)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+
+            if body.get("kind") == "browser":
+                from ..web.browser_keys import link_browser_key
+                return link_browser_key(
+                    conn, request, actual_clock,
+                    org_id=org_id, user_id=user_id,
+                    session_id=session_id, csrf_hash=_csrf_hash,
+                    body=body,
+                )
+
             # Fresh session: created_at within 15 min (server-side check)
             row = conn.execute(
                 "SELECT created_at FROM web_sessions WHERE id = %s",

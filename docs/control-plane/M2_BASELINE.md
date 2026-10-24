@@ -164,7 +164,7 @@ Node ids are fixed now. The tests-first commits must use these file/name pattern
 
 | Limit | Description |
 |---|---|
-| POST /api/v1/sync/escalations/{id}/approvals accepts device tokens | Lifted in T13 (pending build). The route accepts only signer tokens (agg/signer-assert/v1) or web session cookies with CSRF; device tokens get 401/403. 5 tests added: `test_approvals_route_refuses_device_token`, `test_approvals_route_accepts_signer_token`, `test_approvals_route_session_without_csrf_refused`, `test_approvals_route_cross_org_session_404`, `test_escalation_list_requires_session`. T12 ee tests that use device tokens on this route need a named edit at build time (6 node ids listed in `test_m2_t13_web.py`). |
+| POST /api/v1/sync/escalations/{id}/approvals accepts device tokens | **Lifted in T13.** The route now accepts only signer tokens (agg/signer-assert/v1) or web session cookies with CSRF; device tokens get 401/403. Sentinel `_T13_APPROVALS_AUTH` in `agg_cp.sync.escalations`. 6 T12 ee tests edited (credential changed from device token to session+CSRF): `test_device_key_approval_refused_server`, `test_bundle_signer_key_approval_refused_server`, `test_prod_approval_refused_server`, `test_wrong_field_set_refused_server`, `test_expired_not_after_refused_server`, `test_duplicate_approval_same_user_refused`. Each still fails for its original reason (kind, prod, field set, expiry, duplicate). |
 
 ## 6. Frozen demo steps (D6.6, per M2_PLAN.md "Design-partner demo")
 

@@ -83,13 +83,35 @@ from .t8p2_helpers import (
     seed_org_with_oidc, seed_user, seed_admin_binding,
     make_test_app,
 )
-from .t9_helpers import seed_session, make_session_cookie
+from .t9_helpers import seed_session, make_session_cookie, compute_csrf
 from .fake_idp import FakeClock
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _seed_user_row(conn, org_id: str, email: str) -> str:
+    """Insert a users row; return user_id (uuid str)."""
+    user_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO users (id, org_id, oidc_issuer, oidc_subject, email, "
+        "status, created_at) VALUES (%s, %s, 'https://idp', %s, %s, "
+        "'active', now()) ON CONFLICT DO NOTHING",
+        [user_id, org_id, f"sub-{uuid.uuid4().hex[:8]}", email],
+    )
+    return user_id
+
+
+def _make_fresh_session(owner_url: str, org_id: str, user_id: str):
+    """Create a fresh web session.  Return (cookie_value, csrf_token)."""
+    clock = FakeClock()
+    token, csrf, sid = seed_session(
+        owner_url, uuid.UUID(org_id), uuid.UUID(user_id), clock=clock,
+    )
+    cookie = make_session_cookie(uuid.UUID(org_id), token)
+    return cookie, csrf
 
 
 def _need(module: str, attr: str) -> None:
@@ -512,22 +534,35 @@ def test_device_key_approval_refused_server(escalation_server):
     assert r.status_code == 200
     esc_id = r.json()["escalation_id"]
 
-    # Try to approve with the device key
+    # T13 named edit: seed a user and use session+CSRF instead of device token
+    with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
+        sess_user_id = _seed_user_row(conn, info["org_id"], "devkey-test@test")
+    cookie, csrf = _make_fresh_session(info["owner_url"], info["org_id"], sess_user_id)
+    # The device key IS in the registry (owned by the session user), so the
+    # refusal must come from the kind matrix, not a missing key (T13 review).
+    _seed_registry_with_keys(info["owner_url"], info["org_id"], [
+        {"key_id": device_kid, "public_key": device_pub.hex(),
+         "user_id": sess_user_id, "kind": "device", "roles": []},
+    ])
+
+    # Try to approve with the device key: refused for its kind
     approval = _make_remote_approval_payload(
         device_sk,
         request_id="req-devkey-srv-1",
         org_id=info["org_id"], project_id=project_id,
-        device_id=device_id, user_id="device-owner",
+        device_id=device_id, user_id=sess_user_id,
     )
 
     r2 = httpx.post(
         f"{info['base_url']}/api/v1/sync/escalations/{esc_id}/approvals",
         json=approval,
-        headers={"Authorization": f"Bearer {token}"},
+        cookies={"__Host-agg_session": cookie},
+        headers={"X-CSRF-Token": csrf},
         timeout=10.0,
     )
-    # Server must refuse: 400 or 403
-    assert r2.status_code in (400, 403)
+    assert r2.status_code == 403
+    assert "device" in r2.json().get("error", "")
 
 
 # ===================================================================
@@ -547,13 +582,18 @@ def test_bundle_signer_key_approval_refused_server(escalation_server):
     device_sk, device_pub, device_kid = keygen()
     project_id = str(uuid.uuid4())
 
+    # T13 named edit: seed a user for session auth
+    with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
+        sess_user_id = _seed_user_row(conn, info["org_id"], "bskey-test@test")
+
     with psycopg.connect(_conninfo(info["owner_url"])) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
         create_project(conn, info["org_id"], project_id, environment="staging")
-        # Seed the bundle-signer key in the registry
+        # Seed the bundle-signer key in the registry (user matches session)
         _seed_registry_with_keys(info["owner_url"], info["org_id"], [
             {"key_id": bs_kid, "public_key": bs_pub.hex(),
-             "user_id": "bundle-signer", "kind": "bundle-signer",
+             "user_id": sess_user_id, "kind": "bundle-signer",
              "roles": []},
         ])
         conn.commit()
@@ -577,18 +617,21 @@ def test_bundle_signer_key_approval_refused_server(escalation_server):
     assert r.status_code == 200
     esc_id = r.json()["escalation_id"]
 
-    # Try to approve with the bundle-signer key
+    cookie, csrf = _make_fresh_session(info["owner_url"], info["org_id"], sess_user_id)
+
+    # Try to approve with the bundle-signer key (kind refused -> 403)
     approval = _make_remote_approval_payload(
         bs_sk,
         request_id="req-bskey-srv-1",
         org_id=info["org_id"], project_id=project_id,
-        device_id=device_id, user_id="bundle-signer",
+        device_id=device_id, user_id=sess_user_id,
     )
 
     r2 = httpx.post(
         f"{info['base_url']}/api/v1/sync/escalations/{esc_id}/approvals",
         json=approval,
-        headers={"Authorization": f"Bearer {token}"},
+        cookies={"__Host-agg_session": cookie},
+        headers={"X-CSRF-Token": csrf},
         timeout=10.0,
     )
     assert r2.status_code in (400, 403)
@@ -611,13 +654,18 @@ def test_prod_approval_refused_server(escalation_server):
     device_sk, device_pub, device_kid = keygen()
     project_id = str(uuid.uuid4())
 
+    # T13 named edit: seed a user for session auth
+    with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
+        sess_user_id = _seed_user_row(conn, info["org_id"], "prod-test@test")
+
     with psycopg.connect(_conninfo(info["owner_url"])) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
         # Create a prod project
         create_project(conn, info["org_id"], project_id, environment="prod")
         _seed_registry_with_keys(info["owner_url"], info["org_id"], [
             {"key_id": bob_kid, "public_key": bob_pub.hex(),
-             "user_id": "user-bob", "kind": "cli",
+             "user_id": sess_user_id, "kind": "cli",
              "roles": ["approver"]},
         ])
         conn.commit()
@@ -641,17 +689,20 @@ def test_prod_approval_refused_server(escalation_server):
     assert r.status_code == 200
     esc_id = r.json()["escalation_id"]
 
+    cookie, csrf = _make_fresh_session(info["owner_url"], info["org_id"], sess_user_id)
+
     approval = _make_remote_approval_payload(
         bob_sk,
         request_id="req-prod-srv-1",
         org_id=info["org_id"], project_id=project_id,
-        device_id=device_id, user_id="user-bob",
+        device_id=device_id, user_id=sess_user_id,
     )
 
     r2 = httpx.post(
         f"{info['base_url']}/api/v1/sync/escalations/{esc_id}/approvals",
         json=approval,
-        headers={"Authorization": f"Bearer {token}"},
+        cookies={"__Host-agg_session": cookie},
+        headers={"X-CSRF-Token": csrf},
         timeout=10.0,
     )
     assert r2.status_code in (400, 403)
@@ -674,12 +725,17 @@ def test_wrong_field_set_refused_server(escalation_server):
     device_sk, device_pub, device_kid = keygen()
     project_id = str(uuid.uuid4())
 
+    # T13 named edit: seed a user for session auth
+    with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
+        sess_user_id = _seed_user_row(conn, info["org_id"], "fieldset-test@test")
+
     with psycopg.connect(_conninfo(info["owner_url"])) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
         create_project(conn, info["org_id"], project_id, environment="staging")
         _seed_registry_with_keys(info["owner_url"], info["org_id"], [
             {"key_id": bob_kid, "public_key": bob_pub.hex(),
-             "user_id": "user-bob", "kind": "cli",
+             "user_id": sess_user_id, "kind": "cli",
              "roles": ["approver"]},
         ])
         conn.commit()
@@ -703,17 +759,20 @@ def test_wrong_field_set_refused_server(escalation_server):
     assert r.status_code == 200
     esc_id = r.json()["escalation_id"]
 
+    cookie, csrf = _make_fresh_session(info["owner_url"], info["org_id"], sess_user_id)
+
     # Incomplete approval: missing policy_sequence, nonce, not_after
     incomplete = sign_envelope("agg/remote-approval/v1", {
         "request_id": "req-fieldset-1",
         "decision": "approve",
-        "user_id": "user-bob",
+        "user_id": sess_user_id,
     }, bob_sk)
 
     r2 = httpx.post(
         f"{info['base_url']}/api/v1/sync/escalations/{esc_id}/approvals",
         json=incomplete,
-        headers={"Authorization": f"Bearer {token}"},
+        cookies={"__Host-agg_session": cookie},
+        headers={"X-CSRF-Token": csrf},
         timeout=10.0,
     )
     assert r2.status_code == 400
@@ -797,12 +856,17 @@ def test_expired_not_after_refused_server(escalation_server):
     device_sk, device_pub, device_kid = keygen()
     project_id = str(uuid.uuid4())
 
+    # T13 named edit: seed a user for session auth
+    with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
+        sess_user_id = _seed_user_row(conn, info["org_id"], "expired-test@test")
+
     with psycopg.connect(_conninfo(info["owner_url"])) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
         create_project(conn, info["org_id"], project_id, environment="staging")
         _seed_registry_with_keys(info["owner_url"], info["org_id"], [
             {"key_id": bob_kid, "public_key": bob_pub.hex(),
-             "user_id": "user-bob", "kind": "cli",
+             "user_id": sess_user_id, "kind": "cli",
              "roles": ["approver"]},
         ])
         conn.commit()
@@ -826,19 +890,22 @@ def test_expired_not_after_refused_server(escalation_server):
     assert r.status_code == 200
     esc_id = r.json()["escalation_id"]
 
+    cookie, csrf = _make_fresh_session(info["owner_url"], info["org_id"], sess_user_id)
+
     # Approval with expired not_after (past + beyond grace)
     approval = _make_remote_approval_payload(
         bob_sk,
         request_id="req-expired-srv-1",
         org_id=info["org_id"], project_id=project_id,
-        device_id=device_id, user_id="user-bob",
+        device_id=device_id, user_id=sess_user_id,
         not_after=time.time() - 300,  # 5 min ago
     )
 
     r2 = httpx.post(
         f"{info['base_url']}/api/v1/sync/escalations/{esc_id}/approvals",
         json=approval,
-        headers={"Authorization": f"Bearer {token}"},
+        cookies={"__Host-agg_session": cookie},
+        headers={"X-CSRF-Token": csrf},
         timeout=10.0,
     )
     assert r2.status_code in (400, 403)
@@ -903,12 +970,17 @@ def test_duplicate_approval_same_user_refused(escalation_server):
     device_sk, device_pub, device_kid = keygen()
     project_id = str(uuid.uuid4())
 
+    # T13 named edit: seed a user for session auth
+    with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
+        sess_user_id = _seed_user_row(conn, info["org_id"], "dup-test@test")
+
     with psycopg.connect(_conninfo(info["owner_url"])) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
         create_project(conn, info["org_id"], project_id, environment="staging")
         _seed_registry_with_keys(info["owner_url"], info["org_id"], [
             {"key_id": bob_kid, "public_key": bob_pub.hex(),
-             "user_id": "user-bob", "kind": "cli",
+             "user_id": sess_user_id, "kind": "cli",
              "roles": ["approver"]},
         ])
         conn.commit()
@@ -932,17 +1004,20 @@ def test_duplicate_approval_same_user_refused(escalation_server):
     assert r.status_code == 200
     esc_id = r.json()["escalation_id"]
 
+    cookie, csrf = _make_fresh_session(info["owner_url"], info["org_id"], sess_user_id)
+
     # First approval
     a1 = _make_remote_approval_payload(
         bob_sk,
         request_id="req-dupapproval-1",
         org_id=info["org_id"], project_id=project_id,
-        device_id=device_id, user_id="user-bob",
+        device_id=device_id, user_id=sess_user_id,
     )
     r2 = httpx.post(
         f"{info['base_url']}/api/v1/sync/escalations/{esc_id}/approvals",
         json=a1,
-        headers={"Authorization": f"Bearer {token}"},
+        cookies={"__Host-agg_session": cookie},
+        headers={"X-CSRF-Token": csrf},
         timeout=10.0,
     )
     assert r2.status_code == 200
@@ -952,12 +1027,13 @@ def test_duplicate_approval_same_user_refused(escalation_server):
         bob_sk,
         request_id="req-dupapproval-1",
         org_id=info["org_id"], project_id=project_id,
-        device_id=device_id, user_id="user-bob",
+        device_id=device_id, user_id=sess_user_id,
     )
     r3 = httpx.post(
         f"{info['base_url']}/api/v1/sync/escalations/{esc_id}/approvals",
         json=a2,
-        headers={"Authorization": f"Bearer {token}"},
+        cookies={"__Host-agg_session": cookie},
+        headers={"X-CSRF-Token": csrf},
         timeout=10.0,
     )
     # Duplicate: 409
