@@ -403,6 +403,13 @@ def test_live_stack_ready():
     Pre-checks the compose YAML for T14 features (bundle_signer_key secret,
     carol in realm, payments-staging in demo) before attempting to bring the
     stack up.  Skipped when Docker Compose is not available."""
+    # Opt-in: the stack needs init-secrets and several GB of RAM.  CI runs it
+    # nowhere (compose-smoke covers the root compose only); run locally with
+    # AGG_LIVE_STACK=1 (named edit, T14 commit).
+    import os
+    if os.environ.get("AGG_LIVE_STACK") != "1":
+        pytest.skip("live ee stack test is opt-in: set AGG_LIVE_STACK=1")
+
     # Gate on T14 compose features before spending time on docker compose up
     if _HAS_YAML:
         data = _load_compose()
@@ -443,8 +450,9 @@ def test_live_stack_ready():
         cwd=str(_DEPLOY),
     )
     if up_result.returncode != 0:
-        raise M2T14Pending(
-            f"docker compose up failed (rc={up_result.returncode})"
+        pytest.fail(
+            f"docker compose up failed (rc={up_result.returncode}): "
+            f"{up_result.stderr.decode(errors='replace')[-500:]}"
         )
 
     try:
