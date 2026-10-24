@@ -9,3 +9,8 @@ f303cc5651900177fc210661e11365db39bf976c:tests/security/test_secret_scanning.py:
 ed57bfa30f0ad25850586bb703035071496369ae:ee/tests/test_m2_t12_remote.py:generic-api-key:993
 ed57bfa30f0ad25850586bb703035071496369ae:tests/security/test_m2_t12_remote.py:stripe-access-token:1875
 ed57bfa30f0ad25850586bb703035071496369ae:tests/security/test_m2_t12_remote.py:stripe-access-token:1907
+
+# M2 T13 tests: `dev_token, "req-..."` call arguments. The token is
+# secrets.token_hex() at runtime; the matched string is a request id.
+52fbbace9ccf522502f18bc31c981926b0b5a612:ee/tests/test_m2_t13_web.py:generic-api-key:1002
+52fbbace9ccf522502f18bc31c981926b0b5a612:ee/tests/test_m2_t13_web.py:generic-api-key:1397
