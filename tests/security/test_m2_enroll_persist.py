@@ -94,6 +94,7 @@ def _need_persist() -> None:
                         "device_id": "d-test",
                         "org_id": "org-1",
                         "project_id": "proj-1",
+                        "operator_user_id": "operator-test",
                         "registry": [genesis_env],
                     },
                 )
@@ -236,17 +237,21 @@ def key_home(tmp_path, monkeypatch):
 
 def _enroll_response(genesis_env, *, device_id="d-1",
                      org_id="org-1", project_id="proj-1",
+                     operator_user_id="operator-test",
                      registry=None):
     """Build the successful enroll response body the server returns.
 
     Per the orchestrator ruling: the response includes ``registry`` (the
     signed chain from genesis) but NOT a ``fingerprint`` string.  The client
     must compute the fingerprint locally from the genesis payload.
+
+    Named test edit (b): includes ``operator_user_id`` (ADR 0010 C5).
     """
     return {
         "device_id": device_id,
         "org_id": org_id,
         "project_id": project_id,
+        "operator_user_id": operator_user_id,
         "registry": registry if registry is not None else [genesis_env],
     }
 

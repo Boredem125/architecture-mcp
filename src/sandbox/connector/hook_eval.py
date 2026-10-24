@@ -939,6 +939,21 @@ async def _escalate_shell(
             f"(policy clause {gov_deny['clause_id']}). Choose a different approach."
         ))
 
+    # R1c: the hook mints the request id, stamps bundle_sequence and the
+    # binding fingerprint so the remote approval path can recompute and compare (C4).
+    import secrets as _secrets
+    _hook_request_id = _secrets.token_hex(8)
+
+    # Read bundle_sequence from verified state (if available)
+    _hook_bundle_seq = 0
+    try:
+        from sandbox.connector.sync.verified_state import load_verified_state as _lvs
+        _vs = _lvs(layout)
+        if _vs is not None:
+            _hook_bundle_seq = _vs.policy_sequence
+    except Exception:  # noqa: BLE001
+        pass
+
     record = {
         "root": str(layout.root),
         "session_id": session_id,
@@ -961,7 +976,13 @@ async def _escalate_shell(
             "agent_session_id": payload.get("session_id", ""),
         },
         "execute_on_approve": True,
+        "request_id": _hook_request_id,
+        "bundle_sequence": _hook_bundle_seq,
     }
+    # Stamp the binding fingerprint (C4, R1c)
+    from sandbox.connector.approval import _binding_fingerprint
+    record["fingerprint"] = _binding_fingerprint(record)
+
     request_id = queue.submit(record)
     # In the chain (and alerted, if critical) as soon as it is raised, not
     # only once a human has decided.

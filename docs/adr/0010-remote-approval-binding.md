@@ -17,7 +17,7 @@ The T15 hostile review (`M2_SECURITY_SIGNOFF.md`) found that a remote approval w
 
 ## Named limit (exact wording, security b0)
 
-Operator binding (S8) is trust-on-first-use: the server reports the operator's user_id at enroll and the connector stores it in an unsigned local file. If the server is compromised at enroll time, or the operator hand-edits `enrollment.json` while the server is compromised, the operator can count as one of the two approvers of their own agent's request. Dual control then means two distinct registry humans, not two humans other than the requester. It cannot create an approval that nobody signed. Enroll prints the operator id, and `--operator` must match if it is given. Closed in M3 by an admin-signed device-to-operator binding. Severity: Low (founder to confirm).
+Operator binding (S8) is trust-on-first-use: the server reports the operator's user_id at enroll and the connector stores it in an unsigned local file. If the server is compromised at enroll time, or the operator hand-edits `enrollment.json` while the server is compromised, the operator can count as one of the two approvers of their own agent's request. Dual control then means two distinct registry humans, not two humans other than the requester. It cannot create an approval that nobody signed. Enroll prints the operator id, and `--operator` must match if it is given. Closed in M3 by an admin-signed device-to-operator binding. Severity: OPEN. The founder-proxy proposed Low; on the 24 Oct call the founder answered "no" to confirming Low, so the severity awaits a founder decision in the terminal.
 
 ## Consequences
 

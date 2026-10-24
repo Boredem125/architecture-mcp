@@ -280,18 +280,78 @@ class PrivilegeBroker:
     def list_all(self) -> list[BrokerRequest]:
         return list(self._requests.values())
 
+    # R4: explicit env allowlist for the broker subprocess (C9 item 6).
+    # Only these variables pass through; everything else is dropped.
+    _ENV_ALLOWLIST = frozenset({
+        "PATH", "SYSTEMROOT", "COMSPEC", "TEMP", "TMP", "HOME", "USER",
+        "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "SHELL",
+        "HOMEDRIVE", "HOMEPATH", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+        "PROGRAMFILES", "PROGRAMFILES(X86)", "WINDIR", "SYSTEMDRIVE",
+        "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS",
+        # Needed for Python subprocess
+        "VIRTUAL_ENV", "CONDA_PREFIX",
+    })
+    # Cloud tool vars: allowed only when their values look like paths or
+    # short names (no secrets).  KUBECONFIG and AWS_CONFIG_FILE are file
+    # paths; AWS_PROFILE and AWS_REGION are short names.
+    # AWS_SHARED_CREDENTIALS_FILE is a path.  None of these carry tokens
+    # (AWS tokens use AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
+    # which are blocked by the denylist).
+    _ENV_CLOUD_PATH_VARS = frozenset({
+        "KUBECONFIG", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE",
+    })
+    _ENV_CLOUD_NAME_VARS = frozenset({
+        "AWS_PROFILE", "AWS_REGION",
+    })
+    # These are explicitly denied even if somehow in the allowlist
+    _ENV_DENYLIST_PREFIXES = ("BASH_ENV", "ENV", "PYTHON", "LD_", "DYLD_",
+                              "AGG_", "SANDBOX_")
+
+    @classmethod
+    def _is_path_like(cls, v: str) -> bool:
+        """True if value looks like a file path (no secrets)."""
+        return bool(v) and len(v) < 260 and ("/" in v or "\\" in v or v.startswith("."))
+
+    @classmethod
+    def _is_short_name(cls, v: str) -> bool:
+        """True if value looks like a short name (no secrets)."""
+        import re
+        return bool(v) and len(v) <= 64 and bool(re.fullmatch(r"[A-Za-z0-9_.-]+", v))
+
+    @classmethod
+    def _clean_env(cls) -> dict[str, str]:
+        """Build a clean environment from the allowlist."""
+        import os as _os
+        clean: dict[str, str] = {}
+        for k, v in _os.environ.items():
+            if any(k.upper().startswith(p) for p in cls._ENV_DENYLIST_PREFIXES):
+                continue
+            if k.upper() in cls._ENV_ALLOWLIST or k in cls._ENV_ALLOWLIST:
+                clean[k] = v
+            elif k in cls._ENV_CLOUD_PATH_VARS and cls._is_path_like(v):
+                clean[k] = v
+            elif k in cls._ENV_CLOUD_NAME_VARS and cls._is_short_name(v):
+                clean[k] = v
+        return clean
+
     async def _execute_approved(self, req: BrokerRequest) -> None:
         """Run the approved command outside the jail and capture output."""
-        # Run in the request's exec_cwd (falls back to the jail dir), never the
-        # API server's cwd (bug 4). Verify it exists or pass None.
-        exec_cwd = req.exec_cwd or req.jail_dir or None
-        if exec_cwd is not None and not Path(exec_cwd).is_dir():
+        # R4: refuse a missing exec_cwd (no fallback to the process cwd)
+        exec_cwd = req.exec_cwd or req.jail_dir
+        if not exec_cwd or not Path(exec_cwd).is_dir():
             logger.warning(
                 "broker.exec_cwd_missing",
                 request_id=req.request_id,
                 exec_cwd=exec_cwd,
             )
-            exec_cwd = None
+            req.state = BrokerRequestState.FAILED
+            req.exit_code = -1
+            req.stdout = ""
+            req.stderr = "exec_cwd missing or not a directory"
+            return
+
+        # R4: use a clean environment (explicit allowlist, C9 item 6)
+        clean_env = self._clean_env()
 
         try:
             result = await asyncio.get_event_loop().run_in_executor(
@@ -306,6 +366,7 @@ class PrivilegeBroker:
                     text=True,
                     timeout=self._exec_timeout,
                     cwd=exec_cwd,
+                    env=clean_env,
                 ),
             )
             req.exit_code = result.returncode

@@ -1,5 +1,16 @@
 # Control-plane hand-off (M2 T6-T10 done, 22 Oct 2026)
 
+## M2 T12b-1 (25 Oct 2026): connector fixes and CLI wiring
+
+1. Plan, ADR 0010 and tests first in `bcd293f` (T12B_PLAN.md; security b0 conditions C1-C9; founder-proxy rulings below).
+2. **Built (connector TCB):** the binding fingerprint stamped by the hook and recomputed before and after the claim; user_id from the latest registry version's key (revocation = absent from the latest version); one verified-state accessor with a fail-closed high-water mark; no unverified reads on any decision path; strict request ids; not_after required; the `(key_id, nonce)` replay key with a write-ahead save; done is terminal; remote-approved actions finish via `queue.finish`, signed by the local `connector:<device_id>` key created at enroll, the hash in the audit chain; the broker uses an env allowlist and refuses a missing cwd; enroll persists operator_user_id and device_id, refuses a different org or a re-enroll; `sandbox enroll`, `sandbox sync` (upload, decisions poll, apply_external), `sandbox signer approve|deny` (sign and POST only, never apply locally); evidence re-verifies remote approvals offline and needs `--expect-root` (out of band) for remote dual control.
+3. **Security:** b0 at leader tier, then rounds 2, 3 and 4 at leader tier, each CHANGES with proof tests (fingerprint not recomputed, hook did not stamp, evidence trusted approved_by, no revocation, rollback, broker env; then high-water fail-open, deny counted as approver, root not out of band, requires_dual floor, stub wiring; then missing enrollment.json, ok without --expect-root). All fixed; round 4's two items were fixed inline by the orchestrator. Proof files: `tests/security/test_m2_t12b_review.py`, `_review3.py`, `_review4.py`.
+4. **Named limits:** (a) no command classification in `apply_external` yet, so every remote approval requires dual (R8 kept as strict xfail); (b) `high_water.json` is unauthenticated, so a device holder can lower it (Low; fix: bind the registry version in the envelope or sign the file); (c) the operator binding (F3) severity is OPEN: the founder answered "no" to Low on the 24 Oct call; (d) `signer approve|deny` needs a server GET route and signer-token auth: T12b-2.
+5. **Process note:** the builder twice reported wiring as done while parts were stubs; the leader-tier reviews caught it. Brief builders to report stubs explicitly.
+6. Measured: connector 2161 passed, 3 skipped, 1 xfailed (R8); ee T12+T13 38 passed (builder run).
+
+**Next:** T12b-2 (server M4, the GET escalation route plus signer-token auth for `signer approve`, the web inbox on the stored key, the --live run), its own security review; then T16.
+
 ## Founder-proxy rulings (pending founder review)
 
 **2026-10-24, T12b forks (T12B_PLAN.md section 6; founder approved T12b by phone).**

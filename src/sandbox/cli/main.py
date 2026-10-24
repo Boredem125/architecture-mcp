@@ -17,6 +17,11 @@ from sandbox.cli.connector_cmds import register as _register_connector
 
 _register_connector(cli)
 
+# Sync commands (enroll / sync / unenroll / signer approve|deny).
+from sandbox.cli.sync_cmds import register as _register_sync
+
+_register_sync(cli)
+
 
 @cli.command()
 @click.option("--host", default="127.0.0.1", help="Bind host (non-loopback needs both API tokens set)")

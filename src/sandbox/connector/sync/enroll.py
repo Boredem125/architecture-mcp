@@ -29,6 +29,10 @@ from sandbox.protocol.envelope import (
 # Errors
 # ---------------------------------------------------------------------------
 
+# Sentinel: the builder persists operator_user_id in enrollment.json (C5, F3)
+ENROLL_PERSISTS_OPERATOR = True
+
+
 class EnrollError(Exception):
     """Enrollment or re-enrollment failed."""
 
@@ -61,11 +65,16 @@ def enroll(
     expect_fingerprint: str | None,
     *,
     ca: str | None = None,
+    operator: str | None = None,
 ) -> dict[str, Any]:
     """Enroll this connector with the control plane.
 
     POST *server*/api/v1/sync/enroll with the code (not its hash) and a
     proof of possession.  Raises :class:`EnrollError` on any failure.
+
+    T12b (C5, F3): persists ``operator_user_id`` and ``device_id`` in
+    ``enrollment.json``.  Aborts with nothing written if the server
+    omits the operator, or on an ``--operator`` mismatch.
     """
     import urllib.request
     import urllib.error
@@ -140,12 +149,62 @@ def enroll(
             f"registry chain verification failed: {exc}; nothing written"
         ) from exc
 
+    # R5: server org_id must equal the genesis org (C9 item 7)
+    genesis_org = genesis_payload.get("org_id", "")
+    server_org = data.get("org_id", "")
+    if server_org and genesis_org and server_org != genesis_org:
+        raise EnrollError(
+            f"server org_id {server_org!r} differs from genesis "
+            f"org_id {genesis_org!r}; nothing written"
+        )
+
+    # L: re-enroll with the same fingerprint is refused
+    try:
+        from sandbox.connector.keyhome import _discover_workspace_roots
+        from sandbox.connector.layout import FolderLayout as _FL
+        from sandbox.connector.sync.state import pinned_root as _pr
+        for _ws_root in _discover_workspace_roots():
+            try:
+                _lay = _FL(_ws_root)
+                if not _lay.exists():
+                    continue
+                existing_fp = _pr(_lay)
+                if existing_fp == computed_fp:
+                    raise EnrollError(
+                        "already enrolled with this fingerprint; "
+                        "re-enroll is refused"
+                    )
+            except EnrollError:
+                raise
+            except Exception:  # noqa: BLE001
+                continue
+    except EnrollError:
+        raise
+    except Exception:  # noqa: BLE001
+        pass
+
+    # C5 / F3: operator_user_id must be present in the server response
+    # (ADR 0010 s6). Aborts with nothing written if missing.
+    server_operator = data.get("operator_user_id")
+    if not server_operator:
+        raise EnrollError(
+            "server response missing operator_user_id; nothing written"
+        )
+
+    # --operator mismatch: abort with nothing written
+    if operator is not None and operator != server_operator:
+        raise EnrollError(
+            f"operator mismatch: expected {operator!r}, "
+            f"server returned {server_operator!r}; nothing written"
+        )
+
     # --- Persist state atomically (all files or nothing) ---
     _persist_enrollment(
         data=data,
         registry_chain=registry_chain,
         fingerprint=computed_fp,
         device_sk=sk,
+        operator_user_id=server_operator,
     )
 
     return data
@@ -342,8 +401,13 @@ def _persist_enrollment(
     registry_chain: list,
     fingerprint: str,
     device_sk: SigningKey,
+    operator_user_id: str = "",
 ) -> None:
-    """Write managed marker, pinned_root.json, registry.json, device_id, device key.
+    """Write managed marker, pinned_root.json, registry.json, device_id,
+    device key, enrollment.json.
+
+    T12b (C5): also writes ``enrollment.json`` with ``operator_user_id``,
+    ``device_id``, ``org_id`` and ``project_id``.
 
     Atomic: write temp files, then rename.  On any failure remove all temp
     files and leave no partial state.
@@ -411,6 +475,20 @@ def _persist_enrollment(
             temp_files, renames,
         )
 
+        # 4b. enrollment.json (T12b C5: persists operator_user_id, device_id)
+        enrollment_data = {
+            "device_id": data.get("device_id", ""),
+            "operator_user_id": operator_user_id,
+            "org_id": data.get("org_id", ""),
+            "project_id": data.get("project_id", ""),
+            "enrolled_at": time.time(),
+        }
+        _stage(
+            sync_dir / "enrollment.json",
+            json.dumps(enrollment_data),
+            temp_files, renames,
+        )
+
         # 5. device key (in key home)
         device_dir = kh / ws_id / "device"
         device_dir.mkdir(parents=True, exist_ok=True)
@@ -424,6 +502,28 @@ def _persist_enrollment(
         kh_ws_dir = kh / ws_id
         kh_ws_dir.mkdir(parents=True, exist_ok=True)
         _stage(kh_ws_dir / "managed", "1", temp_files, renames)
+
+        # 7. connector:<device_id> key for done-record signing (M3, C8)
+        device_id_val = data.get("device_id", "")
+        if device_id_val:
+            safe_name = "".join(
+                c if c.isalnum() or c in "-_." else "_"
+                for c in f"connector:{device_id_val}"
+            ) or "connector_unknown"
+            connector_sk = SigningKey.generate()
+            ck_path = kh_ws_dir / f"{safe_name}.seed"
+            ck_tmp = Path(str(ck_path) + ".tmp")
+            ck_tmp.write_bytes(bytes(connector_sk))
+            temp_files.append(ck_tmp)
+            renames.append((ck_tmp, ck_path))
+
+        # 8. S1: initial high_water.json (so verified_state never sees
+        # a missing file on a managed workspace after valid enrollment)
+        _stage(
+            sync_dir / "high_water.json",
+            json.dumps({"registry_version": 1, "bundle_sequence": 0}),
+            temp_files, renames,
+        )
 
         # Atomic: rename all temp files to final locations
         for tmp, final in renames:
