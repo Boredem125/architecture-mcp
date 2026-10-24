@@ -62,6 +62,10 @@ class M2T14Pending(Exception):
     """T14: Compose: bundle-signer secret, carol, payments-staging."""
 
 
+class M2T12bPending(Exception):
+    """T12b: wire remote approval path, fix H1-H3, M1-M3, nonce redesign."""
+
+
 class M2T15Pending(Exception):
     """T15: Hostile review (no code; sentinel reserved)."""
 
