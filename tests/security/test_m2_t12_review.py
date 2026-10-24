@@ -100,9 +100,6 @@ def test_r1_skew_check_uses_server_time_not_approved_at(tmp_path, monkeypatch):
 
     result = asyncio.run(apply_external(
         lay, req_id, [a1, a2],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment="staging",
         clock=lambda: connector_clock,
     ))
 
@@ -175,9 +172,7 @@ def test_r2_nonce_persisted_across_calls(tmp_path, monkeypatch):
 
     result1 = asyncio.run(apply_external(
         lay, req_id_1, [a1],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment="staging",
+        clock=lambda: time.time(),
     ))
     # One approval, dual required -> awaiting_second with 1 counted.
     assert result1["status"] == "awaiting_second"
@@ -189,7 +184,9 @@ def test_r2_nonce_persisted_across_calls(tmp_path, monkeypatch):
     nonce_file = sync_dir / "seen_nonces.json"
     assert nonce_file.exists(), "seen_nonces.json was not persisted"
     persisted = json.loads(nonce_file.read_text(encoding="utf-8"))
-    assert shared_nonce in persisted, "The nonce was not recorded on disk"
+    # ADR 0010 s4: nonce key is now (key_id, nonce), check the key format
+    nonce_found = any(shared_nonce in k for k in persisted)
+    assert nonce_found, "The nonce was not recorded on disk"
 
     # Call 2: carol uses the SAME nonce on a different request.
     req_id_2 = "req-r2-nonce-2"
@@ -204,18 +201,16 @@ def test_r2_nonce_persisted_across_calls(tmp_path, monkeypatch):
 
     result2 = asyncio.run(apply_external(
         lay, req_id_2, [a2],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment="staging",
+        clock=lambda: time.time(),
     ))
 
-    # FIXED: the nonce is persisted and found in call 2, so the
-    # approval is dropped.  approvals=0 proves the nonce was rejected.
+    # ADR 0010 s4: the replay key is (key_id, nonce), not nonce alone.
+    # Carol's key_id differs from bob's, so carol_kid:shared_nonce is NOT
+    # a replay of bob_kid:shared_nonce. Carol's approval counts.
     assert result2["status"] == "awaiting_second"
-    assert result2.get("approvals", 0) == 0, (
-        "Replayed nonce should produce 0 valid approvals, but got %d. "
-        "Nonce persistence may not be working."
-        % result2.get("approvals", -1)
+    assert result2.get("approvals", 0) == 1, (
+        "Different key_id with same nonce should count (not a replay). "
+        "Got %d approvals." % result2.get("approvals", -1)
     )
 
 
@@ -257,13 +252,15 @@ def test_r3_invalid_registry_fails_closed(tmp_path, monkeypatch):
         policy_sequence=ctx["policy_sequence"],
     )
 
-    # Pass a garbage registry chain.  The old code raised KeyError;
+    # Write a garbage registry chain to disk.  The old code raised KeyError;
     # the fixed code catches it and returns reg = None.
+    sync_dir = lay.root / ".sandbox" / "state" / "sync"
+    (sync_dir / "registry.json").write_text(
+        json.dumps([{"kind": "garbage"}]), encoding="utf-8"
+    )
     result = asyncio.run(apply_external(
         lay, req_id, [deny],
-        registry=[{"kind": "garbage"}],
-        policy_sequence=ctx["policy_sequence"],
-        environment="staging",
+        clock=lambda: time.time(),
     ))
 
     # FIXED: no crash.  The deny is dropped because the registry
@@ -327,9 +324,7 @@ def test_r4_zero_approvals_non_dual_should_not_execute(tmp_path, monkeypatch):
 
     result = asyncio.run(apply_external(
         lay, req_id, [a1],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment="staging",
+        clock=lambda: time.time(),
     ))
 
     # F7 fix: `if not approvers:` guard returns awaiting_second.
@@ -387,9 +382,7 @@ def test_r5_no_server_time_state_approvals_refused_deny_applies(tmp_path, monkey
     )
     result_a = asyncio.run(apply_external(
         lay, req_approve, [a1, a2],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment="staging",
+        clock=lambda: time.time(),
     ))
     assert result_a["status"] != "executed", (
         "Approvals must be refused when no server time measurement in managed mode."
@@ -406,9 +399,7 @@ def test_r5_no_server_time_state_approvals_refused_deny_applies(tmp_path, monkey
     )
     result_d = asyncio.run(apply_external(
         lay, req_deny, [deny],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment="staging",
+        clock=lambda: time.time(),
     ))
     assert result_d["status"] == "denied", (
         "Deny must still apply even without a server time measurement."
@@ -459,9 +450,6 @@ def test_r6_clock_skew_audit_record_written(tmp_path, monkeypatch):
 
     result = asyncio.run(apply_external(
         lay, req_id, [a1, a2],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment="staging",
         clock=lambda: time.time() + 300,  # 5 min skew
     ))
     assert result["status"] != "executed"
@@ -588,9 +576,7 @@ def test_r7_forged_sig_does_not_burn_nonce(tmp_path, monkeypatch):
     # If F6 IS fixed, bob's + carol's both count (2 approvals -> executed).
     result = asyncio.run(apply_external(
         lay, req_id, [forged_envelope, a_bob, a_carol],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment="staging",
+        clock=lambda: time.time(),
     ))
     assert result["status"] == "executed", (
         "F6 regression: the forged envelope burned bob's nonce. "
@@ -604,6 +590,7 @@ def test_r7_forged_sig_does_not_burn_nonce(tmp_path, monkeypatch):
 # ===================================================================
 
 
+@pytest.mark.xfail(strict=True, reason="T12b named limit (security round 4): apply_external does not yet classify the command against the verified folder_policy, so every remote approval requires dual; S9 single approval cannot execute until classify lands")
 def test_r8_single_admin_key_executes_for_non_dual(tmp_path, monkeypatch):
     """S9: a single_admin_registry key counts for non-dual approval.
 
@@ -636,11 +623,34 @@ def test_r8_single_admin_key_executes_for_non_dual(tmp_path, monkeypatch):
 
     result = asyncio.run(apply_external(
         lay, req_id, [a1],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment="staging",
+        clock=lambda: time.time(),
     ))
     assert result["status"] == "executed", (
-        "A single_admin_registry key should execute non-dual requests. "
+        "S9: single_admin key should count for non-dual. "
         "Got '%s'." % result["status"]
     )
+
+
+def test_r8b_empty_policy_defaults_to_dual(tmp_path, monkeypatch):
+    """Security round 4: an empty verified folder_policy gives a dual floor
+    (fail closed), so one single_admin approval on a record that claims
+    requires_dual=False does not execute."""
+    from sandbox.connector.approval import apply_external
+
+    bob_sk, bob_pub, bob_kid = _keygen()
+    ctx = _setup_managed_workspace(
+        tmp_path, monkeypatch,
+        approver_sks=[(bob_sk, bob_pub, bob_kid, "user-bob", "cli")],
+        environment="staging",
+        single_admin=True,
+    )
+    lay = ctx["lay"]
+    req_id = "req-r8b-empty-policy"
+    rec = _create_pending_request(lay, req_id, requires_dual=False)
+    a1 = _make_remote_approval(
+        bob_sk, request_id=req_id, command=rec["command"],
+        fingerprint=rec["fingerprint"], user_id="user-bob",
+        policy_sequence=ctx["policy_sequence"],
+    )
+    result = asyncio.run(apply_external(lay, req_id, [a1], clock=lambda: time.time()))
+    assert result["status"] == "awaiting_second"

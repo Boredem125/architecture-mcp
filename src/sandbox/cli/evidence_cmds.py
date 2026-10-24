@@ -51,12 +51,21 @@ def export_evidence_cmd(path: str, out: str, since: str | None, until: str | Non
 @click.argument("pack")
 @click.option("--exporter-key", default=None,
               help="Expected exporter public key (hex), obtained out of band. Recommended.")
-def verify_evidence_cmd(pack: str, exporter_key: str | None) -> None:
-    """Re-verify an evidence pack offline; exit 1 on any failure."""
+@click.option("--expect-root", default=None,
+              help="Expected pinned-root fingerprint (hex), obtained out of band. "
+                   "Required for remote dual-control verification.")
+def verify_evidence_cmd(pack: str, exporter_key: str | None, expect_root: str | None) -> None:
+    """Re-verify an evidence pack offline; exit 1 on any failure.
+
+    For packs containing remote approvals, pass --expect-root with the
+    registry root fingerprint obtained out of band (e.g. from the
+    enrollment step).  Without it, remote dual-control checks report
+    UNVERIFIED.
+    """
     from sandbox.connector.evidence import EvidenceError, verify_evidence
 
     try:
-        r = verify_evidence(pack, exporter_key)
+        r = verify_evidence(pack, exporter_key, expected_root=expect_root)
     except EvidenceError as exc:
         click.echo(f"FAILED: {exc}")
         raise SystemExit(1) from exc

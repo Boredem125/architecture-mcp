@@ -1,12 +1,14 @@
 """M2 T15 hostile review: proof tests for cross-task findings.
 
-Each test asserts the SECURE behaviour and is marked
-``xfail(strict=True)`` while the finding is open, so the suite stays green
-and the marker must be removed in the same change that fixes the finding
-(an XPASS fails the run).  Finding ids refer to
-``docs/control-plane/M2_SECURITY_SIGNOFF.md``.
+Each test asserts the SECURE behaviour.  The xfail markers are removed
+by the T12b build that fixes the corresponding finding.  Finding ids
+refer to ``docs/control-plane/M2_SECURITY_SIGNOFF.md``.
 
 Postgres-free (Q2): everything runs against the connector TCB directly.
+
+Named test edit (b): trust kwargs (registry=, environment=, policy_sequence=,
+operator_user_id=) dropped; verified state comes from the fixture instead
+(ADR 0010, F1=A).  Assertions are byte-identical.
 """
 from __future__ import annotations
 
@@ -42,7 +44,6 @@ def _two_approvers(tmp_path, monkeypatch, **kw):
 
 # -- H1: approvals are not bound to the request, device, project or org ------
 
-@pytest.mark.xfail(strict=True, reason="T15 H1 open: apply_external does not bind the payload to the pending record")
 def test_h1_approvals_for_another_request_do_not_execute(tmp_path, monkeypatch):
     """Two genuine approvals signed for request A on ANOTHER device and
     project must not execute pending request B on this device."""
@@ -60,13 +61,11 @@ def test_h1_approvals_for_another_request_do_not_execute(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, "req-B", [a1, a2],
-        registry=ctx["envelopes"], policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
     assert result["status"] != "executed"
 
 
-@pytest.mark.xfail(strict=True, reason="T15 H1 open: payload user_id is not bound to the key's registry user_id")
 def test_h1_operator_cannot_dodge_exclusion_with_another_user_id(tmp_path, monkeypatch):
     """The operator signs with HER registered key but claims user_id
     'user-zed'.  Operator exclusion (S8, threat 28) must still drop it."""
@@ -91,15 +90,13 @@ def test_h1_operator_cannot_dodge_exclusion_with_another_user_id(tmp_path, monke
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, "req-op", [forged_uid, carol_a],
-        registry=ctx["envelopes"], policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"], operator_user_id="operator-alice",
+        clock=lambda: time.time(),
     ))
     assert result["status"] == "awaiting_second"
 
 
 # -- H2: approval settings read from the UNVERIFIED bundle.json --------------
 
-@pytest.mark.xfail(strict=True, reason="T15 H2 open: _get_enforced_approval reads bundle.json without verifying it")
 def test_h2_hand_edited_bundle_json_does_not_enable_local_fallback(tmp_path, monkeypatch):
     """A hand edit of .sandbox/state/sync/bundle.json (no valid signature)
     must not turn on approval.local_fallback in managed mode (S7, N5)."""
@@ -119,7 +116,6 @@ def test_h2_hand_edited_bundle_json_does_not_enable_local_fallback(tmp_path, mon
 
 # -- H3: request_id path traversal in the TCB claim --------------------------
 
-@pytest.mark.xfail(strict=True, reason="T15 H3 open: apply_external does not validate request_id")
 def test_h3_request_id_traversal_cannot_move_sync_state(tmp_path, monkeypatch):
     """A server-supplied request_id like '../state/sync/seen_nonces' must not
     claim (rename) seen_nonces.json, with ZERO valid approvals."""
@@ -134,8 +130,7 @@ def test_h3_request_id_traversal_cannot_move_sync_state(tmp_path, monkeypatch):
     try:
         asyncio.run(apply_external(
             lay, "../state/sync/seen_nonces", [],
-            registry=ctx["envelopes"], policy_sequence=ctx["policy_sequence"],
-            environment=ctx["environment"],
+            clock=lambda: time.time(),
         ))
     except Exception:  # noqa: BLE001 -- a fix may raise "malformed request id";
         pass           # today the release step crashes AFTER the rename
@@ -144,7 +139,6 @@ def test_h3_request_id_traversal_cannot_move_sync_state(tmp_path, monkeypatch):
 
 # -- M1: not_after null never expires and its nonce is never remembered ------
 
-@pytest.mark.xfail(strict=True, reason="T15 M1 open: not_after null accepted")
 def test_m1_null_not_after_refused(tmp_path, monkeypatch):
     ctx, bob, _ = _two_approvers(tmp_path, monkeypatch)
     lay = ctx["lay"]
@@ -163,7 +157,6 @@ def test_m1_null_not_after_refused(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, "req-m1", [env],
-        registry=ctx["envelopes"], policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
     assert result["status"] != "executed"

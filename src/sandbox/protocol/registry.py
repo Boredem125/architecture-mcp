@@ -329,10 +329,17 @@ def verify_chain(
                 "added_in": envelopes[-1]["payload"].get("version", 1),
             }
 
-    # Build the Registry object from the latest version
+    # R3a: the Registry uses only the LATEST version's keys (plus the
+    # bundle_signer added above).  A key removed in a signed later version
+    # is effectively revoked and must not approve (ADR 0010 C4).
     latest = envelopes[-1]["payload"]
+    latest_keys = dict(prev_keys)  # prev_keys == the last version's key map
+    # Re-add the bundle_signer if it was added to all_keys above
+    for kid, entry in all_keys.items():
+        if entry.get("kind") == "bundle-signer":
+            latest_keys[kid] = entry
     return Registry(
-        keys=all_keys,
+        keys=latest_keys,
         admins=set(latest.get("admins", [])),
         expires_at=latest.get("expires_at", 0),
         admin_sigs_at_add=admin_sigs_at_add,
@@ -411,6 +418,12 @@ def _validate_key_entries(entries: list[dict[str, Any]]) -> None:
         if extra:
             raise RegistryError(
                 f"key entry has extra fields: {extra} (forged count?)"
+            )
+        # L R5: the connector: prefix is reserved and never a human approver
+        uid = entry.get("user_id", "")
+        if uid.startswith("connector:"):
+            raise RegistryError(
+                f"user_id {uid!r} uses the reserved connector: prefix"
             )
 
 

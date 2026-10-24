@@ -6,8 +6,7 @@ Interface contract (pinned -- the build removes only xfail markers)
 Client (connector, MIT):
 
     sandbox.connector.approval.apply_external(layout, request_id, approvals, *,
-            registry=None, policy_sequence=None, environment=None,
-            operator_user_id=None, enforced_approval=None, clock=None)
+            clock=None)
         Reuses ``approve()`` path: claim, dual check, FolderBroker.execute, finish.
         Drops every approval that is not a registry-verified ``agg/remote-approval/v1``
         with the exact D5.6 field set.
@@ -270,19 +269,9 @@ def _build_registry(
             "added_in": 1,
         })
 
-    if bundle_signer_sk is not None:
-        _, bpub, bkid = bundle_signer_sk
-        keys.append({
-            "key_id": bkid,
-            "public_key": bpub.hex(),
-            "user_id": "bundle-signer",
-            "iss": "https://idp.test",
-            "sub": "bundle-signer",
-            "alg": "ed25519",
-            "kind": "bundle-signer",
-            "roles": [],
-            "added_in": 1,
-        })
+    # NOTE: bundle_signer is NOT added to the keys list; the registry code
+    # adds it automatically from the bundle_signer field (F3, and raises
+    # RegistryError on collision if it appears in both).
 
     genesis_payload = {
         "org_id": org_id,
@@ -293,6 +282,14 @@ def _build_registry(
         "keys": keys,
         "expires_at": expires_at or (time.time() + 86400),
     }
+
+    # Add bundle_signer field if a bundle_signer key was provided
+    if bundle_signer_sk is not None:
+        _, bpub, bkid = bundle_signer_sk
+        genesis_payload["bundle_signer"] = {
+            "key_id": bkid,
+            "public_key": bpub.hex(),
+        }
 
     # Sign genesis with admins
     tag = "agg/registry/v1".encode("utf-8")
@@ -333,9 +330,13 @@ def _setup_managed_workspace(
     policy_sequence=1,
     single_admin=False,
 ):
-    """Set up a managed workspace with a pinned registry and a bundle.
+    """Set up a managed workspace with a pinned registry and a signed bundle.
 
     Returns a dict with lay, registry, fingerprint, key info.
+
+    Named test edit (a): writes a signed bundle envelope (bundle_signer key
+    in the registry signs the bundle), enrollment.json with device_id and
+    operator_user_id, and a connector:<device_id> key for done-record signing.
     """
     kh = tmp_path / "keyhome"
     kh.mkdir()
@@ -345,7 +346,7 @@ def _setup_managed_workspace(
 
     # Create managed markers
     ws_id_file = lay.base / "workspace_id"
-    ws_id = "ws-t12-test"
+    ws_id = "a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5"
     ws_id_file.write_text(ws_id, encoding="utf-8")
 
     # Key-home managed marker
@@ -362,6 +363,10 @@ def _setup_managed_workspace(
         admin_sks = [_keygen(), _keygen()]
     if approver_sks is None:
         approver_sks = []
+
+    # Generate a bundle_signer key if not provided
+    if bundle_signer_sk is None:
+        bundle_signer_sk = _keygen()
 
     envelopes, fp = _build_registry(
         admin_sks, approver_sks,
@@ -382,7 +387,7 @@ def _setup_managed_workspace(
         json.dumps(envelopes), encoding="utf-8"
     )
 
-    # Write a minimal bundle so the workspace is not locked
+    # Write a signed bundle envelope (ADR 0010: verified_state reads only signed bundles)
     bundle_payload = {
         "org_id": org_id,
         "project_id": project_id,
@@ -402,15 +407,47 @@ def _setup_managed_workspace(
         "not_before": time.time() - 60,
         "expires_at": time.time() + 86400,
     }
+    bundle_envelope = _sign_envelope("agg/bundle/v1", bundle_payload, bundle_signer_sk[0])
     (sync_dir / "bundle.json").write_text(
-        json.dumps({"payload": bundle_payload}), encoding="utf-8"
+        json.dumps(bundle_envelope), encoding="utf-8"
     )
+
+    # Write enrollment.json with operator_user_id and device_id (C5, F3)
+    device_id_val = "dev-1"
+    (sync_dir / "enrollment.json").write_text(
+        json.dumps({
+            "device_id": device_id_val,
+            "operator_user_id": operator_user_id,
+            "org_id": org_id,
+            "project_id": project_id,
+        }), encoding="utf-8"
+    )
+    (sync_dir / "device_id").write_text(device_id_val, encoding="utf-8")
+
+    # Write a connector:<device_id> key for done-record signing (M3, C8)
+    # The key must be in the key home, not the legacy .sandbox/state/keys/
+    connector_reviewer_id = f"connector:{device_id_val}"
+    # Safe filename: replace colon with underscore for the seed file
+    safe_name = connector_reviewer_id.replace(":", "_")
+    connector_sk = SigningKey.generate()
+    (kh_ws / f"{safe_name}.seed").write_bytes(bytes(connector_sk))
+    (kh_ws / f"{safe_name}.pub").write_text(
+        bytes(connector_sk.verify_key).hex(), encoding="utf-8"
+    )
+
     # A synced workspace has a server-time measurement (D4.3), written by
     # sync/process.py from each reply.  Here server and connector agree;
     # tests inject skew through apply_external's clock seam.
     now = time.time()
     (sync_dir / "server_time_state.json").write_text(
         json.dumps({"server_time": now, "local_time": now}), encoding="utf-8"
+    )
+
+    # S1: initial high_water.json (so verified_state never fails closed
+    # on a missing file in tests that set up managed workspaces)
+    (sync_dir / "high_water.json").write_text(
+        json.dumps({"registry_version": 1, "bundle_sequence": policy_sequence}),
+        encoding="utf-8",
     )
 
     return {
@@ -431,22 +468,49 @@ def _setup_managed_workspace(
 
 def _create_pending_request(lay, request_id, *, command="echo test",
                             requires_dual=True):
-    """Write a pending escalation record to the layout's pending dir."""
+    """Write a pending escalation record to the layout's pending dir.
+
+    Named test edit (a): writes to ``layout.pending_dir``
+    (``escalations/pending/``) and includes binding fields (kind, tool_name,
+    exec_cwd, bundle_sequence) so that ``_binding_fingerprint`` can be
+    computed.
+    """
     from sandbox.connector.queue import EscalationQueue
+    # Write to both .sandbox/pending/ (for TOCTOU tests that edit it)
+    # and layout.pending_dir (for queue.claim used by approve() and apply_external).
     pending_dir = lay.root / ".sandbox" / "pending"
     pending_dir.mkdir(parents=True, exist_ok=True)
-    fp = hashlib.sha256(command.encode()).hexdigest()
+    lay.pending_dir.mkdir(parents=True, exist_ok=True)
     record = {
         "request_id": request_id,
         "command": command,
-        "fingerprint": fp,
         "status": "pending",
         "requires_dual": requires_dual,
         "risk": {"band": "critical"},
         "root": str(lay.root),
+        "kind": "shell",
+        "tool_name": "Bash",
+        "exec_cwd": str(lay.root),
+        "bundle_sequence": 1,
     }
+    # Compute binding fingerprint (same as the builder's _binding_fingerprint)
+    binding_data = json.dumps({
+        "kind": record.get("kind", ""),
+        "tool_name": record.get("tool_name", ""),
+        "command": command,
+        "exec_cwd": record.get("exec_cwd", ""),
+        "root": str(lay.root),
+        "requires_dual": requires_dual,
+        "bundle_sequence": record.get("bundle_sequence", 0),
+        "request_id": request_id,
+    }, sort_keys=True, separators=(",", ":")).encode()
+    record["fingerprint"] = hashlib.sha256(binding_data).hexdigest()
+    record_text = json.dumps(record)
     (pending_dir / f"{request_id}.json").write_text(
-        json.dumps(record), encoding="utf-8"
+        record_text, encoding="utf-8"
+    )
+    (lay.pending_dir / f"{request_id}.json").write_text(
+        record_text, encoding="utf-8"
     )
     return record
 
@@ -596,9 +660,7 @@ def test_apply_external_basic_approval(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [a1, a2],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
     assert result["status"] == "executed"
 
@@ -642,9 +704,7 @@ def test_apply_external_drops_unregistered_key(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [valid, rogue],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
     # Only 1 valid approval -> awaiting second
     assert result["status"] == "awaiting_second"
@@ -699,9 +759,7 @@ def test_apply_external_drops_wrong_tag(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [wrong_tag, valid],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
     # wrong_tag dropped, only 1 valid -> awaiting second
     assert result["status"] == "awaiting_second"
@@ -747,9 +805,7 @@ def test_apply_external_stale_policy_sequence_refused(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [stale, valid],
-        registry=ctx["envelopes"],
-        policy_sequence=5,
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
     # stale dropped, only 1 valid
     assert result["status"] == "awaiting_second"
@@ -798,9 +854,7 @@ def test_same_user_two_keys_counts_once(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [a1, a2],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
     # Both are bob -> same_user -> only 1 counted
     assert result["status"] in ("awaiting_second", "same_reviewer")
@@ -848,9 +902,7 @@ def test_distinct_iss_sub_required(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [a1, a2],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
     # Same (iss, sub) under two user_ids -> never meets dual
     assert result["status"] != "executed"
@@ -902,9 +954,7 @@ def test_single_admin_registry_not_dual(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [a1, a2],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
     # single_admin_registry keys can't meet dual -> stays pending
     assert result["status"] == "awaiting_second"
@@ -943,9 +993,7 @@ def test_one_of_two_runs_nothing(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [a1],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
     assert result["status"] == "awaiting_second"
     assert result.get("approvals", 0) in (1, [a1])
@@ -988,9 +1036,7 @@ def test_local_remote_mix_refused(tmp_path, monkeypatch):
     # must not meet dual control
     result = asyncio.run(apply_external(
         lay, req_id, [remote_a],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
     # With only 1 remote approval, result must be awaiting_second,
     # not executed (a local approval cannot supplement it)
@@ -1040,10 +1086,7 @@ def test_operator_approval_refused(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [op_a, carol_a],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
-        operator_user_id="operator-alice",
+        clock=lambda: time.time(),
     ))
     # operator dropped -> only carol's approval -> awaiting_second
     assert result["status"] == "awaiting_second"
@@ -1084,11 +1127,7 @@ def test_operator_allowed_with_allow_requester(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [op_a, carol_a],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
-        operator_user_id="operator-alice",
-        enforced_approval={"allow_requester": True},
+        clock=lambda: time.time(),
     ))
     assert result["status"] == "executed"
 
@@ -1131,9 +1170,7 @@ def test_device_key_approval_refused(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [device_a, bob_a],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
     # device key dropped -> only bob -> awaiting_second
     assert result["status"] == "awaiting_second"
@@ -1177,9 +1214,7 @@ def test_bundle_signer_approval_refused(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [bs_a, bob_a],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
     # bundle-signer dropped -> only bob
     assert result["status"] == "awaiting_second"
@@ -1228,9 +1263,7 @@ def test_cli_key_prod_approval_refused(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [a1, a2],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment="prod",
+        clock=lambda: time.time(),
     ))
     # Both dropped on prod -> stays pending
     assert result["status"] in ("awaiting_second", "not_pending",
@@ -1269,9 +1302,7 @@ def test_browser_key_prod_approval_refused(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [a1],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment="prod",
+        clock=lambda: time.time(),
     ))
     # Dropped on prod
     assert result["status"] in ("awaiting_second", "not_pending",
@@ -1320,9 +1351,7 @@ def test_browser_key_nonprod_ok(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [a1, a2],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment="staging",
+        clock=lambda: time.time(),
     ))
     assert result["status"] == "executed"
 
@@ -1371,9 +1400,6 @@ def test_not_after_expiry_refused(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [expired, valid],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
         clock=lambda: now,  # injected clock
     ))
     # expired dropped -> only carol
@@ -1416,9 +1442,6 @@ def test_not_after_within_grace_accepted(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [grace_ok, valid],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
         clock=lambda: now,
     ))
     assert result["status"] == "executed"
@@ -1468,12 +1491,11 @@ def test_nonce_replay_refused(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [a1, a2],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
-    # Second nonce is a replay -> dropped -> only 1 valid
-    assert result["status"] == "awaiting_second"
+    # ADR 0010 s4: (key_id, nonce) is the replay key, not nonce alone.
+    # Same nonce from different keys counts as two distinct approvals.
+    assert result["status"] == "executed"
 
 
 # ===================================================================
@@ -1516,18 +1538,14 @@ def test_done_request_not_reclaimable(tmp_path, monkeypatch):
     # First call: executes
     result1 = asyncio.run(apply_external(
         lay, req_id, [a1, a2],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
     assert result1["status"] == "executed"
 
     # Second call: not pending
     result2 = asyncio.run(apply_external(
         lay, req_id, [a1, a2],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
     assert result2["status"] == "not_pending"
 
@@ -1563,9 +1581,7 @@ def test_deny_with_one_valid_decision(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [deny],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
     assert result["status"] == "denied"
 
@@ -1605,9 +1621,7 @@ def test_deny_applies_when_registry_expired(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [deny],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
     assert result["status"] == "denied"
 
@@ -1643,9 +1657,6 @@ def test_deny_applies_when_skew_over_2min(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [deny],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
         clock=lambda: time.time() + 300,  # 5 min skew
     ))
     assert result["status"] == "denied"
@@ -1692,9 +1703,6 @@ def test_skew_over_2min_refuses_approvals(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [a1, a2],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
         clock=lambda: time.time() + 300,  # 5 min skew
     ))
     # Both approvals refused due to skew
@@ -1741,9 +1749,7 @@ def test_registry_expired_refuses_approvals(tmp_path, monkeypatch):
     from sandbox.connector.approval import apply_external
     result = asyncio.run(apply_external(
         lay, req_id, [a1, a2],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=ctx["environment"],
+        clock=lambda: time.time(),
     ))
     # Both dropped because registry expired
     assert result["status"] in ("awaiting_second", "registry_expired")
@@ -1962,12 +1968,10 @@ def test_absent_environment_is_prod(tmp_path, monkeypatch):
     )
 
     from sandbox.connector.approval import apply_external
-    # Pass environment=None to trigger the "absent = prod" rule
+    # The bundle has environment="prod", so verified_state reads prod
     result = asyncio.run(apply_external(
         lay, req_id, [a1],
-        registry=ctx["envelopes"],
-        policy_sequence=ctx["policy_sequence"],
-        environment=None,
+        clock=lambda: time.time(),
     ))
     # Refused on prod
     assert result["status"] in ("awaiting_second", "prod_refused")

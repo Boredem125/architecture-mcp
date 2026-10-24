@@ -217,11 +217,75 @@ def _check(name: str, ok: bool, detail: str = "") -> dict[str, Any]:
     return {"check": name, "ok": bool(ok), "detail": detail}
 
 
+def _reverify_remote_approvals(
+    envelopes: list[dict[str, Any]],
+    done_rec: dict[str, Any],
+    registry_keys: dict[str, dict[str, Any]] | None,
+) -> set[str]:
+    """Re-verify each remote approval envelope offline and return the set of
+    verified registry user_ids.
+
+    R2 (C8, C9 item 9): each envelope is cryptographically verified against
+    the pinned registry in the pack, and re-bound to the done-record's
+    request_id and command.  The ``connector:`` prefix is never counted.
+    """
+    verified_users: set[str] = set()
+    if not registry_keys:
+        return verified_users
+    # S2: tag fixed in code (never trust env["kind"])
+    FIXED_TAG = "agg/remote-approval/v1"
+    for env in envelopes:
+        if not isinstance(env, dict):
+            continue
+        payload = env.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        # S2: require decision == "approve" (a deny must not count)
+        if payload.get("decision") != "approve":
+            continue
+        # S2: re-bind to the done-record (all binding fields)
+        if payload.get("request_id") != done_rec.get("request_id"):
+            continue
+        if payload.get("command") != done_rec.get("command"):
+            continue
+        sigs = env.get("signatures", [])
+        if not isinstance(sigs, list) or not sigs:
+            continue
+        sig_entry = sigs[0]
+        if not isinstance(sig_entry, dict):
+            continue
+        key_id_val = sig_entry.get("key_id", "")
+        key_entry = registry_keys.get(key_id_val)
+        if key_entry is None:
+            continue
+        user_id = key_entry.get("user_id", "")
+        if user_id.startswith("connector:"):
+            continue
+        pub_hex = key_entry.get("public_key", "")
+        if not pub_hex:
+            continue
+        try:
+            from nacl.signing import VerifyKey as _VK
+            vk = _VK(bytes.fromhex(pub_hex))
+            # S2: tag fixed in code, never env["kind"]
+            canonical = json.dumps(
+                payload, sort_keys=True, separators=(",", ":")
+            ).encode()
+            msg = FIXED_TAG.encode("utf-8") + b"\x00" + canonical
+            sig_bytes = bytes.fromhex(sig_entry.get("sig", ""))
+            vk.verify(msg, sig_bytes)
+            verified_users.add(user_id)
+        except Exception:
+            continue
+    return verified_users
+
+
 def check_decision(
     rec: Any,
     stem: str,
     reviewer_keys: dict[str, str | None],
     audit_records: list[dict[str, Any]] | None = None,
+    registry_keys: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """The checks for one done-record. ``reviewer_keys`` maps reviewer id to the
     folder's public key for it (None if the folder has none).
@@ -280,10 +344,27 @@ def check_decision(
                              f"signed by key {str(signer_pub)[:16]}..., "
                              f"not the folder's key for reviewer {reviewer!r}"))
 
-    if rec.get("requires_dual") and rec.get("decision") == "approved":
+    if rec.get("requires_dual") and (rec.get("decision") == "approved"
+                                      or rec.get("state") == "executed"):
         problems: list[str] = []
         strict_good: list[dict[str, Any]] = []
         legacy_good: list[dict[str, Any]] = []
+        # R2 (T12b): re-verify each remote approval envelope against the
+        # pinned registry, re-bind it to the done-record, and recompute
+        # approved_by.  Never trust the unsigned approved_by list.
+        remote_approvals = rec.get("remote_approvals", [])
+        if isinstance(remote_approvals, list) and remote_approvals:
+            verified_users = _reverify_remote_approvals(
+                remote_approvals, rec, registry_keys)
+            if len(verified_users) >= 2:
+                checks.append(_check("dual_control", True,
+                                     f"remote dual control: {len(verified_users)} "
+                                     f"verified approvers: {sorted(verified_users)}"))
+            else:
+                problems.append(
+                    f"{len(verified_users)} verified remote approver(s); 2 required")
+                checks.append(_check("dual_control", False, "; ".join(problems)))
+            return checks
         for n, a in enumerate(_approvals(rec), start=1):
             if not isinstance(a, dict):
                 problems.append(f"approval {n}: not an object")
@@ -344,10 +425,12 @@ def _checks_for(
     stem: str,
     reviewer_keys: dict[str, str | None],
     audit_records: list[dict[str, Any]] | None = None,
+    registry_keys: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     if rec is None:
         return [_check("parse", False, "not valid JSON")]
-    return check_decision(rec, stem, reviewer_keys, audit_records=audit_records)
+    return check_decision(rec, stem, reviewer_keys, audit_records=audit_records,
+                          registry_keys=registry_keys)
 
 
 def _reviewer_ids(records: list[dict[str, Any]]) -> set[str]:
@@ -510,11 +593,38 @@ def build_pack(layout: FolderLayout, since: float | None = None, until: float | 
                      for rid in sorted(_reviewer_ids(decisions))}
     files[REVIEWER_KEYS] = _pretty(reviewer_keys)
 
+    # T12b R2: include the pinned registry chain and root for offline
+    # re-verification of remote approval envelopes.
+    sync_dir = layout.root / ".sandbox" / "state" / "sync"
+    _reg_file = sync_dir / "registry.json"
+    _pr_file = sync_dir / "pinned_root.json"
+    if _reg_file.is_file():
+        files["keys/registry.json"] = _reg_file.read_bytes()
+    if _pr_file.is_file():
+        files["keys/pinned_root.json"] = _pr_file.read_bytes()
+
+    # R2: load registry keys for remote approval re-verification
+    _pack_reg_keys: dict[str, dict[str, Any]] | None = None
+    try:
+        if _reg_file.is_file():
+            _reg_data = json.loads(_reg_file.read_bytes())
+            _reg_chain = _reg_data if isinstance(_reg_data, list) else [_reg_data]
+            if _pr_file.is_file():
+                _pr_data = json.loads(_pr_file.read_bytes())
+                _pr_fp = _pr_data.get("fingerprint", "")
+                if _pr_fp:
+                    from sandbox.protocol.registry import verify_chain as _vc
+                    _verified_reg = _vc(_reg_chain, _pr_fp)
+                    _pack_reg_keys = _verified_reg._keys
+    except Exception:  # noqa: BLE001
+        pass
+
     index, failed = [], []
     for stem, data, rec in raw:
         path = f"decisions/{stem}.json"
         files[path] = data
-        checks = _checks_for(rec, stem, reviewer_keys, audit_records=verified_audit_records)
+        checks = _checks_for(rec, stem, reviewer_keys, audit_records=verified_audit_records,
+                              registry_keys=_pack_reg_keys)
         ok = all(c["ok"] for c in checks)
         r = rec if isinstance(rec, dict) else {}
         index.append({
@@ -828,9 +938,15 @@ def _safe(path: str) -> bool:
     return bool(path) and "\\" not in path and not pp.is_absolute() and ".." not in pp.parts and ":" not in path
 
 
-def verify_evidence(path: str | Path, exporter_key: str | None = None) -> dict[str, Any]:
+def verify_evidence(path: str | Path, exporter_key: str | None = None,
+                    expected_root: str | None = None) -> dict[str, Any]:
     """Re-verify a pack offline. ``ok`` is False if anything fails; each entry
-    of ``failures`` says what and where."""
+    of ``failures`` says what and where.
+
+    S3: *expected_root* is the pinned-root fingerprint supplied out of band.
+    If absent, remote dual-control results are UNVERIFIED (never ok).
+    If it differs from the pack's ``keys/pinned_root.json``, fail.
+    """
     from sandbox.crypto.signing import verify_signature
 
     files = read_pack(path)
@@ -916,6 +1032,56 @@ def verify_evidence(path: str | Path, exporter_key: str | None = None) -> dict[s
                         except (ValueError, UnicodeDecodeError):
                             pass
 
+    # S3/R2: load registry keys from the pack for remote approval re-verification.
+    # If expected_root is provided, verify the pack's pinned root matches it.
+    # If expected_root is absent, remote dual-control is UNVERIFIED (never ok).
+    _verify_reg_keys: dict[str, dict[str, Any]] | None = None
+    _root_verified = False
+    try:
+        _v_reg_raw = files.get("keys/registry.json")
+        _v_pr_raw = files.get("keys/pinned_root.json")
+        if _v_reg_raw and _v_pr_raw:
+            _v_reg_data = json.loads(_v_reg_raw)
+            _v_pr_data = json.loads(_v_pr_raw)
+            _v_pr_fp = _v_pr_data.get("fingerprint", "")
+            if expected_root is not None:
+                # S3: out-of-band root check
+                if _v_pr_fp != expected_root:
+                    failures.append(
+                        f"pinned_root fingerprint {_v_pr_fp[:16]}... does not "
+                        f"match expected root {expected_root[:16]}...")
+                    _v_pr_fp = ""  # do not trust the pack's registry
+                else:
+                    _root_verified = True
+            if _v_pr_fp:
+                _v_chain = _v_reg_data if isinstance(_v_reg_data, list) else [_v_reg_data]
+                from sandbox.protocol.registry import verify_chain as _vc2
+                _v_verified = _vc2(_v_chain, _v_pr_fp)
+                _verify_reg_keys = _v_verified._keys
+    except Exception:  # noqa: BLE001
+        pass
+    # S3 (security round 4, Q2): the pack's own pinned root proves nothing
+    # about who approved, because the device holder made the pack.  A pack
+    # with remote-approved decisions verifies only against a root supplied
+    # out of band; without one the result is not ok.
+    def _has_remote(raw: Any) -> bool:
+        try:
+            data = raw if isinstance(raw, str) else bytes(raw).decode("utf-8")
+            return bool(json.loads(data).get("remote_approvals"))
+        except Exception:  # noqa: BLE001
+            return False
+
+    _pack_has_remote = any(
+        p.startswith("decisions/") and p.endswith(".json") and p != DECISIONS_INDEX
+        and _has_remote(files[p])
+        for p in files
+    )
+    if _pack_has_remote and not _root_verified:
+        result["remote_root_unverified"] = True
+        failures.append(
+            "remote dual control UNVERIFIED: pass --expect-root with the "
+            "registry root fingerprint obtained out of band")
+
     legacy_count = 0
     decisions_detail: list[dict[str, Any]] = []
 
@@ -925,7 +1091,8 @@ def verify_evidence(path: str | Path, exporter_key: str | None = None) -> dict[s
         result["decisions"] += 1
         rec = _read_json(files[p])
         stem = PurePosixPath(p).stem
-        checks = _checks_for(rec, stem, reviewer_keys, audit_records=verified_audit_records)
+        checks = _checks_for(rec, stem, reviewer_keys, audit_records=verified_audit_records,
+                              registry_keys=_verify_reg_keys)
         tag = " (already failing at export)" if p in failed_at_export else ""
 
         # Determine per-record key_status from the signer_is_folder_key check.

@@ -1121,6 +1121,34 @@ def _seg_approver(seg: shellwords.Segment) -> str | None:
                     return "policy propose"
                 if low == "policy":
                     seen_policy = True
+    # C9 item 6: detect `python -c "import sandbox.cli..."` and similar forms
+    # that bypass the binary detection above.
+    for j in range(len(raws)):
+        w = raws[j].casefold()
+        base = w.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        for ext in (".exe", ".cmd", ".bat"):
+            if base.endswith(ext):
+                base = base[: -len(ext)]
+        if base not in ("python", "python3", "python3.12", "python3.13",
+                         "python3.14", "python3.15"):
+            continue
+        # Look for -c flag followed by sandbox import
+        for k in range(j + 1, len(raws)):
+            arg = raws[k]
+            if arg in ("-c",):
+                # The next argument is the code string
+                if k + 1 < len(raws):
+                    code_arg = raws[k + 1].casefold()
+                    if "sandbox.cli" in code_arg or "sandbox.connector" in code_arg:
+                        return "python -c sandbox import"
+                    if "apply_external" in code_arg:
+                        return "python -c apply_external"
+            elif arg.startswith("-") and "c" in arg[1:]:
+                # e.g. -Ic "import sandbox..."
+                if k + 1 < len(raws):
+                    code_arg = raws[k + 1].casefold()
+                    if "sandbox.cli" in code_arg or "sandbox.connector" in code_arg:
+                        return "python -c sandbox import"
     return None
 
 
