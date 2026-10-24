@@ -125,8 +125,9 @@ Each task's new tests are committed as strict xfail (`raises=M2T<n>Pending`) bef
 | T13 | `ee/web/tests/har-check.test.ts` | 4 | 4 (module absent) | 0 | vitest; RED: `src/approval.ts`, `src/browser-key.ts` not found |
 | T13 | `ee/web/tests/prod-guard.test.ts` | 13 | 13 (module absent) | 0 | vitest; RED: `src/escalation-rules.ts` not found |
 | T13 | `ee/web/tests/browser-key.test.ts` | 9 | 9 (module absent) | 0 | vitest; RED: `src/browser-key.ts`, `src/key-store.ts` not found |
+| T14 | `ee/tests/test_m2_t14_deploy.py` | 16 | 10 | 6 | tests-first (T14); 13 static (parse compose YAML, init-secrets, realm JSON, Caddyfile), 1 live Docker test (skipped when Docker compose unavailable); 6 guards pass now (file existence, ports unchanged, TLS/CSP unchanged), 10 xfail (bundle-signer secret, carol, payments-staging, live ready) |
 
-M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17, T6=48, T7=48, T8=52, T9=45, T10=10, T11=42, T12=43, T13=17 (ee Python), enroll-persist=6 (ee sync registry). Route freeze failures (T9Pending): enroll-persist=1, T11=1, T12=1. Web test red count: 33 (vitest, 4 files, module-absent errors; 1 non-ASCII case added to signing.test.ts). Total RED: 350 (Python) + 33 (web).
+M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17, T6=48, T7=48, T8=52, T9=45, T10=10, T11=42, T12=43, T13=17 (ee Python), T14=10, enroll-persist=6 (ee sync registry). Route freeze failures (T9Pending): enroll-persist=1, T11=1, T12=1. Web test red count: 33 (vitest, 4 files, module-absent errors; 1 non-ASCII case added to signing.test.ts). Total RED: 360 (Python) + 33 (web).
 
 ### Build records, T1-T5 (22 Oct 2026, orchestrator)
 
