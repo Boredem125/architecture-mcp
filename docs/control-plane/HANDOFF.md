@@ -1,5 +1,15 @@
 # Control-plane hand-off (M2 T6-T10 done, 22 Oct 2026)
 
+## M2 T13 (24 Oct 2026): done
+
+1. Tests: `1abffaa` (first cut), `52fbbac` (full bodies; the first cut's 16 pg tests were sentinel-only stubs and were rewritten before the build).
+2. **Web (`ee/web/src`):** browser key enroll (WebCrypto Ed25519, non-extractable, IndexedDB), pending list, approve/deny signing `agg/remote-approval/v1` over Python-identical canonical bytes (non-ASCII escaped as `\uXXXX`, `.0` on approved_at/not_after). Approve hidden on prod; deny allowed. New `ee-web` CI job (lint, build, vitest).
+3. **Server:** `GET /api/v1/escalations` (session, RLS, pending only, strict CSP); the approvals route takes only a signer token or a session plus CSRF (device tokens refused: the T12 named limit is lifted); three-way identity binding (authenticated user == payload user_id == signing key's registry owner); `POST /api/v1/signer-links` with `kind=browser` (proposal-only).
+4. **Security:** round 1 CHANGES (CRITICAL: the named-edited `test_device_key_approval_refused_server` never seeded the device key, so it passed on "key not found"; HIGH: no key-owner check, so bob's session could submit carol's signed envelope). Both fixed inline by the orchestrator; round 2 APPROVE. Review tests: `ee/tests/test_m2_t13_review.py`.
+5. **Trade-offs (for the founder):** the orchestrator made the signing.ts escape fix and both round-1 fixes inline instead of spawning builders (token budget). The final local full-suite run was killed by the harness for low memory, so the last full numbers are from before the 2-line fix (ee 656 passed, 1 skipped; connector 2089 passed, 1 skipped); after it, the T12, T13 and review tests passed 40/40; CI runs the full suites. No founder-proxy rulings were needed.
+
+**Next:** the founder decides on T14 (compose: bundle-signer secret, carol, payments-staging). Founder actions: rotate the Bolna key (exposed once in session output); send Navrina the blurb plus an intro ask; 5 discovery calls.
+
 ## M2 T12 (24 Oct 2026): done; T13 tests committed
 
 1. Tests first in `ed57bfa` (T12) and `1abffaa` (T13, 14 pytest and 32 vitest; build not started).
