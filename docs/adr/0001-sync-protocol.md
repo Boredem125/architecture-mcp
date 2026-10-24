@@ -160,6 +160,8 @@ Source: `docs/control-plane/M2_PLAN.md` D1-D8 and the founder rulings of 21 Oct 
 6. **One path in managed mode (S7).** The connector runs `approval.apply_external(layout, request_id, approvals)`, which reuses the `approve()` path: claim, dual check, `FolderBroker.execute`, finish. It drops every approval that is not a registry-verified `agg/remote-approval/v1`. In managed mode, local `approve()` refuses managed requests unless the signed bundle sets `approval.local_fallback`. A mix of local and remote approvals never meets dual control.
 7. **Deny.** A deny needs one valid signed decision. Once the registry expires, or the measured skew passes 2 min, remote approvals are refused and denies still apply.
 
+**Data-model note (F5, T12 security review):** `user_id` in `approver_keys` and `approvals` is stored as `text`, not `uuid`. The registry `user_id` is an opaque protocol string (e.g. an OIDC `sub` claim or a CLI-chosen identifier like `"user-bob"`). Casting it to `uuid` would reject legitimate non-UUID identifiers and couple the schema to a format the protocol does not mandate. The `downgrade()` path in migration 0010 casts back to `uuid` with `USING user_id::uuid`. **Named limit (F10):** it first deletes `approvals` and `approver_keys` rows whose `user_id` is not a uuid, so run a downgrade only on a database whose approvals are exported or disposable. The signed done-records on the connector and the append-only `audit_records` chain are not touched.
+
 ### A4. Audit upload (amends 5.1 and 5.3; 5.2 stands)
 
 1. **Spool and cursor.** The local chain is the spool. The cursor moves to `.sandbox/state/sync/cursor.json`, under the non-removable deny. Upload is in order, per `(device_id, session_id)`. A gap is refused.

@@ -32,6 +32,7 @@ _ALWAYS = {
     "money_floor_disabled": "money_floor",
     "runners_allowed": "runners",
     "key_pinned": "key_pinned",
+    "clock_skew": "clock_skew",
 }
 # Escalations alert only when critical or dual control.
 _ESCALATIONS = {"shell_escalated", "tool_call_escalated", "escalate_redirect"}

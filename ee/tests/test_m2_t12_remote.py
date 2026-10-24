@@ -310,7 +310,7 @@ def test_guard_approvals_unique_constraint(pg_url, pg_roles, owner_url):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_escalation_upload_success(escalation_server):
     """Upload a pending escalation (D6.1, D7.2)."""
     _need("agg_cp.sync.escalations", "router")
@@ -346,7 +346,7 @@ def test_escalation_upload_success(escalation_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_escalation_upload_idempotent(escalation_server):
     """Uploading the same (device_id, request_id) is idempotent (D6.1)."""
     _need("agg_cp.sync.escalations", "router")
@@ -391,7 +391,7 @@ def test_escalation_upload_idempotent(escalation_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_escalation_stores_policy_sequence(escalation_server):
     """The escalation stores the current policy_sequence (D6.1)."""
     _need("agg_cp.sync.escalations", "router")
@@ -441,7 +441,7 @@ def test_escalation_stores_policy_sequence(escalation_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_decisions_endpoint_returns_empty(escalation_server):
     """GET /api/v1/sync/decisions returns empty when no decisions (D7.2)."""
     _need("agg_cp.sync.escalations", "router")
@@ -478,7 +478,7 @@ def test_decisions_endpoint_returns_empty(escalation_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_device_key_approval_refused_server(escalation_server):
     """Server refuses a device-key signed approval (D5.1, threat 31, REVIEW_M2 item 7)."""
     _need("agg_cp.sync.escalations", "router")
@@ -536,7 +536,7 @@ def test_device_key_approval_refused_server(escalation_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_bundle_signer_key_approval_refused_server(escalation_server):
     """Server refuses a bundle-signer-key signed approval (D5.1, threat 31)."""
     _need("agg_cp.sync.escalations", "router")
@@ -600,7 +600,7 @@ def test_bundle_signer_key_approval_refused_server(escalation_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_prod_approval_refused_server(escalation_server):
     """Server refuses any remote approval on a prod project (N9, threat 36)."""
     _need("agg_cp.sync.escalations", "router")
@@ -663,7 +663,7 @@ def test_prod_approval_refused_server(escalation_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_wrong_field_set_refused_server(escalation_server):
     """Server refuses an approval with missing required fields (D5.6)."""
     _need("agg_cp.sync.escalations", "router")
@@ -725,7 +725,7 @@ def test_wrong_field_set_refused_server(escalation_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_cross_org_escalation_refused(escalation_server):
     """A device from org A cannot see or create escalations in org B (RLS)."""
     _need("agg_cp.sync.escalations", "router")
@@ -786,7 +786,7 @@ def test_cross_org_escalation_refused(escalation_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_expired_not_after_refused_server(escalation_server):
     """Server refuses an approval with expired not_after (D4.1)."""
     _need("agg_cp.sync.escalations", "router")
@@ -850,7 +850,7 @@ def test_expired_not_after_refused_server(escalation_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_revoked_device_escalation_401(escalation_server):
     """A revoked device gets 401 on escalation upload (D1.5)."""
     _need("agg_cp.sync.escalations", "router")
@@ -889,7 +889,7 @@ def test_revoked_device_escalation_401(escalation_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_duplicate_approval_same_user_refused(escalation_server):
     """Server refuses a second approval from the same user (D6.2).
 
@@ -970,7 +970,7 @@ def test_duplicate_approval_same_user_refused(escalation_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_escalation_upload_scrubbed_server(escalation_server):
     """The server stores a scrubbed version of the escalation record (threat 19)."""
     _need("agg_cp.sync.escalations", "router")

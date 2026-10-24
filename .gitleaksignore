@@ -3,3 +3,9 @@
 # The public jwt.io example token ({"sub": "1234567890"}), a fixture for the
 # secret scanner's own JWT test. Not a credential.
 f303cc5651900177fc210661e11365db39bf976c:tests/security/test_secret_scanning.py:jwt:45
+
+# M2 T12 scrub fixtures: fake secret-shaped strings that the tests assert
+# scrub.py removes before an escalation upload. Not credentials.
+ed57bfa30f0ad25850586bb703035071496369ae:ee/tests/test_m2_t12_remote.py:generic-api-key:993
+ed57bfa30f0ad25850586bb703035071496369ae:tests/security/test_m2_t12_remote.py:stripe-access-token:1875
+ed57bfa30f0ad25850586bb703035071496369ae:tests/security/test_m2_t12_remote.py:stripe-access-token:1907

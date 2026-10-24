@@ -160,6 +160,12 @@ Node ids are fixed now. The tests-first commits must use these file/name pattern
 | 36 | Remote approval on prod | `tests/security/test_m2_t12_remote.py` | `test_cli_key_prod_approval_refused`, `test_browser_key_prod_approval_refused` | T12 |
 | 37 | Agent runs sync CLIs to own server/root | `tests/security/test_m2_t7_signer.py`, `tests/security/test_m2_t8_enroll.py` | signer subcommands through shell forms (T7); enroll/unenroll/sync plus different-fingerprint re-enroll refusal (T8) | T7, T8 |
 
+## 5b. Named limits
+
+| Limit | Description |
+|---|---|
+| POST /api/v1/sync/escalations/{id}/approvals accepts device tokens | M2 simplification; signature, kind-matrix and prod checks still apply. The T13 build replaces this with signer-assert and user-session auth and refuses device tokens. |
+
 ## 6. Frozen demo steps (D6.6, per M2_PLAN.md "Design-partner demo")
 
 Users: alice (admin, operator), carol (admin, approver), bob (approver), eve (Globex).
@@ -180,6 +186,7 @@ Users: alice (admin, operator), carol (admin, approver), bob (approver), eve (Gl
 8. **Sticky and revoke:** delete `.sandbox/state/sync/` -> last bundle, no fallback. Delete `policy_history/` too -> `locked`. **F4:** locked stays locked until a bundle with two CLI approvals arrives. Re-enroll, alice revokes -> 401 on next sync, local enforcement holds.
 9. **Tenancy:** every Acme id gives eve 404.
 10. **Persistence:** `down`, `up`. Registry, bundles, heads persist. `audit verify` passes.
+11. **Evidence (founder ruling 7, 24 Oct 2026):** export the evidence pack covering the step 5 action (`evidence.export_evidence`) and verify it with the network cut (`evidence.verify_evidence`). PASS if verification succeeds offline and the pack holds the step 5 done-record with both approver `user_id`s and key `kind`s, and the non-prod label (D5.5).
 
 ### Demo preset
 

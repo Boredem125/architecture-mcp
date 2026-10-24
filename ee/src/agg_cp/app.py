@@ -266,6 +266,14 @@ def create_app(
         for _r in _audit_r.routes:
             app.router.routes.append(_r)
 
+        from .sync.escalations import escalation_router
+
+        _esc_r = escalation_router(
+            db_url=settings.db_url, clock=actual_clock
+        )
+        for _r in _esc_r.routes:
+            app.router.routes.append(_r)
+
     @app.get("/health")
     async def health() -> JSONResponse:
         return JSONResponse({"status": "ok"})

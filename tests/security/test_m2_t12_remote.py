@@ -240,13 +240,16 @@ def _build_registry(
         })
         admins.append(kid)
 
-    for sk, pub, kid, uid, kind in approver_sks:
+    for entry in approver_sks:
+        # Optional 6th element overrides sub (default: sub = user_id).
+        sk, pub, kid, uid, kind = entry[:5]
+        sub = entry[5] if len(entry) > 5 else uid
         keys.append({
             "key_id": kid,
             "public_key": pub.hex(),
             "user_id": uid,
             "iss": "https://idp.test",
-            "sub": uid,
+            "sub": sub,
             "alg": "ed25519",
             "kind": kind,
             "roles": ["approver"],
@@ -310,7 +313,10 @@ def _build_registry(
         "signatures": sigs,
     }
 
-    fp = hashlib.sha256(canonical).hexdigest()
+    # Root fingerprint = registry._payload_hash: sha256(org_id || ":" || canonical).
+    fp = hashlib.sha256(
+        genesis_payload["org_id"].encode("utf-8") + b":" + canonical
+    ).hexdigest()
     return [genesis_env], fp
 
 
@@ -398,6 +404,13 @@ def _setup_managed_workspace(
     }
     (sync_dir / "bundle.json").write_text(
         json.dumps({"payload": bundle_payload}), encoding="utf-8"
+    )
+    # A synced workspace has a server-time measurement (D4.3), written by
+    # sync/process.py from each reply.  Here server and connector agree;
+    # tests inject skew through apply_external's clock seam.
+    now = time.time()
+    (sync_dir / "server_time_state.json").write_text(
+        json.dumps({"server_time": now, "local_time": now}), encoding="utf-8"
     )
 
     return {
@@ -545,7 +558,7 @@ def test_guard_hook_does_not_import_apply_external(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_apply_external_basic_approval(tmp_path, monkeypatch):
     """apply_external with 2 valid remote approvals runs the request (D6.3).
 
@@ -595,7 +608,7 @@ def test_apply_external_basic_approval(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_apply_external_drops_unregistered_key(tmp_path, monkeypatch):
     """apply_external drops an approval from a key not in the pinned registry (D5.6, threat 13)."""
     _need("sandbox.connector.approval", "apply_external")
@@ -642,7 +655,7 @@ def test_apply_external_drops_unregistered_key(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_apply_external_drops_wrong_tag(tmp_path, monkeypatch):
     """apply_external drops an approval signed with the wrong tag (D5.6).
 
@@ -699,7 +712,7 @@ def test_apply_external_drops_wrong_tag(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_apply_external_stale_policy_sequence_refused(tmp_path, monkeypatch):
     """An approval with a stale policy_sequence is dropped (D5.6, threat 13)."""
     _need("sandbox.connector.approval", "apply_external")
@@ -747,7 +760,7 @@ def test_apply_external_stale_policy_sequence_refused(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_same_user_two_keys_counts_once(tmp_path, monkeypatch):
     """One user_id with two keys counts as one approval (D5.6, threat 14).
 
@@ -798,7 +811,7 @@ def test_same_user_two_keys_counts_once(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_distinct_iss_sub_required(tmp_path, monkeypatch):
     """Two approvals with the same (iss, sub) are counted as one (threat 14)."""
     _need("sandbox.connector.approval", "apply_external")
@@ -807,42 +820,14 @@ def test_distinct_iss_sub_required(tmp_path, monkeypatch):
     # Same (iss, sub) as bob but different user_id and key
     bob2_sk, bob2_pub, bob2_kid = _keygen()
 
-    # Build registry with same (iss, sub) for both
-    admin_sks = [_keygen(), _keygen()]
-    keys = []
-    admins = []
-    for sk, pub, kid in admin_sks:
-        keys.append({
-            "key_id": kid, "public_key": pub.hex(),
-            "user_id": f"admin-{kid[:8]}", "iss": "https://idp.test",
-            "sub": f"admin-{kid[:8]}", "alg": "ed25519",
-            "kind": "cli", "roles": ["admin", "approver"], "added_in": 1,
-        })
-        admins.append(kid)
-    # Two keys with same (iss, sub)
-    keys.append({
-        "key_id": bob_kid, "public_key": bob_pub.hex(),
-        "user_id": "user-bob-1", "iss": "https://idp.test",
-        "sub": "same-sub-bob", "alg": "ed25519",
-        "kind": "cli", "roles": ["approver"], "added_in": 1,
-    })
-    keys.append({
-        "key_id": bob2_kid, "public_key": bob2_pub.hex(),
-        "user_id": "user-bob-2", "iss": "https://idp.test",
-        "sub": "same-sub-bob", "alg": "ed25519",
-        "kind": "cli", "roles": ["approver"], "added_in": 1,
-    })
-
-    # Note: verify_chain normally rejects duplicate (iss, sub).
-    # This test verifies that apply_external checks it too, even
-    # if the registry somehow has them.  If verify_chain blocks it,
-    # the test is still valid as the behavior is defensive.
-    # We test the apply_external dedup by user_id here.
+    # A registry with one (iss, sub) under two user_ids. T6
+    # verify_chain refuses it, so apply_external, which must re-verify
+    # the chain against the pin, counts neither approval.
     ctx = _setup_managed_workspace(
         tmp_path, monkeypatch,
         approver_sks=[
-            (bob_sk, bob_pub, bob_kid, "user-bob-1", "cli"),
-            (bob2_sk, bob2_pub, bob2_kid, "user-bob-2", "cli"),
+            (bob_sk, bob_pub, bob_kid, "user-bob-1", "cli", "same-sub-bob"),
+            (bob2_sk, bob2_pub, bob2_kid, "user-bob-2", "cli", "same-sub-bob"),
         ],
     )
     lay = ctx["lay"]
@@ -867,8 +852,9 @@ def test_distinct_iss_sub_required(tmp_path, monkeypatch):
         policy_sequence=ctx["policy_sequence"],
         environment=ctx["environment"],
     ))
-    # Same (iss, sub) -> same person -> must not meet dual
-    assert result["status"] in ("awaiting_second", "same_reviewer")
+    # Same (iss, sub) under two user_ids -> never meets dual
+    assert result["status"] != "executed"
+    assert result.get("approvals", 0) < 2
 
 
 # ===================================================================
@@ -876,7 +862,7 @@ def test_distinct_iss_sub_required(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_single_admin_registry_not_dual(tmp_path, monkeypatch):
     """A key added under a single-admin registry doesn't count for dual (S9).
 
@@ -929,7 +915,7 @@ def test_single_admin_registry_not_dual(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_one_of_two_runs_nothing(tmp_path, monkeypatch):
     """With 1 valid approval out of 2 needed, nothing executes (D6.4)."""
     _need("sandbox.connector.approval", "apply_external")
@@ -970,7 +956,7 @@ def test_one_of_two_runs_nothing(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_local_remote_mix_refused(tmp_path, monkeypatch):
     """A mix of local and remote approvals never meets dual (D6.3, threat 27).
 
@@ -1016,7 +1002,7 @@ def test_local_remote_mix_refused(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_operator_approval_refused(tmp_path, monkeypatch):
     """The operator bound at enroll is excluded (D6.4, threat 28).
 
@@ -1063,7 +1049,7 @@ def test_operator_approval_refused(tmp_path, monkeypatch):
     assert result["status"] == "awaiting_second"
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_operator_allowed_with_allow_requester(tmp_path, monkeypatch):
     """Operator is allowed when bundle sets allow_requester (D6.4)."""
     _need("sandbox.connector.approval", "apply_external")
@@ -1112,7 +1098,7 @@ def test_operator_allowed_with_allow_requester(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_device_key_approval_refused(tmp_path, monkeypatch):
     """A device key is refused for remote approvals (D5.1, threat 31)."""
     _need("sandbox.connector.approval", "apply_external")
@@ -1158,7 +1144,7 @@ def test_device_key_approval_refused(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_bundle_signer_approval_refused(tmp_path, monkeypatch):
     """A bundle-signer key is refused for remote approvals (D5.1, threat 31)."""
     _need("sandbox.connector.approval", "apply_external")
@@ -1204,7 +1190,7 @@ def test_bundle_signer_approval_refused(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_cli_key_prod_approval_refused(tmp_path, monkeypatch):
     """CLI key remote approval on prod is refused (N9, threat 36).
 
@@ -1256,7 +1242,7 @@ def test_cli_key_prod_approval_refused(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_browser_key_prod_approval_refused(tmp_path, monkeypatch):
     """Browser key remote approval on prod is refused (Q1, threat 36)."""
     _need("sandbox.connector.approval", "apply_external")
@@ -1297,7 +1283,7 @@ def test_browser_key_prod_approval_refused(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_browser_key_nonprod_ok(tmp_path, monkeypatch):
     """Browser key remote approval on non-prod is accepted (D5.5, Q1).
 
@@ -1346,7 +1332,7 @@ def test_browser_key_nonprod_ok(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_not_after_expiry_refused(tmp_path, monkeypatch):
     """An approval past not_after + 2 min grace is dropped (D4.1, threat 13).
 
@@ -1394,7 +1380,7 @@ def test_not_after_expiry_refused(tmp_path, monkeypatch):
     assert result["status"] == "awaiting_second"
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_not_after_within_grace_accepted(tmp_path, monkeypatch):
     """An approval just past not_after but within 2 min grace is accepted."""
     _need("sandbox.connector.approval", "apply_external")
@@ -1443,7 +1429,7 @@ def test_not_after_within_grace_accepted(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_nonce_replay_refused(tmp_path, monkeypatch):
     """A replayed nonce is refused (D4.1, threat 13).
 
@@ -1495,7 +1481,7 @@ def test_nonce_replay_refused(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_done_request_not_reclaimable(tmp_path, monkeypatch):
     """A done (finished) request cannot be claimed again (D4.1)."""
     _need("sandbox.connector.approval", "apply_external")
@@ -1551,7 +1537,7 @@ def test_done_request_not_reclaimable(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_deny_with_one_valid_decision(tmp_path, monkeypatch):
     """A deny needs only one valid signed decision (D6.5)."""
     _need("sandbox.connector.approval", "apply_external")
@@ -1589,7 +1575,7 @@ def test_deny_with_one_valid_decision(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_deny_applies_when_registry_expired(tmp_path, monkeypatch):
     """Denies still apply even when the registry has expired (D6.5).
 
@@ -1631,7 +1617,7 @@ def test_deny_applies_when_registry_expired(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_deny_applies_when_skew_over_2min(tmp_path, monkeypatch):
     """Denies apply even with clock skew > 2 min (D4.3, D6.5)."""
     _need("sandbox.connector.approval", "apply_external")
@@ -1670,7 +1656,7 @@ def test_deny_applies_when_skew_over_2min(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_skew_over_2min_refuses_approvals(tmp_path, monkeypatch):
     """Clock skew > 2 min refuses remote approvals and alerts clock_skew (D4.3).
 
@@ -1721,7 +1707,7 @@ def test_skew_over_2min_refuses_approvals(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_registry_expired_refuses_approvals(tmp_path, monkeypatch):
     """An expired registry refuses remote approvals (D8, D6.5)."""
     _need("sandbox.connector.approval", "apply_external")
@@ -1768,7 +1754,7 @@ def test_registry_expired_refuses_approvals(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_managed_approve_refused_without_local_fallback(tmp_path, monkeypatch):
     """In managed mode, approve() refuses managed requests unless bundle local_fallback (S7).
 
@@ -1789,7 +1775,7 @@ def test_managed_approve_refused_without_local_fallback(tmp_path, monkeypatch):
     assert result["status"] in ("managed_refused", "local_fallback_disabled")
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_managed_approve_allowed_with_local_fallback(tmp_path, monkeypatch):
     """In managed mode, approve() works when bundle sets local_fallback (S7)."""
     _need("sandbox.connector.approval", "apply_external")
@@ -1814,7 +1800,7 @@ def test_managed_approve_allowed_with_local_fallback(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_hand_edited_local_fallback_ignored(tmp_path, monkeypatch):
     """A hand-edited local_fallback in policy.json must NOT enable it (N5, S7).
 
@@ -1852,7 +1838,7 @@ def test_hand_edited_local_fallback_ignored(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_escalation_upload_scrubbed(tmp_path, monkeypatch):
     """Escalation uploads are scrubbed by scrub.py (threat 19).
 
@@ -1945,7 +1931,7 @@ def test_guard_browser_key_registry_refused(tmp_path, monkeypatch):
 # ===================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12Pending)
+
 def test_absent_environment_is_prod(tmp_path, monkeypatch):
     """An absent environment in the bundle means prod (D2.4).
 
