@@ -201,8 +201,8 @@ Tiers: **L** = leader (Opus 5.5, high). **W** = worker (Opus 4.6, high). **S** =
 | T13 | Web pages: browser key enroll, pending list, approve/deny (WebCrypto Ed25519) | frontend | W | T7, T12 | `ee/web` tests (signed bytes equal the server's canonical bytes); `M2T13Pending` | Build and lint pass; strict CSP; no private key in any request (HAR) |
 | T14 | Compose: bundle-signer secret, carol (second admin), `payments-staging` | devops | W | T4, T8 | `ee/tests/test_m2_t14_deploy.py`; `M2T14Pending` | Clean E: checkout up; `/ready` 200; ZAP 0 High incl. `/api/v1/sync` |
 | T15 | Hostile review of the M2 diff | security | L | T1-T14 | n/a | `M2_SECURITY_SIGNOFF.md`; each finding resolved or a stated limit |
-| T16 | Gate run and demo (`demo.py`, `--live`) | qa | W | T15 | `ee/tests/test_m2_t16_demo_static.py`; `M2T16Pending` | Gate filled with measured numbers; `M2_DEMO.md` |
-| T17 | Docs (`CONNECTOR.md` sync and signer, `TCB.md`, README); founder summary | lead (edits: support) | L, S | T16 | n/a | Docs grep clean; `M2_DONE.md` draft; wait for founder |
+| T16 | Gate run and demo (`demo.py`, `--live`) | qa | W | T15 | `ee/tests/test_m2_t16_demo_static.py`; `M2T16Pending` | Gate filled with measured numbers; demo step 11 (evidence export of the step 5 action, verified offline) passes; `M2_DEMO.md` |
+| T17 | Docs: a one-page quickstart (clean checkout to first dual-control approval) and `M2_DONE.md`; founder summary (ruling 7) | lead (edits: support) | L, S | T16 | n/a | Docs grep clean; quickstart followed once on a clean checkout; `M2_DONE.md` draft; wait for founder |
 
 **Cut order if late:** first T13. Demo step 5 then runs in two terminals, with bob and carol each using `sandbox signer approve` and their own CLI keys, recorded as such. Plain `sandbox approve` is refused in managed mode (S7). Then T3's Lows. T5-T12 are never cut.
 
@@ -344,3 +344,4 @@ Headless by default. Separate httpx sessions log in through Keycloak as differen
 4. **Proposal A accepted:** no remote approvals on `prod` projects in M2, for any key kind. Condition N9 applies.
 5. **Proposal B accepted:** if the sync state and the last bundle are both lost, the workspace goes `locked` until re-enrollment. Conditions N3 and N7 apply.
 6. **`ee` CI on the runtime Python (22 Oct 2026):** the Chainguard `api` image runs Python 3.15, so the `ee` CI job runs a matrix of 3.12 and 3.15.
+7. **Scope after product review (24 Oct 2026):** on product-manager advice, the founder approved two changes. (a) T16: the demo ends by exporting the evidence pack for the step 5 action and verifying it offline (new frozen demo step 11 in `M2_BASELINE.md` section 6). (b) T17 shrinks to a one-page quickstart plus `M2_DONE.md`; `CONNECTOR.md` sync and signer sections, `TCB.md` and README updates wait until a design partner asks. T13-T15 are unchanged.

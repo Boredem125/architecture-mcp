@@ -1,5 +1,16 @@
 # Control-plane hand-off (M2 T6-T10 done, 22 Oct 2026)
 
+## M2 T12 (24 Oct 2026): done; T13 tests committed
+
+1. Tests first in `ed57bfa` (T12) and `1abffaa` (T13, 14 pytest and 32 vitest; build not started).
+2. **Connector (TCB):** `approval.apply_external` re-verifies the registry chain against `pinned_root.json` on every call (ruling A precedent); checks the D5.6 field set, kind matrix, prod refusal for every kind, `policy_sequence`, `not_after` plus 2 min grace, a persisted nonce (`seen_nonces.json`, recorded only after the signature verifies), operator exclusion and `(iss, sub)`/`user_id` dedup; nothing runs without at least one valid approval. Managed `approve()` returns `managed_refused` unless the signed bundle sets `approval.local_fallback`. **Skew:** `sync/process.py` records the HTTP `Date` per reply in `server_time_state.json`; above 2 min, or with no record in managed mode, remote approvals are refused (denies apply) and `clock_skew` is alerted. Escalation upload is scrubbed (threat 19).
+3. **Server:** `POST /api/v1/sync/escalations`, `GET /api/v1/sync/decisions`, `POST /api/v1/sync/escalations/{escalation_id}/approvals`; migration `0010` (user_id text; alg NOT NULL kept with default).
+4. **Security:** round 1 CHANGES (skew used `approved_at`; in-memory nonces; KeyError not fail closed), round 2 CHANGES (nonce burned before signature check; zero approvals executed on non-dual), round 3 APPROVE. Named limits: the approvals route accepts device tokens until the T13 build (M2_BASELINE 5b); the 0010 downgrade deletes non-uuid approval rows (ADR 0001 note). Orchestrator test edits, all approved: `_build_registry` (fingerprint `org_id:` prefix, optional `sub`), `test_distinct_iss_sub_required`, `_setup_managed_workspace` writes `server_time_state.json`.
+5. **Founder ruling 7 (product review):** T16 adds demo step 11 (evidence export of the step 5 action, verified offline); T17 shrinks to a quickstart plus `M2_DONE.md`. New agent `product-manager` (Fable 5.1 high) joins every plan with lead-architect.
+6. Measured: connector 2089 passed, 1 skipped. ee (pg) 638 passed, 1 skipped, 11 xfailed (T13). Semgrep: no new findings (opentelemetry upgraded in `.venv`; upgrade semgrep for a clean fix). gitleaks clean with the T12 fixture ignores.
+
+**Next:** T13 build. Decide first: the approvals route takes signer-assert and user-session (CSRF) auth and refuses device tokens; add `GET /api/v1/escalations` (route-freeze exception); add an `ee-web` CI job running vitest, lint and build. Founder: send Navrina the blurb plus an intro ask; start 5 discovery calls.
+
 ## Enroll-persistence follow-up (23 Oct 2026): done
 
 1. The tests were committed first in `545c031`.
