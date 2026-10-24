@@ -120,8 +120,13 @@ Each task's new tests are committed as strict xfail (`raises=M2T<n>Pending`) bef
 | T12 | `tests/security/test_m2_t12_remote.py` | 41 | 30 | 11 | tests-first (T12) |
 | T12 | `ee/tests/test_m2_t12_remote.py` | 17 | 13 | 4 | tests-first (T12) |
 | T12 | `ee/tests/test_t9_routes.py::test_frozen_route_set` | 1 (changed) | 1 (T9Pending, routes missing) | 0 | named exception: `_M2_T12_ROUTES` |
+| T13 | `ee/tests/test_m2_t13_web.py` | 14 | 11 | 3 | tests-first (T13); golden fixture guard writes `ee/web/tests/fixtures/golden_canonical.json` |
+| T13 | `ee/web/tests/signing.test.ts` | 6 | 6 (module absent) | 0 | vitest; RED: `src/signing.ts` not found |
+| T13 | `ee/web/tests/har-check.test.ts` | 4 | 4 (module absent) | 0 | vitest; RED: `src/approval.ts`, `src/browser-key.ts` not found |
+| T13 | `ee/web/tests/prod-guard.test.ts` | 13 | 13 (module absent) | 0 | vitest; RED: `src/escalation-rules.ts` not found |
+| T13 | `ee/web/tests/browser-key.test.ts` | 9 | 9 (module absent) | 0 | vitest; RED: `src/browser-key.ts`, `src/key-store.ts` not found |
 
-M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17, T6=48, T7=48, T8=52, T9=45, T10=10, T11=42, T12=43, enroll-persist=6 (ee sync registry). Route freeze failures (T9Pending): enroll-persist=1, T11=1, T12=1. Total RED: 333.
+M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17, T6=48, T7=48, T8=52, T9=45, T10=10, T11=42, T12=43, T13=11 (ee Python), enroll-persist=6 (ee sync registry). Route freeze failures (T9Pending): enroll-persist=1, T11=1, T12=1. Web test red count: 32 (vitest, 4 files, module-absent errors). Total RED: 344 (Python) + 32 (web).
 
 ### Build records, T1-T5 (22 Oct 2026, orchestrator)
 
