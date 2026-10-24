@@ -38,6 +38,23 @@
       "realmRoles": [
         "default-roles-acme"
       ]
+    },
+    {
+      "username": "carol",
+      "email": "carol@acme.example",
+      "firstName": "Carol",
+      "lastName": "Admin",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo-only-carol-789",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "default-roles-acme"
+      ]
     }
   ],
   "clients": [

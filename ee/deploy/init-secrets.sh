@@ -35,7 +35,12 @@ SECRET_FILES = [
     "pg_app_password",
     "oidc_client_secret",
     "server_signing_key",
+    "bundle_signer_key",
 ]
+
+# Secrets that require hex-encoded 32-byte Ed25519 seeds
+# (not URL-safe tokens).  bundles.py reads hex or raw-32.
+_HEX_SEED_SECRETS = {"bundle_signer_key"}
 
 # ---------------------------------------------------------------------------
 # Per-consumer ownership table.
@@ -66,6 +71,7 @@ OWNERSHIP: dict[str, tuple[int, int, int]] = {
     "pg_app_url":            (10001, 10001, 0o400),
     "oidc_client_secret":    (65534, 30000, 0o440),
     "server_signing_key":    (10001, 10001, 0o400),
+    "bundle_signer_key":     (10001, 10001, 0o400),
 }
 
 # Composed URL template -- host is the compose service name
@@ -114,7 +120,10 @@ def main() -> int:
     # --- plain random secrets ---
     passwords: dict[str, str] = {}
     for name in SECRET_FILES:
-        value = secrets.token_urlsafe(32)
+        if name in _HEX_SEED_SECRETS:
+            value = secrets.token_hex(32)  # 64 hex chars = 32-byte Ed25519 seed
+        else:
+            value = secrets.token_urlsafe(32)
         path = SECRETS_DIR / name
         if not _write_secret(path, value):
             any_skipped = True

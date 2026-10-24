@@ -382,13 +382,24 @@ def step2_setup_and_admin(client: httpx.Client, base_url: str, passwords: dict[s
     project_id = proj_resp.json().get("id")
     _pass(f"Created project 'payments' (id={project_id})")
 
-    # 2f. Look up bob's real Keycloak sub (UUID) via the admin API.
+    # 2f. Create project "payments-staging" (staging environment)
+    staging_resp = client.post(
+        f"{base_url}/api/v1/projects",
+        json={"name": "payments-staging", "environment": "staging"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    if staging_resp.status_code != 201:
+        _fail(f"Create payments-staging returned {staging_resp.status_code}: {staging_resp.text[:200]}")
+    staging_id = staging_resp.json().get("id")
+    _pass(f"Created project 'payments-staging' (id={staging_id})")
+
+    # 2g. Look up bob's real Keycloak sub (UUID) via the admin API.
     # Keycloak assigns a random UUID as the `sub` claim; passing the
     # username string would cause a (iss, sub) mismatch at callback.
     bob_kc_sub = _get_keycloak_user_id(client, "acme", "bob")
     _pass(f"Looked up bob's Keycloak sub via admin API (sub={bob_kc_sub})")
 
-    # 2g. Add bob as a user in the org (POST /org/users)
+    # 2h. Add bob as a user in the org (POST /org/users)
     bob_user_resp = client.post(
         f"{base_url}/api/v1/org/users",
         json={"oidc_subject": bob_kc_sub, "email": "bob@acme.example"},
@@ -399,7 +410,7 @@ def step2_setup_and_admin(client: httpx.Client, base_url: str, passwords: dict[s
     bob_user_id = bob_user_resp.json().get("id")
     _pass(f"Added bob as org user (id={bob_user_id})")
 
-    # 2h. Add bob as approver on the project (POST /projects/{id}/members)
+    # 2i. Add bob as approver on the project (POST /projects/{id}/members)
     member_resp = client.post(
         f"{base_url}/api/v1/projects/{project_id}/members",
         json={"user_id": bob_user_id, "role": "approver"},
@@ -412,10 +423,40 @@ def step2_setup_and_admin(client: httpx.Client, base_url: str, passwords: dict[s
         )
     _pass("Added bob as approver on project 'payments'")
 
+    # 2j. Look up carol's Keycloak sub (second admin)
+    carol_kc_sub = _get_keycloak_user_id(client, "acme", "carol")
+    _pass(f"Looked up carol's Keycloak sub via admin API (sub={carol_kc_sub})")
+
+    # 2k. Add carol as org user
+    carol_user_resp = client.post(
+        f"{base_url}/api/v1/org/users",
+        json={"oidc_subject": carol_kc_sub, "email": "carol@acme.example"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    if carol_user_resp.status_code != 201:
+        _fail(f"Add carol user returned {carol_user_resp.status_code}: {carol_user_resp.text[:200]}")
+    carol_user_id = carol_user_resp.json().get("id")
+    _pass(f"Added carol as org user (id={carol_user_id})")
+
+    # 2l. Set carol as admin (POST /org/users/{id}/roles or PATCH)
+    carol_admin_resp = client.post(
+        f"{base_url}/api/v1/org/users/{carol_user_id}/role",
+        json={"role": "admin"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    if carol_admin_resp.status_code not in (200, 201):
+        _fail(
+            f"Set carol as admin returned {carol_admin_resp.status_code}: "
+            f"{carol_admin_resp.text[:200]}"
+        )
+    _pass("Set carol as admin (second admin)")
+
     return {
         "csrf": csrf,
         "project_id": project_id,
+        "staging_id": staging_id,
         "bob_user_id": bob_user_id,
+        "carol_user_id": carol_user_id,
         "org_slug": org_slug,
     }
 
