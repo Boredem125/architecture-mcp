@@ -26,12 +26,22 @@ import { canonicalBytes, canonicalJson, REMOTE_APPROVAL_TAG } from "../src/signi
 
 const FIXTURE_PATH = resolve(__dirname, "fixtures", "golden_canonical.json");
 
+interface GoldenCase {
+  name: string;
+  tag: string;
+  payload: Record<string, unknown>;
+  canonical_json_hex: string;
+  canonical_bytes_hex: string;
+  canonical_bytes_sha256: string;
+}
+
 interface GoldenFixture {
   tag: string;
   payload: Record<string, unknown>;
   canonical_json_hex: string;
   canonical_bytes_hex: string;
   canonical_bytes_sha256: string;
+  cases?: GoldenCase[];
 }
 
 function loadGolden(): GoldenFixture {
@@ -85,5 +95,25 @@ describe("D5.6 field set", () => {
       "policy_sequence", "user_id", "key_id", "nonce", "not_after",
     ]);
     expect(fields).toEqual(expected);
+  });
+});
+
+describe("canonicalBytes (non-ASCII cross-language case)", () => {
+  it("produces the same canonical bytes as Python for non-ASCII payload", () => {
+    // The non-ASCII case tests two cross-language differences:
+    // 1. Unicode escaping: Python json.dumps(ensure_ascii=True) escapes
+    //    non-ASCII as \uXXXX; JS JSON.stringify does NOT escape by default.
+    // 2. Float formatting: Python serialises 1700001000.0 as "1700001000.0";
+    //    JS serialises it as "1700001000" (no trailing .0).
+    // The TS canonicalJson must match Python's behaviour for both.
+    const golden = loadGolden();
+    const nonAsciiCase = golden.cases?.[0];
+    if (!nonAsciiCase) {
+      throw new Error("non_ascii case not found in golden fixture (run Python guards first)");
+    }
+    expect(nonAsciiCase.name).toBe("non_ascii");
+    const result = canonicalBytes(nonAsciiCase.tag, nonAsciiCase.payload);
+    const resultHex = Buffer.from(result).toString("hex");
+    expect(resultHex).toBe(nonAsciiCase.canonical_bytes_hex);
   });
 });

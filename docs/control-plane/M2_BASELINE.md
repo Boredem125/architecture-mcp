@@ -120,13 +120,13 @@ Each task's new tests are committed as strict xfail (`raises=M2T<n>Pending`) bef
 | T12 | `tests/security/test_m2_t12_remote.py` | 41 | 30 | 11 | tests-first (T12) |
 | T12 | `ee/tests/test_m2_t12_remote.py` | 17 | 13 | 4 | tests-first (T12) |
 | T12 | `ee/tests/test_t9_routes.py::test_frozen_route_set` | 1 (changed) | 1 (T9Pending, routes missing) | 0 | named exception: `_M2_T12_ROUTES` |
-| T13 | `ee/tests/test_m2_t13_web.py` | 14 | 11 | 3 | tests-first (T13); golden fixture guard writes `ee/web/tests/fixtures/golden_canonical.json` |
-| T13 | `ee/web/tests/signing.test.ts` | 6 | 6 (module absent) | 0 | vitest; RED: `src/signing.ts` not found |
+| T13 | `ee/tests/test_m2_t13_web.py` | 21 | 17 | 4 | tests-first (T13); golden fixture guard writes `ee/web/tests/fixtures/golden_canonical.json` incl. non-ASCII case; `test_approval_user_mismatch_refused` added; `test_guard_ts_signed_envelope_verifies` guard added; 5 approvals-route auth tests with full bodies; all 17 xfail bodies have real HTTP calls and asserts (T13 lifts named limit 5b) |
+| T13 | `ee/web/tests/signing.test.ts` | 7 | 7 (module absent) | 0 | vitest; 1 non-ASCII cross-language case added (fails: TS does not escape Unicode like Python ensure_ascii=True); RED: `src/signing.ts` not found |
 | T13 | `ee/web/tests/har-check.test.ts` | 4 | 4 (module absent) | 0 | vitest; RED: `src/approval.ts`, `src/browser-key.ts` not found |
 | T13 | `ee/web/tests/prod-guard.test.ts` | 13 | 13 (module absent) | 0 | vitest; RED: `src/escalation-rules.ts` not found |
 | T13 | `ee/web/tests/browser-key.test.ts` | 9 | 9 (module absent) | 0 | vitest; RED: `src/browser-key.ts`, `src/key-store.ts` not found |
 
-M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17, T6=48, T7=48, T8=52, T9=45, T10=10, T11=42, T12=43, T13=11 (ee Python), enroll-persist=6 (ee sync registry). Route freeze failures (T9Pending): enroll-persist=1, T11=1, T12=1. Web test red count: 32 (vitest, 4 files, module-absent errors). Total RED: 344 (Python) + 32 (web).
+M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17, T6=48, T7=48, T8=52, T9=45, T10=10, T11=42, T12=43, T13=17 (ee Python), enroll-persist=6 (ee sync registry). Route freeze failures (T9Pending): enroll-persist=1, T11=1, T12=1. Web test red count: 33 (vitest, 4 files, module-absent errors; 1 non-ASCII case added to signing.test.ts). Total RED: 350 (Python) + 33 (web).
 
 ### Build records, T1-T5 (22 Oct 2026, orchestrator)
 
@@ -164,7 +164,7 @@ Node ids are fixed now. The tests-first commits must use these file/name pattern
 
 | Limit | Description |
 |---|---|
-| POST /api/v1/sync/escalations/{id}/approvals accepts device tokens | M2 simplification; signature, kind-matrix and prod checks still apply. The T13 build replaces this with signer-assert and user-session auth and refuses device tokens. |
+| POST /api/v1/sync/escalations/{id}/approvals accepts device tokens | Lifted in T13 (pending build). The route accepts only signer tokens (agg/signer-assert/v1) or web session cookies with CSRF; device tokens get 401/403. 5 tests added: `test_approvals_route_refuses_device_token`, `test_approvals_route_accepts_signer_token`, `test_approvals_route_session_without_csrf_refused`, `test_approvals_route_cross_org_session_404`, `test_escalation_list_requires_session`. T12 ee tests that use device tokens on this route need a named edit at build time (6 node ids listed in `test_m2_t13_web.py`). |
 
 ## 6. Frozen demo steps (D6.6, per M2_PLAN.md "Design-partner demo")
 
