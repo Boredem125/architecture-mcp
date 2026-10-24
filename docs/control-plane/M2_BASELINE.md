@@ -81,6 +81,7 @@ All 412 ee tests pass on CI Linux with Postgres.
 | `ee/tests/test_t9_routes.py::test_frozen_route_set` | Enroll-persist | 1 registry route added to `_M2_ENROLL_PERSIST_ROUTES` and included in `EXPECTED_ROUTES`, nothing removed | security (enroll-persist review, APPROVE) |
 | `ee/tests/test_t9_routes.py::test_frozen_route_set` | T11 | 2 audit routes added to `_M2_T11_ROUTES` and included in `EXPECTED_ROUTES`, nothing removed | security (T11 round 2, APPROVE) |
 | `ee/tests/test_t10_multiworker.py` (server start) | T11 | `stdout`/`stderr` `subprocess.PIPE` to `subprocess.DEVNULL` at ~281-282. The pipes were never read, so the Windows pipe buffer filled and uvicorn workers blocked (the known ReadTimeouts). No assertion changed | security (T11 round 2, APPROVE) |
+| `ee/tests/test_t9_routes.py::test_frozen_route_set` | T12 | 3 escalation/decision routes added to `_M2_T12_ROUTES` and included in `EXPECTED_ROUTES`, nothing removed | security (T12 review, pending) |
 
 Any other frozen test that fails: stop, list it, security decides.
 
@@ -116,8 +117,11 @@ Each task's new tests are committed as strict xfail (`raises=M2T<n>Pending`) bef
 | T11 | `tests/security/test_m2_t11_audit.py` | 31 | 19 | 12 | tests-first (T11) |
 | T11 | `ee/tests/test_m2_t11_audit.py` | 28 | 23 | 5 | tests-first (T11); load test marked `slow` |
 | T11 | `ee/tests/test_t9_routes.py::test_frozen_route_set` | 1 (changed) | 1 (T9Pending, routes missing) | 0 | named exception: `_M2_T11_ROUTES` |
+| T12 | `tests/security/test_m2_t12_remote.py` | 41 | 30 | 11 | tests-first (T12) |
+| T12 | `ee/tests/test_m2_t12_remote.py` | 17 | 13 | 4 | tests-first (T12) |
+| T12 | `ee/tests/test_t9_routes.py::test_frozen_route_set` | 1 (changed) | 1 (T9Pending, routes missing) | 0 | named exception: `_M2_T12_ROUTES` |
 
-M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17, T6=48, T7=48, T8=52, T9=45, T10=10, T11=42, enroll-persist=6 (ee sync registry). Route freeze failures (T9Pending): enroll-persist=1, T11=1. Total RED: 289.
+M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17, T6=48, T7=48, T8=52, T9=45, T10=10, T11=42, T12=43, enroll-persist=6 (ee sync registry). Route freeze failures (T9Pending): enroll-persist=1, T11=1, T12=1. Total RED: 333.
 
 ### Build records, T1-T5 (22 Oct 2026, orchestrator)
 
