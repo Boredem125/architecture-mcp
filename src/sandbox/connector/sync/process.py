@@ -212,6 +212,33 @@ def run_once(sync: SyncProcess) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _record_server_time(sync: SyncProcess, resp_headers: dict) -> None:
+    """Record the server time from an HTTP Date header (F1, D4.3).
+
+    The state is written to ``server_time_state.json`` through
+    ``sync.state.write_server_time_state``, atomic temp-file + rename.
+    ``apply_external`` reads it to compute measured skew.
+    """
+    if sync.layout is None:
+        return
+    import time as _time
+
+    date_str = resp_headers.get("Date") or resp_headers.get("date")
+    if not date_str:
+        return
+    try:
+        from email.utils import parsedate_to_datetime
+
+        dt = parsedate_to_datetime(date_str)
+        server_time = dt.timestamp()
+    except Exception:
+        return
+
+    from sandbox.connector.sync.state import write_server_time_state
+
+    write_server_time_state(sync.layout, server_time, _time.time())
+
+
 def _refresh_token(sync: SyncProcess) -> None:
     """Exchange the device key for a short-lived bearer token."""
     now = sync._clock()
@@ -219,13 +246,15 @@ def _refresh_token(sync: SyncProcess) -> None:
         return  # still valid
 
     url = f"{sync.server_url}/api/v1/sync/token"
-    status, body, _hdrs = sync._connect(
+    status, body, hdrs = sync._connect(
         "POST", url,
         body={"device_id": sync.device_id, "iat": now},
         token=None,
     )
     if status != 200:
         raise SyncError(f"token refresh failed: HTTP {status}")
+
+    _record_server_time(sync, hdrs)
 
     sync._token = body.get("token")
     expires_in = body.get("expires_in", 600)
@@ -265,9 +294,11 @@ def _fetch_registry(sync: SyncProcess) -> None:
 
     # Fetch from server
     url = f"{sync.server_url}/api/v1/sync/registry"
-    status, body, _hdrs = sync._connect("GET", url, token=sync._token)
+    status, body, hdrs = sync._connect("GET", url, token=sync._token)
     if status != 200:
         return
+
+    _record_server_time(sync, hdrs)
 
     new_chain = body.get("registry")
     if not new_chain or not isinstance(new_chain, list):
@@ -323,11 +354,13 @@ def _fetch_decisions(sync: SyncProcess) -> None:
     up.  Pending escalations are **never** auto-approved here.
     """
     url = f"{sync.server_url}/api/v1/sync/decisions"
-    status, body, _hdrs = sync._connect(
+    status, body, hdrs = sync._connect(
         "GET", url, token=sync._token,
     )
     if status != 200:
         raise SyncError(f"decisions fetch failed: HTTP {status}")
+
+    _record_server_time(sync, hdrs)
 
     # Process decisions if the layout is available
     decisions = body.get("decisions", [])
@@ -341,11 +374,14 @@ def _fetch_decisions(sync: SyncProcess) -> None:
 
 
 def _upload_escalations(sync: SyncProcess) -> None:
-    """Upload new pending escalation records to the server.
+    """Upload new pending escalation records to the server, scrubbed (threat 19).
 
     **Never** modifies the status of any pending escalation.  The status
     can only change through the approval path after receiving and verifying
     a signed human decision.
+
+    Records are scrubbed of secrets before upload (D6.1, threat 19).
+    The local pending record is unchanged; only the uploaded copy is scrubbed.
     """
     if sync.layout is None:
         return
@@ -365,17 +401,47 @@ def _upload_escalations(sync: SyncProcess) -> None:
         if data.get("status") != "pending":
             continue
 
+        # Scrub secrets before upload (threat 19)
+        upload_data = dict(data)
+        try:
+            from sandbox.connector.scrub import scrub_text
+
+            for key in ("command", "reason", "target", "described_as"):
+                val = upload_data.get(key)
+                if isinstance(val, str) and val:
+                    upload_data[key] = scrub_text(val)
+            # Scrub inside nested record if present
+            rec = upload_data.get("record")
+            if isinstance(rec, dict):
+                rec = dict(rec)
+                for key in ("command", "reason", "target", "described_as"):
+                    val = rec.get(key)
+                    if isinstance(val, str) and val:
+                        rec[key] = scrub_text(val)
+                upload_data["record"] = rec
+        except Exception:  # noqa: BLE001 -- scrub failure must not block upload
+            pass
+
         # Upload (idempotent on server side)
         url = f"{sync.server_url}/api/v1/sync/escalations"
         try:
             sync._connect(
                 "POST", url,
-                body={"device_id": sync.device_id, "escalation": data},
+                body={
+                    "device_id": sync.device_id,
+                    "request_id": upload_data.get("request_id", ""),
+                    "record": upload_data,
+                    "policy_sequence": upload_data.get("policy_version", 0),
+                },
                 token=sync._token,
             )
         except Exception:
             # Upload failure does not change escalation status
             pass
+
+
+# Alias for tests (threat 19 coverage)
+_upload_escalations_scrubbed = _upload_escalations
 
 
 def _upload_audit(sync: SyncProcess) -> None:

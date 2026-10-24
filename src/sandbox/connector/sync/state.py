@@ -156,3 +156,55 @@ def can_accept_bundles(layout) -> bool:
     bundles and remote approvals are refused.
     """
     return pinned_root(layout) is not None
+
+
+# -- Server time state (F1, D4.3) ------------------------------------------
+
+
+def read_server_time_state(layout) -> dict | None:
+    """Read the last recorded server time measurement.
+
+    Returns ``{"server_time": float, "local_time": float}`` or ``None``
+    if the state is missing or corrupt.  Written by ``sync/process.py``
+    on every HTTP response that carries a ``Date`` header.
+    """
+    sync_dir = layout.root / ".sandbox" / "state" / "sync"
+    state_file = sync_dir / "server_time_state.json"
+    if not state_file.exists():
+        return None
+    try:
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        st = data.get("server_time")
+        lt = data.get("local_time")
+        if not isinstance(st, (int, float)) or not isinstance(lt, (int, float)):
+            return None
+        return {"server_time": float(st), "local_time": float(lt)}
+    except (OSError, ValueError):
+        return None
+
+
+def write_server_time_state(layout, server_time: float, local_time: float) -> None:
+    """Persist a server-time measurement (atomic temp-file + rename).
+
+    Called by ``sync/process.py`` after every HTTP response that carries
+    a ``Date`` header.
+    """
+    import os
+
+    sync_dir = layout.root / ".sandbox" / "state" / "sync"
+    state_file = sync_dir / "server_time_state.json"
+    tmp = sync_dir / "server_time_state.json.tmp"
+    try:
+        sync_dir.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(
+            json.dumps({"server_time": server_time, "local_time": local_time}),
+            encoding="utf-8",
+        )
+        os.replace(str(tmp), str(state_file))
+    except Exception:  # noqa: BLE001
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
