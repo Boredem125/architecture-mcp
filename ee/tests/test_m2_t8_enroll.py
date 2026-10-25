@@ -1079,22 +1079,24 @@ def test_enroll_response_registry_is_same_org(pg_url, pg_roles, app_url, owner_u
     project_a = str(uuid.uuid4())
     operator_id = str(uuid.uuid4())
 
-    # Build and store genesis for BOTH orgs (F3: separate bundle signer key)
-    sk1, pub1, kid1 = keygen()
-    sk_bs, pub_bs, kid_bs = keygen()
+    # Build and store genesis for BOTH orgs (F5: each org uses its own keys)
+    org_keys = {}
     for oid in (org_a, org_b):
+        sk_admin, pub_admin, kid_admin = keygen()
+        sk_bs, pub_bs, kid_bs = keygen()
+        org_keys[oid] = (sk_admin, pub_admin, kid_admin, sk_bs, pub_bs, kid_bs)
         key_entry = {
-            "key_id": kid1, "public_key": pub1.hex(), "user_id": "admin-0",
+            "key_id": kid_admin, "public_key": pub_admin.hex(), "user_id": "admin-0",
             "iss": "https://idp", "sub": "admin-0", "alg": "ed25519",
             "kind": "cli", "roles": ["admin", "approver"], "added_in": 1,
         }
         payload = {
             "org_id": oid, "version": 1, "prev_hash": "",
-            "threshold": 1, "admins": [kid1], "keys": [key_entry],
+            "threshold": 1, "admins": [kid_admin], "keys": [key_entry],
             "bundle_signer": {"key_id": kid_bs, "public_key": pub_bs.hex(), "alg": "ed25519"},
             "expires_at": time.time() + 7 * 86400,
         }
-        env = sign_envelope("agg/registry/v1", payload, sk1)
+        env = sign_envelope("agg/registry/v1", payload, sk_admin)
         with psycopg.connect(_conninfo(owner_url), autocommit=True) as oconn:
             oconn.execute("SELECT set_config('app.org_id', %s, false)", [oid])
             create_org(oconn, oid)
@@ -1131,3 +1133,40 @@ def test_enroll_response_registry_is_same_org(pg_url, pg_roles, app_url, owner_u
             f"registry chain entry {i} has org_id={env_org!r}, "
             f"expected {org_a!r} (cross-org chain leak)"
         )
+
+
+@pytest.mark.pg
+def test_enroll_response_includes_operator_user_id(pg_url, pg_roles, app_url, owner_url):
+    """T12b-2: POST /api/v1/sync/enroll response includes operator_user_id.
+
+    The connector's ``enroll()`` requires ``operator_user_id`` in the
+    response so it can persist the operator binding (ADR 0010 s6).
+    Without it, enroll aborts with nothing written.
+    """
+    _need("agg_cp.sync.enroll", "enroll_router")
+    from agg_cp.app import create_app
+
+    ensure_at_head(pg_url)
+    org_id, project_id = str(uuid.uuid4()), str(uuid.uuid4())
+    operator_id = str(uuid.uuid4())
+
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as oconn:
+        oconn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        create_org(oconn, org_id)
+        create_project(oconn, org_id, project_id)
+        code, _, _ = _issue_code_ready(oconn, org_id, project_id, operator_id)
+
+    sk, pub, _ = keygen()
+    proof = _make_enroll_proof(code, sk, pub)
+
+    app = create_app(database_url=app_url)
+    with TestClient(app) as c:
+        resp = c.post("/api/v1/sync/enroll", json={
+            "code": code, "public_key": pub.hex(), "proof": proof})
+
+    assert resp.status_code == 200, f"enroll failed: {resp.text}"
+    body = resp.json()
+    assert "operator_user_id" in body, (
+        f"enroll response missing operator_user_id: {list(body.keys())}"
+    )
+    assert body["operator_user_id"] == operator_id

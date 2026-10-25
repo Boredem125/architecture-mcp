@@ -228,9 +228,11 @@ def _upload_escalation(base_url: str, device_id: str, token: str,
                        fingerprint: str | None = None) -> tuple[int, str | None]:
     """Upload an escalation via device token. Return (status, escalation_id)."""
     import httpx
-    record = {"command": command, "status": "pending"}
-    if fingerprint:
-        record["fingerprint"] = fingerprint
+    record: dict = {"command": command, "status": "pending"}
+    # T12b-2 named edit: always include fingerprint for R1 binding
+    if fingerprint is None:
+        fingerprint = hashlib.sha256(command.encode()).hexdigest()
+    record["fingerprint"] = fingerprint
     r = httpx.post(
         f"{base_url}/api/v1/sync/escalations",
         json={
@@ -262,8 +264,12 @@ def _sign_assertion(sk, kid: str, nonce: str, aud: str) -> dict:
 
 
 def _seed_signer_token(owner_url: str, org_id: str, user_id: str,
-                       key_id: str) -> str:
-    """Insert a signer_tokens row and return the raw token."""
+                       key_id: str, scope: str = "confirmed") -> str:
+    """Insert a signer_tokens row and return the raw token.
+
+    *scope* defaults to ``"confirmed"`` (F2: escalation routes accept
+    only confirmed scope).
+    """
     token = secrets.token_hex(32)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     conninfo = _conninfo(owner_url)
@@ -273,9 +279,9 @@ def _seed_signer_token(owner_url: str, org_id: str, user_id: str,
             "INSERT INTO signer_tokens "
             "(id, org_id, user_id, key_id, token_hash, scope, "
             "expires_at, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, 'approve', "
+            "VALUES (%s, %s, %s, %s, %s, %s, "
             "now() + interval '1 hour', now())",
-            [str(uuid.uuid4()), org_id, user_id, key_id, token_hash],
+            [str(uuid.uuid4()), org_id, user_id, key_id, token_hash, scope],
         )
         conn.commit()
     return token
@@ -394,7 +400,7 @@ def test_guard_approval_route_exists(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_m4_empty_signatures_refused(t12b_server):
     """M4: an envelope with ``signatures: []`` must be refused (400).
 
@@ -461,7 +467,7 @@ def test_m4_empty_signatures_refused(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_m4_wrong_envelope_kind_refused(t12b_server):
     """M4: an envelope claiming a different kind (e.g. agg/bundle-sign/v1)
     must be refused.  The server must use the REMOTE_APPROVAL tag constant
@@ -527,7 +533,7 @@ def test_m4_wrong_envelope_kind_refused(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_m4_binding_request_id_mismatch(t12b_server):
     """M4: the payload request_id must match the escalation's request_id.
 
@@ -594,7 +600,7 @@ def test_m4_binding_request_id_mismatch(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_m4_binding_device_id_mismatch(t12b_server):
     """M4: the payload device_id must match the escalation's connector_id.
 
@@ -660,7 +666,7 @@ def test_m4_binding_device_id_mismatch(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_m4_binding_project_id_mismatch(t12b_server):
     """M4: the payload project_id must match the escalation's project_id."""
     _need("agg_cp.sync.escalations", "_T12B_M4_BINDING")
@@ -723,7 +729,7 @@ def test_m4_binding_project_id_mismatch(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_m4_binding_policy_sequence_mismatch(t12b_server):
     """M4: the payload policy_sequence must match the escalation's stored value."""
     _need("agg_cp.sync.escalations", "_T12B_M4_BINDING")
@@ -788,7 +794,7 @@ def test_m4_binding_policy_sequence_mismatch(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_m4_binding_org_id_mismatch(t12b_server):
     """M4: the payload org_id must match the authenticated user's org."""
     _need("agg_cp.sync.escalations", "_T12B_M4_BINDING")
@@ -852,7 +858,7 @@ def test_m4_binding_org_id_mismatch(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_m4_binding_fingerprint_mismatch(t12b_server):
     """M4: the payload fingerprint must match the escalation record's.
 
@@ -920,7 +926,7 @@ def test_m4_binding_fingerprint_mismatch(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_m1_server_not_after_null_refused(t12b_server):
     """M1: not_after: null must be refused (server side).
 
@@ -988,7 +994,7 @@ def test_m1_server_not_after_null_refused(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_m1_server_not_after_non_numeric_refused(t12b_server):
     """M1: not_after must be a finite number; a string is refused."""
     _need("agg_cp.sync.escalations", "_T12B_M4_BINDING")
@@ -1055,7 +1061,7 @@ def test_m1_server_not_after_non_numeric_refused(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_c5_operator_self_approval_refused(t12b_server):
     """C5: the device's enrolled operator cannot approve its own escalation.
 
@@ -1130,7 +1136,7 @@ def test_c5_operator_self_approval_refused(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_get_escalation_detail_session(t12b_server):
     """GET /api/v1/sync/escalations/{id} returns canonical fields for the signer.
 
@@ -1183,7 +1189,7 @@ def test_get_escalation_detail_session(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_get_escalation_detail_signer_token(t12b_server):
     """GET /api/v1/sync/escalations/{id} via signer-token auth."""
     _need("agg_cp.sync.escalations", "_T12B_DETAIL_ROUTE")
@@ -1231,7 +1237,7 @@ def test_get_escalation_detail_signer_token(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_get_escalation_detail_device_token_refused(t12b_server):
     """GET /api/v1/sync/escalations/{id} must refuse device tokens."""
     _need("agg_cp.sync.escalations", "_T12B_DETAIL_ROUTE")
@@ -1270,7 +1276,7 @@ def test_get_escalation_detail_device_token_refused(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_get_escalation_detail_cross_org_404(t12b_server):
     """GET /api/v1/sync/escalations/{id}: another org sees 404."""
     _need("agg_cp.sync.escalations", "_T12B_DETAIL_ROUTE")
@@ -1310,7 +1316,7 @@ def test_get_escalation_detail_cross_org_404(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_get_escalation_detail_no_key_material(t12b_server):
     """GET /api/v1/sync/escalations/{id}: response has no key material."""
     _need("agg_cp.sync.escalations", "_T12B_DETAIL_ROUTE")
@@ -1356,7 +1362,7 @@ def test_get_escalation_detail_no_key_material(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_t12b2_route_freeze(t12b_server):
     """The GET /api/v1/sync/escalations/{escalation_id} route exists.
 
@@ -1388,7 +1394,7 @@ def test_t12b2_route_freeze(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_c9_server_ignores_body_user_id(t12b_server):
     """C9 item 3: the server must ignore user_id from the envelope body.
 
@@ -1466,7 +1472,7 @@ def test_c9_server_ignores_body_user_id(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_c9_server_ignores_body_kind(t12b_server):
     """C9 item 3: the server must use the registry key kind, not the body.
 
@@ -1493,8 +1499,10 @@ def test_c9_server_ignores_body_kind(t12b_server):
          "user_id": srv["bob_id"], "kind": "browser",
          "roles": ["approver"]},
     ])
+    # T12b-2 named edit: seed operator (R2) distinct from approver (bob)
     device_id = _seed_connector(srv["owner_url"], srv["org_id"],
-                                project_id, device_pub)
+                                project_id, device_pub,
+                                operator_user_id=srv["operator_id"])
     token = secrets.token_hex(32)
     _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
                        device_id, token)
@@ -1547,7 +1555,7 @@ def test_c9_server_ignores_body_kind(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_c9_oversized_batch_refused(t12b_server):
     """C9 item 3: a batch upload exceeding the cap (>50) is refused.
 
@@ -1603,7 +1611,7 @@ def test_c9_oversized_batch_refused(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_c9_unknown_escalation_id_404(t12b_server):
     """C9 item 3: submitting an approval for a non-existent escalation -> 404."""
     _need("agg_cp.sync.escalations", "_T12B_M4_BINDING")
@@ -1649,7 +1657,7 @@ def test_c9_unknown_escalation_id_404(t12b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12bPending)
+
 def test_m4_binding_command_mismatch(t12b_server):
     """M4: the payload command must match the escalation record's command.
 
@@ -1710,3 +1718,360 @@ def test_m4_binding_command_mismatch(t12b_server):
     )
     assert r.status_code == 400, f"expected 400 got {r.status_code}: {r.text}"
     assert "command" in r.json().get("error", "").lower()
+
+
+# ===================================================================
+# RED: upload refuses missing/invalid record (T12b-2 item 6)
+# ===================================================================
+
+
+@pytest.mark.pg
+
+def test_upload_refuses_missing_record(t12b_server):
+    """Upload must refuse when ``record`` is missing or not a dict (item 6)."""
+    _need("agg_cp.sync.escalations", "_T12B_M4_BINDING")
+
+    import httpx
+    srv = t12b_server
+    sk, pub, kid = keygen()
+    project_id = str(uuid.uuid4())
+
+    with psycopg.connect(_conninfo(srv["owner_url"])) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)",
+                     [srv["org_id"]])
+        create_project(conn, srv["org_id"], project_id, environment="staging")
+        conn.commit()
+
+    device_id = _seed_connector(srv["owner_url"], srv["org_id"],
+                                project_id, pub)
+    token = secrets.token_hex(32)
+    _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
+                       device_id, token)
+
+    # No record at all
+    r = httpx.post(
+        f"{srv['base_url']}/api/v1/sync/escalations",
+        json={
+            "device_id": device_id,
+            "request_id": "req-norec-1",
+            "policy_sequence": 1,
+        },
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10.0,
+    )
+    assert r.status_code == 400, f"expected 400 got {r.status_code}: {r.text}"
+    assert "record" in r.json().get("error", "").lower()
+
+    # record is a string, not a dict
+    r2 = httpx.post(
+        f"{srv['base_url']}/api/v1/sync/escalations",
+        json={
+            "device_id": device_id,
+            "request_id": "req-badrec-1",
+            "record": "not-a-dict",
+            "policy_sequence": 1,
+        },
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10.0,
+    )
+    assert r2.status_code == 400, f"expected 400 got {r2.status_code}: {r2.text}"
+    assert "record" in r2.json().get("error", "").lower()
+
+
+@pytest.mark.pg
+
+def test_upload_refuses_record_without_command_or_fingerprint(t12b_server):
+    """Upload must refuse when record lacks command or fingerprint (item 6)."""
+    _need("agg_cp.sync.escalations", "_T12B_M4_BINDING")
+
+    import httpx
+    srv = t12b_server
+    sk, pub, kid = keygen()
+    project_id = str(uuid.uuid4())
+
+    with psycopg.connect(_conninfo(srv["owner_url"])) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)",
+                     [srv["org_id"]])
+        create_project(conn, srv["org_id"], project_id, environment="staging")
+        conn.commit()
+
+    device_id = _seed_connector(srv["owner_url"], srv["org_id"],
+                                project_id, pub)
+    token = secrets.token_hex(32)
+    _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
+                       device_id, token)
+
+    # Record without command
+    r = httpx.post(
+        f"{srv['base_url']}/api/v1/sync/escalations",
+        json={
+            "device_id": device_id,
+            "request_id": "req-nocmd-1",
+            "record": {"fingerprint": "abc123", "status": "pending"},
+            "policy_sequence": 1,
+        },
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10.0,
+    )
+    assert r.status_code == 400, f"expected 400 got {r.status_code}: {r.text}"
+    assert "command" in r.json().get("error", "").lower()
+
+    # Record without fingerprint
+    r2 = httpx.post(
+        f"{srv['base_url']}/api/v1/sync/escalations",
+        json={
+            "device_id": device_id,
+            "request_id": "req-nofp-1",
+            "record": {"command": "echo test", "status": "pending"},
+            "policy_sequence": 1,
+        },
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10.0,
+    )
+    assert r2.status_code == 400, f"expected 400 got {r2.status_code}: {r2.text}"
+    assert "fingerprint" in r2.json().get("error", "").lower()
+
+
+# ===================================================================
+# T12b-2 item 5: registry_version validation on approvals route
+# ===================================================================
+
+
+@pytest.mark.pg
+def test_approvals_refuse_null_registry_version(t12b_server):
+    """The approvals route refuses registry_version: null (400)."""
+    _need("agg_cp.sync.escalations", "_T12B_M4_BINDING")
+
+    import httpx
+    srv = t12b_server
+    bob_sk, bob_pub, bob_kid = keygen()
+    device_sk, device_pub, device_kid = keygen()
+    project_id = str(uuid.uuid4())
+
+    with psycopg.connect(_conninfo(srv["owner_url"])) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)",
+                     [srv["org_id"]])
+        create_project(conn, srv["org_id"], project_id, environment="staging")
+        conn.commit()
+
+    _seed_registry_with_keys(srv["owner_url"], srv["org_id"], [
+        {"key_id": bob_kid, "public_key": bob_pub.hex(),
+         "user_id": srv["bob_id"], "kind": "cli",
+         "roles": ["approver"]},
+    ])
+    device_id = _seed_connector(srv["owner_url"], srv["org_id"],
+                                project_id, device_pub)
+    token = secrets.token_hex(32)
+    _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
+                       device_id, token)
+
+    status, esc_id = _upload_escalation(
+        srv["base_url"], device_id, token, "req-rv-null-1",
+    )
+    assert status == 200
+
+    cookie, csrf = _make_fresh_session(
+        srv["owner_url"], srv["org_id"], srv["bob_id"],
+    )
+
+    envelope = _make_remote_approval_envelope(
+        bob_sk,
+        request_id="req-rv-null-1",
+        org_id=srv["org_id"], project_id=project_id,
+        device_id=device_id, user_id=srv["bob_id"],
+    )
+    envelope["payload"]["registry_version"] = None
+    payload_bytes = canonical_json(envelope["payload"])
+    tag = b"agg/remote-approval/v1"
+    msg = tag + b"\x00" + payload_bytes
+    new_sig = bob_sk.sign(msg).signature.hex()
+    envelope["signatures"][0]["sig"] = new_sig
+
+    r = httpx.post(
+        f"{srv['base_url']}/api/v1/sync/escalations/{esc_id}/approvals",
+        json=envelope,
+        cookies={"__Host-agg_session": cookie},
+        headers={"X-CSRF-Token": csrf},
+        timeout=10.0,
+    )
+    assert r.status_code == 400, f"expected 400 got {r.status_code}: {r.text}"
+    assert "registry_version" in r.json().get("error", "").lower()
+
+
+@pytest.mark.pg
+def test_approvals_refuse_bool_registry_version(t12b_server):
+    """The approvals route refuses registry_version: true (400)."""
+    _need("agg_cp.sync.escalations", "_T12B_M4_BINDING")
+
+    import httpx
+    srv = t12b_server
+    bob_sk, bob_pub, bob_kid = keygen()
+    device_sk, device_pub, device_kid = keygen()
+    project_id = str(uuid.uuid4())
+
+    with psycopg.connect(_conninfo(srv["owner_url"])) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)",
+                     [srv["org_id"]])
+        create_project(conn, srv["org_id"], project_id, environment="staging")
+        conn.commit()
+
+    _seed_registry_with_keys(srv["owner_url"], srv["org_id"], [
+        {"key_id": bob_kid, "public_key": bob_pub.hex(),
+         "user_id": srv["bob_id"], "kind": "cli",
+         "roles": ["approver"]},
+    ])
+    device_id = _seed_connector(srv["owner_url"], srv["org_id"],
+                                project_id, device_pub)
+    token = secrets.token_hex(32)
+    _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
+                       device_id, token)
+
+    status, esc_id = _upload_escalation(
+        srv["base_url"], device_id, token, "req-rv-bool-1",
+    )
+    assert status == 200
+
+    cookie, csrf = _make_fresh_session(
+        srv["owner_url"], srv["org_id"], srv["bob_id"],
+    )
+
+    envelope = _make_remote_approval_envelope(
+        bob_sk,
+        request_id="req-rv-bool-1",
+        org_id=srv["org_id"], project_id=project_id,
+        device_id=device_id, user_id=srv["bob_id"],
+    )
+    envelope["payload"]["registry_version"] = True
+    payload_bytes = canonical_json(envelope["payload"])
+    tag = b"agg/remote-approval/v1"
+    msg = tag + b"\x00" + payload_bytes
+    new_sig = bob_sk.sign(msg).signature.hex()
+    envelope["signatures"][0]["sig"] = new_sig
+
+    r = httpx.post(
+        f"{srv['base_url']}/api/v1/sync/escalations/{esc_id}/approvals",
+        json=envelope,
+        cookies={"__Host-agg_session": cookie},
+        headers={"X-CSRF-Token": csrf},
+        timeout=10.0,
+    )
+    assert r.status_code == 400, f"expected 400 got {r.status_code}: {r.text}"
+    assert "registry_version" in r.json().get("error", "").lower()
+
+
+@pytest.mark.pg
+def test_approvals_refuse_non_int_registry_version(t12b_server):
+    """The approvals route refuses registry_version: 'abc' (400)."""
+    _need("agg_cp.sync.escalations", "_T12B_M4_BINDING")
+
+    import httpx
+    srv = t12b_server
+    bob_sk, bob_pub, bob_kid = keygen()
+    device_sk, device_pub, device_kid = keygen()
+    project_id = str(uuid.uuid4())
+
+    with psycopg.connect(_conninfo(srv["owner_url"])) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)",
+                     [srv["org_id"]])
+        create_project(conn, srv["org_id"], project_id, environment="staging")
+        conn.commit()
+
+    _seed_registry_with_keys(srv["owner_url"], srv["org_id"], [
+        {"key_id": bob_kid, "public_key": bob_pub.hex(),
+         "user_id": srv["bob_id"], "kind": "cli",
+         "roles": ["approver"]},
+    ])
+    device_id = _seed_connector(srv["owner_url"], srv["org_id"],
+                                project_id, device_pub)
+    token = secrets.token_hex(32)
+    _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
+                       device_id, token)
+
+    status, esc_id = _upload_escalation(
+        srv["base_url"], device_id, token, "req-rv-str-1",
+    )
+    assert status == 200
+
+    cookie, csrf = _make_fresh_session(
+        srv["owner_url"], srv["org_id"], srv["bob_id"],
+    )
+
+    envelope = _make_remote_approval_envelope(
+        bob_sk,
+        request_id="req-rv-str-1",
+        org_id=srv["org_id"], project_id=project_id,
+        device_id=device_id, user_id=srv["bob_id"],
+    )
+    envelope["payload"]["registry_version"] = "abc"
+    payload_bytes = canonical_json(envelope["payload"])
+    tag = b"agg/remote-approval/v1"
+    msg = tag + b"\x00" + payload_bytes
+    new_sig = bob_sk.sign(msg).signature.hex()
+    envelope["signatures"][0]["sig"] = new_sig
+
+    r = httpx.post(
+        f"{srv['base_url']}/api/v1/sync/escalations/{esc_id}/approvals",
+        json=envelope,
+        cookies={"__Host-agg_session": cookie},
+        headers={"X-CSRF-Token": csrf},
+        timeout=10.0,
+    )
+    assert r.status_code == 400, f"expected 400 got {r.status_code}: {r.text}"
+    assert "registry_version" in r.json().get("error", "").lower()
+
+
+@pytest.mark.pg
+def test_get_escalation_detail_carries_registry_version(t12b_server):
+    """GET /api/v1/sync/escalations/{id} carries registry_version equal
+    to the org's latest version."""
+    _need("agg_cp.sync.escalations", "_T12B_DETAIL_ROUTE")
+
+    import httpx
+    srv = t12b_server
+    bob_sk, bob_pub, bob_kid = keygen()
+    device_sk, device_pub, device_kid = keygen()
+    project_id = str(uuid.uuid4())
+
+    with psycopg.connect(_conninfo(srv["owner_url"])) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)",
+                     [srv["org_id"]])
+        create_project(conn, srv["org_id"], project_id, environment="staging")
+        conn.commit()
+
+    # Seed a registry version to establish the latest version
+    _seed_registry_with_keys(srv["owner_url"], srv["org_id"], [
+        {"key_id": bob_kid, "public_key": bob_pub.hex(),
+         "user_id": srv["bob_id"], "kind": "cli",
+         "roles": ["approver"]},
+    ])
+
+    device_id = _seed_connector(srv["owner_url"], srv["org_id"],
+                                project_id, device_pub)
+    dev_token = secrets.token_hex(32)
+    _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
+                       device_id, dev_token)
+
+    status, esc_id = _upload_escalation(
+        srv["base_url"], device_id, dev_token, "req-detail-rv-1",
+    )
+    assert status == 200
+
+    cookie, csrf = _make_fresh_session(
+        srv["owner_url"], srv["org_id"], srv["bob_id"],
+    )
+
+    r = httpx.get(
+        f"{srv['base_url']}/api/v1/sync/escalations/{esc_id}",
+        cookies={"__Host-agg_session": cookie},
+        timeout=10.0,
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert "registry_version" in data, (
+        "GET escalation detail must include registry_version"
+    )
+    # The registry version should match the org's latest (which is 1 from
+    # _seed_registry_with_keys which inserts version=1)
+    assert data["registry_version"] == 1, (
+        f"expected registry_version=1, got {data['registry_version']}"
+    )

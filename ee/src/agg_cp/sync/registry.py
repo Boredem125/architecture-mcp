@@ -13,6 +13,9 @@ from typing import Any
 
 from sandbox.protocol.registry import RegistryError, verify_chain
 
+# T12b-2 sentinel: store_registry_version writes approver_keys (ADR 0010 s8).
+_T12B2_APPROVER_KEYS = True
+
 
 def _canonical_json(payload: dict[str, Any]) -> bytes:
     return json.dumps(
@@ -104,6 +107,79 @@ def store_registry_version(
         "VALUES (%s::uuid, %s::uuid, %s, %s, %s::jsonb, now())",
         [str(uuid.uuid4()), org_id, version, blob, sigs],
     )
+
+    # ----------------------------------------------------------------
+    # ADR 0010 s8: upsert approver_keys projection in the same txn
+    # ----------------------------------------------------------------
+    keys = payload.get("keys", [])
+    key_ids_in_version: set[str] = set()
+
+    # F5/F7: refuse a key_id that is live (not revoked) in another org.
+    # Uses check_key_id_cross_org SECURITY DEFINER function (0012/0013)
+    # which checks ONLY other orgs' live approver_keys rows (not
+    # unverified signer_links).  The function is STRICT (NULL-safe).
+    for key in keys:
+        kid = key.get("key_id", "")
+        if not kid:
+            continue
+        conflict = conn.execute(
+            "SELECT check_key_id_cross_org(%s, %s::uuid)",
+            [kid, org_id],
+        ).fetchone()
+        if conflict is not None and conflict[0]:
+            raise RegistryError(
+                f"key_id {kid[:16]}... cannot be published"
+            )
+
+    for key in keys:
+        kid = key.get("key_id", "")
+        if not kid:
+            continue
+        key_ids_in_version.add(kid)
+        conn.execute(
+            "INSERT INTO approver_keys "
+            "(id, org_id, user_id, key_id, public_key, alg, kind, roles, "
+            "registry_version, revoked_at, created_at) "
+            "VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s::jsonb, "
+            "%s, NULL, now()) "
+            "ON CONFLICT (org_id, key_id) DO UPDATE SET "
+            "user_id = EXCLUDED.user_id, "
+            "public_key = EXCLUDED.public_key, "
+            "alg = EXCLUDED.alg, "
+            "kind = EXCLUDED.kind, "
+            "roles = EXCLUDED.roles, "
+            "registry_version = EXCLUDED.registry_version, "
+            "revoked_at = NULL",
+            [
+                str(uuid.uuid4()), org_id,
+                key.get("user_id", ""),
+                kid,
+                key.get("public_key", ""),
+                key.get("alg", "ed25519"),
+                key.get("kind", "cli"),
+                json.dumps(key.get("roles", [])),
+                version,
+            ],
+        )
+
+    # Mark keys absent from this version as revoked
+    if key_ids_in_version:
+        placeholders = ", ".join(["%s"] * len(key_ids_in_version))
+        conn.execute(
+            f"UPDATE approver_keys SET revoked_at = now() "
+            f"WHERE org_id = %s::uuid "
+            f"AND key_id NOT IN ({placeholders}) "
+            f"AND revoked_at IS NULL",
+            [org_id] + sorted(key_ids_in_version),
+        )
+    else:
+        # No keys in the new version: revoke all
+        conn.execute(
+            "UPDATE approver_keys SET revoked_at = now() "
+            "WHERE org_id = %s::uuid AND revoked_at IS NULL",
+            [org_id],
+        )
+
     conn.commit()
 
     return version

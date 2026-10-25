@@ -47,6 +47,32 @@ def link_browser_key(
             {"error": "public_key and key_id required"}, status_code=400,
         )
 
+    # F7(b): key_id must equal sha256(public_key)
+    try:
+        expected_kid = hashlib.sha256(
+            bytes.fromhex(public_key)
+        ).hexdigest()
+    except (ValueError, TypeError):
+        return JSONResponse(
+            {"error": "public_key must be valid hex"}, status_code=400,
+        )
+    if key_id != expected_kid:
+        return JSONResponse(
+            {"error": "key_id must equal sha256(public_key)"},
+            status_code=400,
+        )
+
+    # F7(b): cross-org check -- refuse if key_id is already a live
+    # approver key in another org (uses SECURITY DEFINER function).
+    cross_org = conn.execute(
+        "SELECT check_key_id_cross_org(%s, %s::uuid)",
+        [key_id, str(org_id)],
+    ).fetchone()
+    if cross_org and cross_org[0]:
+        return JSONResponse(
+            {"error": "key_id cannot be registered"}, status_code=409,
+        )
+
     # Create a pending signer_links entry with the key data directly
     # (no code flow for browser keys -- the session IS the identity proof)
     link_id = str(uuid.uuid4())

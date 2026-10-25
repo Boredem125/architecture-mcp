@@ -68,17 +68,27 @@ def _seed_user_row(conn, org_id: str, email: str) -> str:
 
 
 def _seed_connector(owner_url: str, org_id: str, project_id: str,
-                    pub_key: bytes) -> str:
+                    pub_key: bytes, *,
+                    operator_user_id: str | None = None) -> str:
     did = str(uuid.uuid4())
     conninfo = _conninfo(owner_url)
     with psycopg.connect(conninfo) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        conn.execute(
-            "INSERT INTO connectors "
-            "(id, org_id, project_id, device_public_key, created_at) "
-            "VALUES (%s, %s, %s, %s, now()) ON CONFLICT DO NOTHING",
-            [did, org_id, project_id, pub_key.hex()],
-        )
+        if operator_user_id:
+            conn.execute(
+                "INSERT INTO connectors "
+                "(id, org_id, project_id, device_public_key, "
+                "operator_user_id, created_at) "
+                "VALUES (%s, %s, %s, %s, %s::uuid, now()) ON CONFLICT DO NOTHING",
+                [did, org_id, project_id, pub_key.hex(), operator_user_id],
+            )
+        else:
+            conn.execute(
+                "INSERT INTO connectors "
+                "(id, org_id, project_id, device_public_key, created_at) "
+                "VALUES (%s, %s, %s, %s, now()) ON CONFLICT DO NOTHING",
+                [did, org_id, project_id, pub_key.hex()],
+            )
         conn.commit()
     return did
 
@@ -137,14 +147,18 @@ def _make_fresh_session(owner_url: str, org_id: str, user_id: str):
 
 
 def _upload_escalation(base_url: str, device_id: str, token: str,
-                       request_id: str) -> tuple[int, str | None]:
+                       request_id: str, *,
+                       command: str = "echo test") -> tuple[int, str | None]:
     import httpx
+    # T12b-2 named edit: always include fingerprint (item 6)
+    fp = hashlib.sha256(command.encode()).hexdigest()
     r = httpx.post(
         f"{base_url}/api/v1/sync/escalations",
         json={
             "device_id": device_id,
             "request_id": request_id,
-            "record": {"command": "echo test", "status": "pending"},
+            "record": {"command": command, "status": "pending",
+                        "fingerprint": fp},
             "policy_sequence": 1,
         },
         headers={"Authorization": f"Bearer {token}"},
@@ -357,10 +371,12 @@ def test_review_key_owner_mismatch_refused(review_server):
          "roles": ["approver"]},
     ])
 
-    # Connector + device token
+    # Connector + device token -- seed operator_user_id so R2
+    # ("operator unknown") cannot mask the key-owner error
     dev_sk, dev_pub, _ = keygen()
     device_id = _seed_connector(
         srv["owner_url"], srv["org_id"], project_id, dev_pub,
+        operator_user_id=carol_id,
     )
     dev_token = secrets.token_hex(32)
     _seed_device_token(
@@ -410,10 +426,15 @@ def test_review_key_owner_mismatch_refused(review_server):
     )
 
     # The server MUST refuse: key owner (Carol) != session user (Bob).
-    # If this assertion fails (200), the identity binding is incomplete.
-    assert r.status_code in (400, 403), (
-        f"Expected refusal (key owner mismatch), got {r.status_code}: {r.text}. "
+    # Assert the specific key-owner error text from the server.
+    assert r.status_code == 403, (
+        f"Expected 403 (key owner mismatch), got {r.status_code}: {r.text}. "
         "The server accepted an envelope where the signing key belongs to "
-        "a different user than the authenticated session. The identity "
-        "binding is incomplete: key_row.user_id must equal auth_user_id."
+        "a different user than the authenticated session."
+    )
+    body = r.json()
+    assert "key owner mismatch" in body.get("error", "").lower(), (
+        f"Expected 'key owner mismatch' error, got: {body}. "
+        "The server should return 'key owner mismatch: signing key does "
+        "not belong to user_id' (escalations.py T13 identity binding)."
     )

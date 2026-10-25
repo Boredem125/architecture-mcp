@@ -12,14 +12,12 @@
  * matching Ed25519 private keys (64-byte hex = 128 hex chars, or base64
  * representations).  The private key must never leave the signing layer.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 
-// These imports will fail until the modules are created (RED).
-// @ts-expect-error Module does not exist yet (T13 RED)
 import { buildApprovalRequest, buildDenyRequest } from "../src/approval";
 
-// @ts-expect-error Module does not exist yet (T13 RED)
-import { buildKeyLinkRequest } from "../src/browser-key";
+import { buildKeyLinkRequest, generateBrowserKeyPair, exportPublicKey, computeKeyId } from "../src/browser-key";
+import { storeKey } from "../src/key-store";
 
 // Patterns that match private key material
 const PRIVATE_KEY_PATTERNS = [
@@ -45,6 +43,15 @@ function assertNoPrivateKey(label: string, data: string): void {
 }
 
 describe("HAR-style no-private-key check", () => {
+  let harKeyId: string;
+
+  beforeAll(async () => {
+    const keyPair = await generateBrowserKeyPair();
+    const rawPub = await exportPublicKey(keyPair.publicKey);
+    harKeyId = await computeKeyId(rawPub);
+    await storeKey(harKeyId, keyPair);
+  });
+
   it("approval request body contains no private key material", async () => {
     const req = await buildApprovalRequest({
       escalationId: "esc-1",
@@ -55,6 +62,7 @@ describe("HAR-style no-private-key check", () => {
       deviceId: "dev-1",
       registryVersion: 1,
       policySequence: 1,
+      keyId: harKeyId,
     });
 
     assertNoPrivateKey("approval body", JSON.stringify(req.body));
@@ -71,6 +79,7 @@ describe("HAR-style no-private-key check", () => {
       deviceId: "dev-1",
       registryVersion: 1,
       policySequence: 1,
+      keyId: harKeyId,
     });
 
     assertNoPrivateKey("deny body", JSON.stringify(req.body));
@@ -98,6 +107,7 @@ describe("HAR-style no-private-key check", () => {
       deviceId: "dev-1",
       registryVersion: 1,
       policySequence: 1,
+      keyId: harKeyId,
     });
 
     // The body should be a valid agg/remote-approval/v1 envelope

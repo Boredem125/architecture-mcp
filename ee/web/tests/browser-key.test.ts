@@ -17,10 +17,8 @@
  */
 import { describe, it, expect } from "vitest";
 
-// @ts-expect-error Module does not exist yet (T13 RED)
 import { generateBrowserKeyPair, exportPublicKey, computeKeyId } from "../src/browser-key";
 
-// @ts-expect-error Module does not exist yet (T13 RED)
 import { storeKey, loadKey, KEY_STORE_NAME } from "../src/key-store";
 
 describe("generateBrowserKeyPair", () => {

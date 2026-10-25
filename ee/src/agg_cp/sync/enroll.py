@@ -143,6 +143,17 @@ def enroll_router(db_url: str, clock=None) -> APIRouter:
             project_id = str(row[1])
             operator_user_id = str(row[2]) if row[2] else None
 
+            # Info: refuse an operator-less code BEFORE inserting a
+            # connector row.  The rollback un-consumes the code so
+            # it can be retried after the admin binds an operator.
+            if operator_user_id is None:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "enrollment code has no operator; "
+                     "admin must issue a code bound to an operator"},
+                    status_code=400,
+                )
+
             device_id = str(uuid.uuid4())
             conn.execute(
                 "SELECT set_config('app.org_id', %s, true)",
@@ -163,12 +174,15 @@ def enroll_router(db_url: str, clock=None) -> APIRouter:
 
             conn.commit()
 
-        return JSONResponse({
+        resp: dict = {
             "device_id": device_id,
             "org_id": org_id,
             "project_id": project_id,
             "registry": registry_chain,
-        })
+        }
+        if operator_user_id:
+            resp["operator_user_id"] = operator_user_id
+        return JSONResponse(resp)
 
     # -----------------------------------------------------------------
     # POST /api/v1/sync/token  (unauthenticated -- device assertion)

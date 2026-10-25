@@ -264,6 +264,11 @@ def authenticate_signer(
     except Exception:
         raise SignerNonceReplay(f"nonce replay: {kid}/{nonce}")
 
+    # F2: refuse a revoked key outright (cli_key_lookup now returns
+    # 'revoked' instead of falling back to signer_links)
+    if key_info["status"] == "revoked":
+        raise EnvelopeError(f"key_id {kid} has been revoked")
+
     # Map status
     scope = "confirmed" if key_info["status"] == "signer" else "pending_link"
 
@@ -533,6 +538,28 @@ def build_signer_router(db_url: str, clock: Any = None) -> APIRouter:
         try:
             import psycopg
 
+            # F5: key_id must equal sha256(public_key) -- the client
+            # cannot claim a key_id that doesn't match the public key
+            if not public_key or not key_id_val:
+                return JSONResponse(
+                    {"error": "key_id and public_key required"},
+                    status_code=400,
+                )
+            try:
+                expected_kid = hashlib.sha256(
+                    bytes.fromhex(public_key)
+                ).hexdigest()
+            except (ValueError, TypeError):
+                return JSONResponse(
+                    {"error": "public_key must be valid hex"},
+                    status_code=400,
+                )
+            if key_id_val != expected_kid:
+                return JSONResponse(
+                    {"error": "key_id must equal sha256(public_key)"},
+                    status_code=400,
+                )
+
             url = db_url.replace("postgresql+psycopg://", "postgresql://")
             conn = psycopg.connect(url, autocommit=True)
             conn.execute("SET ROLE agg_app")
@@ -548,6 +575,18 @@ def build_signer_router(db_url: str, clock: Any = None) -> APIRouter:
                 return JSONResponse(
                     {"error": "code not found, used, or expired"},
                     status_code=410,
+                )
+
+            # F5: refuse if key_id is already live in another org
+            # (use the link's org_id so same-org re-links are allowed)
+            cross_org = conn.execute(
+                "SELECT check_key_id_cross_org(%s, %s::uuid)",
+                [key_id_val, result["org_id"]],
+            ).fetchone()
+            if cross_org and cross_org[0]:
+                return JSONResponse(
+                    {"error": "key_id cannot be registered"},
+                    status_code=409,
                 )
 
             # Bind the key to the link (used_at already set by function)

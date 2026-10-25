@@ -10,10 +10,10 @@
 
 import { canonicalBytes, REMOTE_APPROVAL_TAG } from "./signing";
 import {
-  generateBrowserKeyPair,
   exportPublicKey,
   computeKeyId,
 } from "./browser-key";
+import { loadKey } from "./key-store";
 
 /** Convert an ArrayBuffer to a lowercase hex string. */
 function bufToHex(buf: ArrayBuffer): string {
@@ -39,6 +39,8 @@ export interface ApprovalParams {
   csrfToken?: string;
   /** Server-provided not_after; defaults to now + 15 min. */
   notAfter?: number;
+  /** key_id for the stored key in IndexedDB. Required. */
+  keyId: string;
 }
 
 /** The shaped envelope returned to the caller. */
@@ -57,9 +59,8 @@ export interface ApprovalRequest {
 /**
  * Build a signed approval request.
  *
- * Generates a fresh browser key pair (in the real app the stored key
- * would be loaded from IndexedDB), signs the canonical bytes, and
- * returns the envelope ready for POST.
+ * Loads the stored key from IndexedDB, signs the canonical bytes,
+ * and returns the envelope ready for POST.
  */
 export async function buildApprovalRequest(
   params: ApprovalParams,
@@ -85,8 +86,11 @@ async function buildDecisionRequest(
   params: ApprovalParams,
   decision: "approve" | "deny",
 ): Promise<ApprovalRequest> {
-  // Key pair (in production, loaded from IndexedDB via key-store)
-  const keyPair = await generateBrowserKeyPair();
+  // Load the stored key from IndexedDB (never generate a throwaway key)
+  const keyPair = await loadKey(params.keyId);
+  if (!keyPair) {
+    throw new Error(`No key found for key_id: ${params.keyId}`);
+  }
   const rawPub = await exportPublicKey(keyPair.publicKey);
   const keyId = await computeKeyId(rawPub);
 

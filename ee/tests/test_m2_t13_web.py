@@ -147,18 +147,28 @@ def _seed_user_row(conn, org_id: str, email: str,
 
 
 def _seed_connector(owner_url: str, org_id: str, project_id: str,
-                    pub_key: bytes, *, device_id: str | None = None) -> str:
+                    pub_key: bytes, *, device_id: str | None = None,
+                    operator_user_id: str | None = None) -> str:
     """Insert a connectors row directly (superuser) and return device_id."""
     did = device_id or str(uuid.uuid4())
     conninfo = _conninfo(owner_url)
     with psycopg.connect(conninfo) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        conn.execute(
-            "INSERT INTO connectors "
-            "(id, org_id, project_id, device_public_key, created_at) "
-            "VALUES (%s, %s, %s, %s, now()) ON CONFLICT DO NOTHING",
-            [did, org_id, project_id, pub_key.hex()],
-        )
+        if operator_user_id:
+            conn.execute(
+                "INSERT INTO connectors "
+                "(id, org_id, project_id, device_public_key, "
+                "operator_user_id, created_at) "
+                "VALUES (%s, %s, %s, %s, %s::uuid, now()) ON CONFLICT DO NOTHING",
+                [did, org_id, project_id, pub_key.hex(), operator_user_id],
+            )
+        else:
+            conn.execute(
+                "INSERT INTO connectors "
+                "(id, org_id, project_id, device_public_key, created_at) "
+                "VALUES (%s, %s, %s, %s, now()) ON CONFLICT DO NOTHING",
+                [did, org_id, project_id, pub_key.hex()],
+            )
         conn.commit()
     return did
 
@@ -210,16 +220,26 @@ def _seed_registry_with_keys(owner_url: str, org_id: str,
 
 
 def _seed_live_key(conn, org_id: str, user_id: str, kid: str,
-                   pub_hex: str, *, kind: str = "cli") -> str:
-    """Insert an approver_keys row (live key). Return ak_id."""
+                   pub_hex: str, *, kind: str = "cli",
+                   roles: list[str] | None = None) -> str:
+    """Insert an approver_keys row (live key). Return ak_id.
+
+    T12b-2 named edit: add ``roles`` column (ADR 0010 s8 requires the
+    ``approver`` role for the approvals route).
+    """
+    if roles is None:
+        roles = ["approver"]
+    import json as _json
     ak_id = str(uuid.uuid4())
     conn.execute(
         "INSERT INTO approver_keys "
         "(id, org_id, user_id, public_key, alg, kind, key_id, "
-        " registry_version, enrolled_at, created_at) "
-        "VALUES (%s, %s, %s, %s, 'ed25519', %s, %s, 1, now(), now()) "
+        " roles, registry_version, enrolled_at, created_at) "
+        "VALUES (%s, %s, %s, %s, 'ed25519', %s, %s, %s::jsonb, "
+        "1, now(), now()) "
         "ON CONFLICT DO NOTHING",
-        [ak_id, org_id, user_id, pub_hex, kind, kid],
+        [ak_id, org_id, user_id, pub_hex, kind, kid,
+         _json.dumps(roles)],
     )
     return ak_id
 
@@ -236,15 +256,20 @@ def _make_fresh_session(owner_url: str, org_id: str, user_id: str):
 
 def _upload_escalation(base_url: str, device_id: str, token: str,
                        request_id: str, *, command: str = "echo test",
-                       policy_sequence: int = 1) -> tuple[int, str | None]:
+                       policy_sequence: int = 1,
+                       fingerprint: str | None = None) -> tuple[int, str | None]:
     """Upload an escalation via device token. Return (status, escalation_id)."""
     import httpx
+    record: dict = {"command": command, "status": "pending"}
+    if fingerprint is None:
+        fingerprint = hashlib.sha256(command.encode()).hexdigest()
+    record["fingerprint"] = fingerprint
     r = httpx.post(
         f"{base_url}/api/v1/sync/escalations",
         json={
             "device_id": device_id,
             "request_id": request_id,
-            "record": {"command": command, "status": "pending"},
+            "record": record,
             "policy_sequence": policy_sequence,
         },
         headers={"Authorization": f"Bearer {token}"},
@@ -342,12 +367,15 @@ def web_server(pg_url, app_url, owner_url, pg_roles):
         conn.execute("SELECT set_config('app.org_id', %s, false)",
                      [info["org_id"]])
         alice_id = _seed_user_row(conn, info["org_id"], "alice@acme.test")
+        # T12b-2 named edit: operator distinct from approvers (R2)
+        operator_id = _seed_user_row(conn, info["org_id"], "operator@acme.test")
 
         conn.execute("SELECT set_config('app.org_id', %s, false)",
                      [info["org_evil"]])
         eve_id = _seed_user_row(conn, info["org_evil"], "eve@evil.test")
 
     info["alice_id"] = alice_id
+    info["operator_id"] = operator_id
     info["eve_id"] = eve_id
 
     try:
@@ -486,7 +514,8 @@ def test_escalation_list_route_exists(web_server):
         conn.commit()
 
     device_id = _seed_connector(srv["owner_url"], srv["org_id"],
-                                project_id, pub)
+                                project_id, pub,
+                                operator_user_id=srv["operator_id"])
     token = secrets.token_hex(32)
     _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
                        device_id, token)
@@ -537,7 +566,8 @@ def test_escalation_list_filtered_by_org(web_server):
         conn.commit()
 
     device_id = _seed_connector(srv["owner_url"], srv["org_id"],
-                                project_id, pub)
+                                project_id, pub,
+                                operator_user_id=srv["operator_id"])
     token = secrets.token_hex(32)
     _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
                        device_id, token)
@@ -580,7 +610,8 @@ def test_escalation_list_shows_environment(web_server):
         conn.commit()
 
     device_id = _seed_connector(srv["owner_url"], srv["org_id"],
-                                project_id, pub)
+                                project_id, pub,
+                                operator_user_id=srv["operator_id"])
     token = secrets.token_hex(32)
     _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
                        device_id, token)
@@ -629,7 +660,8 @@ def test_escalation_list_marks_prod(web_server):
         conn.commit()
 
     device_id = _seed_connector(srv["owner_url"], srv["org_id"],
-                                project_id, pub)
+                                project_id, pub,
+                                operator_user_id=srv["operator_id"])
     token = secrets.token_hex(32)
     _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
                        device_id, token)
@@ -738,7 +770,8 @@ def test_browser_key_link_requires_session(web_server):
         conn.commit()
 
     device_id = _seed_connector(srv["owner_url"], srv["org_id"],
-                                project_id, dpub)
+                                project_id, dpub,
+                                operator_user_id=srv["operator_id"])
     dev_token = secrets.token_hex(32)
     _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
                        device_id, dev_token)
@@ -781,7 +814,8 @@ def test_approval_via_browser_session_accepted(web_server):
 
     device_sk, device_pub, device_kid = keygen()
     device_id = _seed_connector(srv["owner_url"], srv["org_id"],
-                                project_id, device_pub)
+                                project_id, device_pub,
+                                operator_user_id=srv["operator_id"])
     dev_token = secrets.token_hex(32)
     _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
                        device_id, dev_token)
@@ -840,7 +874,8 @@ def test_deny_via_browser_session_accepted(web_server):
 
     device_sk, device_pub, device_kid = keygen()
     device_id = _seed_connector(srv["owner_url"], srv["org_id"],
-                                project_id, device_pub)
+                                project_id, device_pub,
+                                operator_user_id=srv["operator_id"])
     dev_token = secrets.token_hex(32)
     _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
                        device_id, dev_token)
@@ -937,7 +972,8 @@ def test_no_private_key_in_escalation_list_response(web_server):
         conn.commit()
 
     device_id = _seed_connector(srv["owner_url"], srv["org_id"],
-                                project_id, pub)
+                                project_id, pub,
+                                operator_user_id=srv["operator_id"])
     token = secrets.token_hex(32)
     _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
                        device_id, token)
@@ -976,7 +1012,8 @@ def test_no_private_key_in_approval_response(web_server):
 
     device_sk, device_pub, device_kid = keygen()
     device_id = _seed_connector(srv["owner_url"], srv["org_id"],
-                                project_id, device_pub)
+                                project_id, device_pub,
+                                operator_user_id=srv["operator_id"])
     dev_token = secrets.token_hex(32)
     _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
                        device_id, dev_token)
@@ -1064,7 +1101,8 @@ def test_approvals_route_refuses_device_token(web_server):
     ])
 
     device_id = _seed_connector(srv["owner_url"], srv["org_id"],
-                                project_id, device_pub)
+                                project_id, device_pub,
+                                operator_user_id=srv["operator_id"])
     dev_token = secrets.token_hex(32)
     _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
                        device_id, dev_token)
@@ -1125,7 +1163,8 @@ def test_approvals_route_accepts_signer_token(web_server):
 
     device_sk, device_pub, device_kid = keygen()
     device_id = _seed_connector(srv["owner_url"], srv["org_id"],
-                                project_id, device_pub)
+                                project_id, device_pub,
+                                operator_user_id=srv["operator_id"])
     dev_token = secrets.token_hex(32)
     _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
                        device_id, dev_token)
@@ -1198,7 +1237,8 @@ def test_approvals_route_session_without_csrf_refused(web_server):
 
     device_sk, device_pub, device_kid = keygen()
     device_id = _seed_connector(srv["owner_url"], srv["org_id"],
-                                project_id, device_pub)
+                                project_id, device_pub,
+                                operator_user_id=srv["operator_id"])
     dev_token = secrets.token_hex(32)
     _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
                        device_id, dev_token)
@@ -1254,7 +1294,8 @@ def test_approvals_route_cross_org_session_404(web_server):
 
     device_sk, device_pub, device_kid = keygen()
     device_id = _seed_connector(srv["owner_url"], srv["org_id"],
-                                project_id, device_pub)
+                                project_id, device_pub,
+                                operator_user_id=srv["operator_id"])
     dev_token = secrets.token_hex(32)
     _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
                        device_id, dev_token)
@@ -1317,7 +1358,8 @@ def test_escalation_list_requires_session(web_server):
         conn.commit()
 
     device_id = _seed_connector(srv["owner_url"], srv["org_id"],
-                                project_id, dpub)
+                                project_id, dpub,
+                                operator_user_id=srv["operator_id"])
     dev_token = secrets.token_hex(32)
     _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
                        device_id, dev_token)
@@ -1371,7 +1413,8 @@ def test_approval_user_mismatch_refused(web_server):
 
     device_sk, device_pub, device_kid = keygen()
     device_id = _seed_connector(srv["owner_url"], srv["org_id"],
-                                project_id, device_pub)
+                                project_id, device_pub,
+                                operator_user_id=srv["operator_id"])
     dev_token = secrets.token_hex(32)
     _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
                        device_id, dev_token)

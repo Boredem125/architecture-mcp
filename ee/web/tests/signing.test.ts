@@ -20,8 +20,6 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-// This import will fail until the signing module is created (RED).
-// @ts-expect-error Module does not exist yet (T13 RED)
 import { canonicalBytes, canonicalJson, REMOTE_APPROVAL_TAG } from "../src/signing";
 
 const FIXTURE_PATH = resolve(__dirname, "fixtures", "golden_canonical.json");

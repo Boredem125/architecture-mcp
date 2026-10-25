@@ -140,6 +140,50 @@ export async function fetchMembers(projectId: string): Promise<Member[]> {
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/v1/escalations (pending approval inbox)
+// ---------------------------------------------------------------------------
+
+import type { InboxEscalation, InboxDecisionResult } from "../inbox";
+
+export async function fetchEscalations(): Promise<InboxEscalation[]> {
+  const resp = await cpFetch<{ escalations: InboxEscalation[] }>("/escalations");
+  return resp.escalations;
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/sync/escalations/{id}/approvals
+// ---------------------------------------------------------------------------
+
+export async function postDecision(
+  escalationId: string,
+  decision: InboxDecisionResult,
+): Promise<{ status: number; detail: string }> {
+  const res = await fetch(
+    `${API_BASE}/sync/escalations/${encodeURIComponent(escalationId)}/approvals`,
+    {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        ...decision.headers,
+      },
+      body: JSON.stringify(decision.body),
+    },
+  );
+  let detail = "";
+  try {
+    const body = await res.json();
+    // The server returns {"error": "..."} on 4xx (escalations.py), not
+    // {"detail": "..."}.  Read both for robustness.
+    detail =
+      typeof body?.error === "string" ? body.error :
+      typeof body?.detail === "string" ? body.detail : "";
+  } catch { /* non-JSON */ }
+  return { status: res.status, detail: detail || (res.ok ? "ok" : `error ${res.status}`) };
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/v1/auth/logout  (X-CSRF-Token header)
 // ---------------------------------------------------------------------------
 
