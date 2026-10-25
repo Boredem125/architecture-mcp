@@ -1868,6 +1868,7 @@ def test_escalation_upload_scrubbed(tmp_path, monkeypatch):
         "fingerprint": "abc",
         "status": "pending",
         "requires_dual": True,
+        "bundle_sequence": 1,  # T12b-2 named edit: int required for upload
     }
     (pending_dir / f"{req_id}.json").write_text(
         json.dumps(record), encoding="utf-8"

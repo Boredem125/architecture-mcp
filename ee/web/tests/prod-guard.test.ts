@@ -13,7 +13,6 @@
  */
 import { describe, it, expect } from "vitest";
 
-// @ts-expect-error Module does not exist yet (T13 RED)
 import { isProdEnvironment, canApprove, canDeny } from "../src/escalation-rules";
 
 describe("prod environment detection (D5.5, D2.4)", () => {

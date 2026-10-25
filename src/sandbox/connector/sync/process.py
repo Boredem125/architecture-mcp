@@ -33,6 +33,71 @@ BUNDLE_CADENCE: float = 60.0
 
 
 # ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def escalation_upload_body(
+    rec: dict, device_id: str, layout=None,
+) -> dict | None:
+    """Build the ``{device_id, request_id, record, policy_sequence}`` body
+    for ``POST /api/v1/sync/escalations`` from a flat pending record.
+
+    Returns *None* (and logs + audits) when ``bundle_sequence`` is not an
+    ``int`` (``bool`` is not ``int`` either).  Both ``run_once`` (CLI)
+    and ``SyncProcess._upload_escalations`` use this so the validation
+    and body shape stay in one place.
+    """
+    rid = rec.get("request_id", "")
+    raw_seq = rec.get("bundle_sequence")
+    if raw_seq is None:
+        import logging as _log
+        _log.getLogger("sandbox.sync.upload").warning(
+            "rejected escalation %s: bundle_sequence absent", rid,
+        )
+        if layout is not None:
+            try:
+                from sandbox.connector.audit import FolderAudit
+                audit_dir = layout.root / ".sandbox" / "audit"
+                fa = FolderAudit(audit_dir)
+                fa.append({
+                    "event": "upload_rejected",
+                    "request_id": rid,
+                    "reason": "bundle_sequence absent",
+                    "ts": __import__("time").time(),
+                })
+            except Exception:  # noqa: BLE001
+                pass
+        return None
+    if isinstance(raw_seq, bool) or not isinstance(raw_seq, int):
+        import logging as _log
+        _log.getLogger("sandbox.sync.upload").warning(
+            "rejected escalation %s: bundle_sequence not int (%r)",
+            rid, type(raw_seq).__name__,
+        )
+        if layout is not None:
+            try:
+                from sandbox.connector.audit import FolderAudit
+                audit_dir = layout.root / ".sandbox" / "audit"
+                fa = FolderAudit(audit_dir)
+                fa.append({
+                    "event": "upload_rejected",
+                    "request_id": rid,
+                    "reason": f"bundle_sequence not int ({type(raw_seq).__name__})",
+                    "ts": time.time(),
+                })
+            except Exception:  # noqa: BLE001
+                pass
+        return None
+    return {
+        "device_id": device_id,
+        "request_id": rid,
+        "record": rec,
+        "policy_sequence": raw_seq,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
 
@@ -422,17 +487,27 @@ def _upload_escalations(sync: SyncProcess) -> None:
         except Exception:  # noqa: BLE001 -- scrub failure must not block upload
             pass
 
+        # Validate request_id before uploading (H3 defense in depth)
+        rid = upload_data.get("request_id", "")
+        try:
+            from sandbox.connector.queue import valid_request_id
+            if not valid_request_id(rid):
+                continue
+        except Exception:  # noqa: BLE001
+            continue
+
+        # bundle_sequence must be an int; reject otherwise (no coercion)
+        body = escalation_upload_body(upload_data, sync.device_id,
+                                      layout=sync.layout)
+        if body is None:
+            continue
+
         # Upload (idempotent on server side)
         url = f"{sync.server_url}/api/v1/sync/escalations"
         try:
             sync._connect(
                 "POST", url,
-                body={
-                    "device_id": sync.device_id,
-                    "request_id": upload_data.get("request_id", ""),
-                    "record": upload_data,
-                    "policy_sequence": upload_data.get("policy_version", 0),
-                },
+                body=body,
                 token=sync._token,
             )
         except Exception:

@@ -10,6 +10,7 @@ import {
   ApiUnavailableError,
 } from "./api/client";
 import type { MeResponse, Project, Member } from "./api/client";
+import InboxSection from "./InboxSection";
 
 // ---------------------------------------------------------------------------
 // Login form -- navigates to the OIDC endpoint with location.assign, not a
@@ -219,6 +220,7 @@ export default function App() {
     <div className="app-shell">
       <UserInfo me={me} onLogout={handleLogout} />
       <main className="main-content">
+        <InboxSection csrfToken={me.csrf_token} userId={me.user_id} />
         <ProjectsSection />
       </main>
     </div>

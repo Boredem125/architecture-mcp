@@ -62,12 +62,23 @@ def web_escalation_router(db_url: str, clock=None) -> APIRouter:
 
             rows = conn.execute(
                 "SELECT e.id, e.request_id, e.record, e.project_id, "
-                "e.policy_sequence, e.status, p.environment "
+                "e.policy_sequence, e.status, p.environment, "
+                "e.connector_id, e.org_id, e.requires_dual "
                 "FROM escalations e "
                 "LEFT JOIN projects p ON p.id = e.project_id "
                 "WHERE e.status = 'pending' "
                 "ORDER BY e.created_at DESC",
             ).fetchall()
+
+            # Fetch the latest registry version for this org
+            # (the value the web signer must put in the payload).
+            rv_row = conn.execute(
+                "SELECT COALESCE(MAX(version), 1) "
+                "FROM key_registry_versions "
+                "WHERE org_id = %s::uuid",
+                [str(org_id)],
+            ).fetchone()
+            latest_registry_version = rv_row[0] if rv_row else 1
 
             conn.commit()
 
@@ -75,16 +86,45 @@ def web_escalation_router(db_url: str, clock=None) -> APIRouter:
         for row in rows:
             record = row[2] or {}
             command = record.get("command", "") if isinstance(record, dict) else ""
+            fingerprint = record.get("fingerprint", "") if isinstance(record, dict) else ""
+            # S1: return exec_cwd and root (scrubbed like command)
+            exec_cwd = record.get("exec_cwd", "") if isinstance(record, dict) else ""
+            root = record.get("root", "") if isinstance(record, dict) else ""
+            # F3: return kind, tool_name, bundle_sequence (ADR 0010 s7)
+            kind = record.get("kind") if isinstance(record, dict) else None
+            tool_name = record.get("tool_name") if isinstance(record, dict) else None
+            bundle_sequence = record.get("bundle_sequence") if isinstance(record, dict) else None
+            if kind is not None and not isinstance(kind, str):
+                kind = str(kind)
+            if tool_name is not None and not isinstance(tool_name, str):
+                tool_name = str(tool_name)
+            if bundle_sequence is not None:
+                if isinstance(bundle_sequence, bool) or not isinstance(bundle_sequence, int):
+                    bundle_sequence = None
             env = row[6] or "prod"
-            items.append({
+            item = {
                 "escalation_id": str(row[0]),
                 "request_id": row[1],
                 "command": command,
+                "fingerprint": fingerprint,
+                "device_id": str(row[7]) if row[7] else "",
                 "project_id": str(row[3]),
+                "org_id": str(row[8]) if row[8] else "",
                 "policy_sequence": row[4],
                 "environment": env,
                 "is_prod": env == "prod",
-            })
+                "requires_dual": bool(row[9]) if row[9] is not None else True,
+                "exec_cwd": exec_cwd,
+                "root": root,
+                "registry_version": latest_registry_version,
+            }
+            if kind is not None:
+                item["kind"] = kind
+            if tool_name is not None:
+                item["tool_name"] = tool_name
+            if bundle_sequence is not None:
+                item["bundle_sequence"] = bundle_sequence
+            items.append(item)
 
         resp = JSONResponse({"escalations": items})
         resp.headers["content-security-policy"] = _CSP

@@ -51,11 +51,15 @@ export async function computeKeyId(
   return bufToHex(hash);
 }
 
+import { storeKey } from "./key-store";
+
 /**
  * Build the request for POST /api/v1/signer-links (kind=browser).
  *
- * Returns the body and headers.  The caller supplies the CSRF token
- * from the session.  The private key never appears in the request.
+ * Generates a key pair, stores it in IndexedDB so loadKey can find it
+ * later, then returns the body and headers.  The caller supplies the
+ * CSRF token from the session.  The private key never appears in the
+ * request.
  */
 export async function buildKeyLinkRequest(
   csrfToken?: string,
@@ -67,6 +71,9 @@ export async function buildKeyLinkRequest(
   const raw = await exportPublicKey(keyPair.publicKey);
   const keyId = await computeKeyId(raw);
   const publicKeyHex = bufToHex(raw);
+
+  // Persist so loadKey(keyId) works in the approve/deny path
+  await storeKey(keyId, keyPair);
 
   return {
     body: {
