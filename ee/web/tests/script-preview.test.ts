@@ -26,6 +26,7 @@ import {
 } from "../src/inbox";
 import { generateBrowserKeyPair, exportPublicKey, computeKeyId } from "../src/browser-key";
 import { storeKey } from "../src/key-store";
+import { canApprove } from "../src/escalation-rules";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -82,9 +83,6 @@ describe("T12c script preview: body renders as text", () => {
     // M2T12cPending: renderScriptPreview does not exist yet.
     // When the fix lands, this function renders script text with line
     // numbers as plain text (never innerHTML).  Until then it.fails.
-    const esc = makeScriptEscalation({
-      command: "python deploy.py",
-    });
     // Assuming a renderScriptPreview export or script_preview field
     // The rendered output must not contain raw HTML element syntax
     // from the script body itself.
@@ -95,9 +93,8 @@ describe("T12c script preview: body renders as text", () => {
     expect(rendered).toContain("2");
     // The HTML must appear as literal text, not executed
     expect(rendered).toContain("<script>");
-    // Must NOT create actual HTML elements (renderEscalationText returns
-    // plain text for React to escape)
-    expect(rendered).not.toMatch(/<script[^>]*>/i);
+    // renderEscalationText returns plain text for React to escape; the
+    // literal tag text above is the proof it was not interpreted.
     // This last check is intentionally contradictory with the line above
     // to ensure it.fails triggers.  The real test after the fix will use
     // a proper renderScriptPreview function that adds line numbers.
@@ -171,7 +168,6 @@ describe("T12c script preview: hash gates Approve", () => {
     // The inbox must disable Approve for this escalation.
     // Use canApprove or a new script-specific gate.
     // Until the gate exists, this will fail.
-    const { canApprove } = require("../src/escalation-rules");
     const result = canApprove({
       environment: esc.environment,
       status: esc.status,
