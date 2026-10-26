@@ -113,8 +113,6 @@ def _genesis(alice: SigningKey, kind: str = REGISTRY) -> dict:
 # D0-1: key_id is not bound to public_key
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, raises=T12dD0Finding,
-                   reason="D0-1 open: keys[] key_id not checked = sha256(pk)")
 def test_d0_1_key_id_must_equal_sha256_public_key():
     alice = SigningKey.generate()
     carol_real = SigningKey.generate()      # carol tells alice this key_id
@@ -144,8 +142,6 @@ def test_d0_1_key_id_must_equal_sha256_public_key():
 # D0-2: thresholds count keys, not users
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, raises=T12dD0Finding,
-                   reason="D0-2 open: admin threshold counts key_ids not users")
 def test_d0_2_one_user_two_admin_keys_is_not_two_admins():
     alice = SigningKey.generate()
     alice_second = SigningKey.generate()    # a second CLI key alice linked
@@ -206,8 +202,6 @@ def test_d0_3_diff_shows_bundle_signer_and_key_field_changes():
 # D0-4: envelope kind not checked
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, raises=T12dD0Finding,
-                   reason="D0-4 open: verify_chain ignores the envelope kind")
 def test_d0_4_registry_envelope_kind_is_checked():
     alice = SigningKey.generate()
     v1 = _genesis(alice, kind=POLICY_CHANGE)
