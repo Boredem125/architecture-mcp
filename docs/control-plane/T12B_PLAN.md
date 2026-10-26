@@ -179,3 +179,15 @@ Reviewer: qa-engineer (W).
 - (h) Ordering: d3 is blocked if T12c c3 slips, because both touch `cli/sync_cmds.py`. No fallback is named. Add: "if c3 slips past d3's window, d3 may land first and c3 rebases."
 - (i) Missing: d1 CLI tests (`test_m2_t12d_signer_cli.py`) need mocked server responses for `sign-registry --in/--out` chain checks. The done-when should say how the CLI tests avoid a live server (CliRunner with fixtures, or a mock HTTP layer).
 - (j) Ordering: d1 says "after d0" but d0's done-when is "APPROVE recorded here" with no date or owner commitment. If the security ruling slips, d1 and everything downstream is blocked with no escalation path named.
+
+**Orchestrator rulings on the QA review (26 Oct 2026; none changes a plan property):**
+- (a) Extra test 12 belongs to c1 (static grep/AST test, strict xfail until c2).
+- (b) c6 done-when adds: the NF-1 tests in `tests/security/test_m2_t12c_nf1.py` pass with their markers removed.
+- (c) The Windows pin tests (extra test 6) need no elevation: share-mode locks and hard links work for a normal user. Only symlink-creating tests carry the existing `_can_symlink` skipif. The `ee-windows` CI job runs them.
+- (d) The connector CI job runs on Linux; c6 (qa) records both OS results in HANDOFF.
+- (e) Extra test 7 is POSIX-only (`skipif win32`); Windows holds the handles instead (ADR 0010 s9 S-L4).
+- (f) The concurrent-genesis test runs only under the ee pg fixture; d1 done-when reads "suites green (pg)".
+- (g) d4 moves `ee/tests/test_m2_t12b_e2e.py` to the routes; the grep test lives in `ee/tests/test_m2_t12d_genesis.py`.
+- (h) d3 and c3 share `cli/sync_cmds.py`: whichever is ready first lands first; the other rebases on it. Never both at once.
+- (i) d1 CLI tests use CliRunner with a mocked HTTP layer (`respx` or `monkeypatch` on the client), never a live server.
+- (j) d0 is DONE: the security ruling is recorded in HANDOFF ("Security d0: ACCEPT WITH CONDITIONS C-d0-1..13") and PM agreed. D0-1, D0-2 and D0-4 are fixed in `src/sandbox/protocol/registry.py` before d2; D0-3 in d3 (diff from the bytes); D0-5 in d2 (allowlist scope rule).
