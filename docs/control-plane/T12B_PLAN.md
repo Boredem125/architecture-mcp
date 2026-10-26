@@ -79,3 +79,103 @@ Reviewer: security-engineer (claude-opus-5-5, leader ruling), 24 Oct 2026. Verdi
 8. Web: the key is a non-extractable CryptoKey and is never regenerated; the signed object is the displayed object; server strings rendered as text; strict CSP unchanged; CSRF on the approve POST; no key means no signature; prod Approve hidden and refused server-side.
 9. Evidence: the pack's pinned root is checked against a fingerprint supplied out of band; envelopes are re-verified and re-bound offline; a `connector:` signer is never counted as an approver.
 10. Scanners: Semgrep (`.venv`), gitleaks and trivy (`E:\tools`) on the T12b range, with versions and counts recorded.
+
+## T12c: script content binding and broker shell parity (founder rulings 25 Oct 2026; design in ADR 0010 section 9)
+Owner: lead-architect. c0 is complete:
+- The security leader accepted D1-D5, with conditions C-c0-1 to C-c0-7 (written into ADR s9).
+- The founder ruled that NF-1 is fixed here.
+- The PM cuts are accepted.
+
+QA reviews this table before c1 is committed. T12c is a separate task. It starts after T12b-2 is committed and ends before T16.
+
+**Exit check.**
+- An agent that edits or symlink-swaps the script after the escalation gets the broker's refusal on both the local and the remote path: a signed `SCRIPT_CHANGED` done-record plus an alert, and nothing runs.
+- An unchanged script runs once, with `$0` and cwd unchanged.
+- No approved command runs through cmd.exe. The NF-1 proof tests pass with their markers removed.
+- The suites are green on Windows and Linux CI.
+
+| ID | Task | Owner (tier) | After | Done when |
+|---|---|---|---|---|
+| c0 | Plan, ADR 0010 s9, the NF-1 ruling, the PM scope check | lead (L), security (L), qa (W), PM | - | DONE 25 Oct: security accepted D1-D5 with C-c0-1 to C-c0-7; founder: NF-1 in T12c; PM cuts accepted. QA review of this table pending |
+| c1 | Tests first: `tests/security/test_m2_script_binding.py` (qa); the extras below; `ee/tests/test_m2_t12c_script.py`; `ee/web/tests/script-preview.test.ts`. Strict xfail `raises=M2T12cPending`. `tests/security/test_m2_t12c_nf1.py` already exists (security) | qa (W) | c0 | Committed; the new tests xfail for the stated reason; suites green |
+| c2 | Connector core: new `connector/script_pin.py` (resolver and pin); `hook_eval.py` (stamping and the floor deny); `approval.py` (fingerprint v2, payload fields, refuse unbound); `broker.py` and `privilege_broker.py` (shell family from `tool_name`, the recorded shell, the argv exec under the pin, no `shell=True`, refusal records and alerts); `install.py` (record `shells` in `session.json`) | backend (W) | c1; T12b-2 committed | c1 connector tests and the NF-1 tests pass with markers removed; full connector suite green on Win and Linux; security diff review at L (TCB) APPROVE |
+| c3 | Upload and display: `sync/process.py` (upload fields), `cli/sync_cmds.py` (signer display, body-hash check, payload fields), local `sandbox approve` display | backend (W) | c2 | Tests pass; security review |
+| c4 | Server: migration 0012 (`escalations.script` and `script_preview` as separate jsonb fields); upload validation that rejects preview text over 64 KiB, never truncating; a raised request cap; GET list and GET-by-id fields; M4 equality on the three payload fields | backend (W) | c1 (in parallel with c2 if the files don't overlap) | ee tests pass (pg) |
+| c5 | Web: script panel in `InboxSection.tsx` (rel, sha256, size, `<pre>` body rendered as text with line numbers); a WebCrypto hash check that gates Approve; payload fields. If this slips, ship Approve disabled for script escalations ("approve in the CLI"), never a hash-only approve | frontend (W) | c1; the c4 contract | vitest, lint and build pass; strict CSP unchanged |
+| c6 | E2E: extend `ee/tests/test_m2_t12b_e2e.py` to swap the script after the web and CLI approvals: refused, signed done-record, evidence verifies offline. Semgrep, gitleaks; HANDOFF update | qa (W), security (W), git-ops | c2-c5 | Exit check holds; CI green; git-ops commits each task from the owner's file list |
+
+**Extra tests (beyond qa's behavioural set):**
+1. Fingerprint v2: one changed script byte changes the fingerprint, and so does each of the new fields. A record without `fp_v` is refused by `apply_external`, with no file touched.
+2. Resolver table, run on both OSes:
+   - bound forms: python, `python3.12`, an absolute interpreter path, node, bash, sh, `pwsh -File`;
+   - each unbound reason in 9.1;
+   - the deferred forms are unbound, and denied under the floor (C-c0-5): `./x.sh`, `.exe`, `.cmd`, `.bat`, ruby, perl, dash, zsh, `py`, `pythonw`, `powershell`;
+   - an NTFS stream operand is unbound;
+   - per-family option parsing, so that `-W v` and `-X v` never bind the wrong word.
+3. Floor: enrolled, or requires_dual, plus unbound gives a deny with `SCRIPT_UNPINNABLE` whose message names the allowed shape. The same deny covers binary, over-64-KiB, non-UTF-8 and control-character bodies. Standalone single approval escalates and shows "content NOT bound".
+4. Meaning is kept: a script prints `$0`, `__file__`, `sys.argv` and cwd, and reads a sibling file. The output is the same as a bash run of the unchanged command. The broker env stays the clean allowlist.
+5. Re-resolve: a record with `script` null whose command resolves to a file is refused (`script_not_bound`). An edited pending record is refused by both the fingerprint and the payload check.
+6. Windows pin: while the child runs, each of these fails with a sharing violation: an open-for-write, a delete or a rename of the script, and a rename of its folder or of root. The script can still create files in root. The handles are released after normal exit, after a timeout and after an exception. nlink and attributes come from the handle: a test makes a hard link between the pre-check and the open (C-c0-1).
+7. POSIX after-run check: a self-swapping script sets `script_changed_during_run` and raises the alert.
+8. Refusal record: it is signed (the connector key on the remote path), terminal, chained in the audit and alerted. A re-delivered approval cannot run it.
+9. Payload and server: a mismatched `script_rel`, `script_sha256` or `preview_sha256` is refused by the connector and gets 400 from the server. A server-altered body makes the CLI signer exit non-zero and send nothing, and disables Approve on the web. A 64 KiB + 1 preview is rejected, not truncated. `script` and `script_preview` are stored separately (C-c0-7).
+10. Preview: a secret is redacted in the preview, the raw-byte hash still binds, and the web renders the body as text, never as HTML.
+11. Evidence: the done-record carries `script.rel` and sha256, and `verify_evidence` reports them.
+12. A grep or AST test: no `shell=True` is reachable for any approved record, and the broker execs only the lexed argv or the record's family shell (C-c0-6).
+13. NF-1, shell parity:
+    - a Bash-tool record runs under the recorded bash and a PowerShell-tool record under the recorded pwsh, never `%ComSpec%`;
+    - a corpus round-trip is byte-exact (bash prints `$BASH_EXECUTION_STRING`; pwsh echoes the decoded command);
+    - the `nf1-noop '&echo pwned> MARKER&'` form and the APPROVER_CLI variant write no MARKER;
+    - a missing `shells` field, a missing binary, a path under root or a reparse point each give a signed `SHELL_UNAVAILABLE` and nothing runs;
+    - there is no PATH lookup at exec;
+    - init lookup order: the `--bash` flag, `CLAUDE_CODE_GIT_BASH_PATH`, `%ProgramFiles%\Git\bin\bash.exe`, the git-derived `<git root>\bin\bash.exe` (a fake git at `X\cmd\git.exe` gives `X\bin\bash.exe`), then PATH;
+    - init refuses both `System32\bash.exe` and `...\Microsoft\WindowsApps\bash.exe` even when PATH finds them first (the demo laptop's case);
+    - a PowerShell-tool record runs with `pwsh` when present, else System32 `powershell.exe` 5.1, with `-NoProfile -NonInteractive -EncodedCommand`.
+
+**T16 notes (founder ruling 25 Oct):**
+- Demo step 5 stays `steal-env` (curl, binding "none").
+- T16 adds a separate bound-script scene, 5(d): bob approves, the agent edits the script, carol approves, and the broker refuses with a signed `SCRIPT_CHANGED` and an alert. The evidence pack holds the refusal and verifies offline.
+- T16 must measure and publish how often the agent retries after `SCRIPT_UNPINNABLE`, and whether it gets to the allowed shape.
+
+**Consequences:**
+- Tests that run approved commands through the broker need a fixture `session.json` with `shells`.
+- Tests that hand-build records for commands that run a script must stamp them through the resolver.
+- Each such test edit is named and approved by security.
+- Existing workspaces must run `sandbox init` again before the broker will run anything (fail closed, with a clear message).
+
+## T12d: registry genesis bootstrap (design in ADR 0011; blocks T16)
+Owner: lead-architect. Status: DRAFT. It needs a security leader ruling (identity and keys), a QA review and a PM check before any code. It starts after T12b-2 is committed. The server work (d2) can run in parallel with T12c c2. `cli/sync_cmds.py` is shared with T12c c3, so d3 and c3 run one after the other.
+
+**Exit check.**
+- `demo.py` step 2 passes on the compose stack through routes only: genesis, then v2 signed by alice and carol, then v3 signed by both admins.
+- It also passes the step 2 negative checks plus the new ones (second genesis, code reuse, a `pending_link` post that does not add its own key).
+- The T12b e2e test makes no direct call to `store_registry_version`.
+
+| ID | Task | Owner (tier) | After | Done when |
+|---|---|---|---|---|
+| d0 | ADR 0011; security ruling (the B gate, the `pending_link` scope widening, the genesis field checks); QA review; PM check | lead (L), security (L), qa (W), PM | - | APPROVE recorded here |
+| d1 | Tests first (strict xfail `raises=M2T12dPending`; M2_BASELINE row). `ee/tests/test_m2_t12d_genesis.py`: happy path and its projection to `signer` status; 409 once any version exists, with the `second_genesis` alert and the code untouched; code single use, expiry, 5 failures, constant-time compare; non-admin user refused; each envelope field in ADR 0011 2.4 refused one by one; two concurrent genesis calls give exactly one v1; no fingerprint in any response; audit row written; `pending_link` refused on every route except link, genesis and the own-key publish; the candidates route is admin-only, org-scoped, and gives 404 for another org; `migrate.py` emits `genesis_code` once, not while a live code exists, and never after v1. `tests/security/test_m2_t12d_signer_cli.py` (CliRunner): link; genesis prints the fingerprint = sha256(org:canonical payload); `user_id` is the server id, not `sub`; default roles `[admin]`, `--approver` adds approver; `sign-registry --in/--out` checks the chain and the existing signatures, shows the diff from the bytes, needs the typed key_id, leaves an unconfirmed key unsigned (N1), and `--publish` works | qa (W) | d0 | Committed; xfail for the stated reason; suites green |
+| d2 | Server: migration (`setup_codes.purpose`), `migrate.py` genesis code, `POST /api/v1/sync/signer/genesis`, scope rule, `GET /api/v1/sync/signer/candidates`, own-key publish rule in `/signatures` (`ee/src/agg_cp/sync/signer.py`, `registry.py`, `migrate.py`, a migrations file) | backend (W) | d1 | ee d1 tests pass (pg); security review at L |
+| d3 | CLI: `sandbox signer link`, `genesis` and `sign-registry` in `cli/sync_cmds.py` over `connector/sync/signer.py`; fix the `build_genesis` user_id and roles; value-naming confirmation flags | backend (W) | d1; after T12c c3 or before it, not at the same time | Connector d1 tests pass; full suite green; security review |
+| d4 | `ee/deploy/demo.py` step 2 headless through routes; move the T12b e2e test to the routes and add a grep test that it never calls `store_registry_version` | qa (W), backend (W) | d2, d3 | Exit check holds on the compose stack; result recorded in HANDOFF |
+| d5 | Security diff review, Semgrep, gitleaks, commit per task | security (W), git-ops | d2-d4 | CI green |
+
+## QA review (c0/d0, 26 Oct 2026)
+
+Reviewer: qa-engineer (W).
+
+**c0-c6**
+
+- (a) Missing: Extra test 12 (grep/AST: no `shell=True` reachable for approved records) is not assigned to any c-row. It fits c1 (static, no implementation needed) or c6 (semgrep). Assign it explicitly.
+- (b) Missing: The top-level exit check requires "The NF-1 proof tests pass with their markers removed," but c6's done-when does not name the NF-1 tests. Add "NF-1 markers removed and tests pass" to c6.
+- (c) Missing: Extra test 6 (Windows pin sharing-violation) needs elevated privileges or Developer Mode on CI. No skip condition or CI note. If CI lacks the privilege, the test will fail, not skip. Add a `skipif` or a named CI limit.
+- (d) Missing: No c-row names who verifies "suites green on Linux CI." c2's security review is Windows-focused (the pin tests). Assign Linux verification to c6 or name it in the exit check owner.
+- (e) Untestable as written: Extra test 7 (POSIX after-run self-swapping script) cannot run on Windows CI. If Windows is the only CI runner, mark it POSIX-only or add a Linux CI requirement.
+
+**d0-d5**
+
+- (f) Missing: d1's "two concurrent genesis calls give exactly one v1" requires `pg_advisory_xact_lock`, so it needs a live Postgres instance. d1's done-when says "suites green" but does not say "pg." Add the pg marker or note that this test runs only under the ee pg fixture.
+- (g) Missing: d4 does not name the file it moves (`ee/tests/test_m2_t12b_e2e.py`). Name it so git-ops can verify the diff.
+- (h) Ordering: d3 is blocked if T12c c3 slips, because both touch `cli/sync_cmds.py`. No fallback is named. Add: "if c3 slips past d3's window, d3 may land first and c3 rebases."
+- (i) Missing: d1 CLI tests (`test_m2_t12d_signer_cli.py`) need mocked server responses for `sign-registry --in/--out` chain checks. The done-when should say how the CLI tests avoid a live server (CliRunner with fixtures, or a mock HTTP layer).
+- (j) Ordering: d1 says "after d0" but d0's done-when is "APPROVE recorded here" with no date or owner commitment. If the security ruling slips, d1 and everything downstream is blocked with no escalation path named.
