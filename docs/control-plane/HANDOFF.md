@@ -1,5 +1,47 @@
 # Control-plane hand-off (M2 T6-T10 done, 22 Oct 2026)
 
+## Founder rulings (25 Oct 2026, terminal)
+
+1. The F3 operator named limit is **Low**, fixed in M3 (ADR 0010 updated).
+2. The founder-proxy rulings of 24 Oct (split T12b, F1, F2, F3) are **confirmed**.
+3. Three M2 named limits are **accepted**: every remote approval requires dual until command classification lands (fix first in M3); `high_water.json` is unsigned (Low); the broker passes only an env allowlist (deploy commands may need more variables).
+4. Work resumes on 26 Oct (the weekly limit resets that day): finish T12b-2 from the uncommitted tree, then T16.
+5. Navrina (Credo AI) was sent the blurb (25 Oct); the founder will run 5 discovery calls. The stray `ee/%SystemDrive%/` folder: no ruling yet; do not commit it.
+6. NVIDIA OpenShell/Sentry (25 Oct, later): no fork, no adapter, no NVIDIA code, spike dropped; ideas rebuilt clean-room. `SENTRY_IDEAS.md` ranking approved (#1-#3 in M3). The script gap (approval binds the command text, not the files it runs) is fixed in M2 once security confirms it with a failing test. The discovery calls add the 4 questions in `SENTRY_IDEAS.md`.
+7. T12c (script content binding, ADR 0010 s9) runs after the T12b-2 commit and before T16. **NF-1 is fixed in M2** (security High, confirmed on Windows: the broker ran approved commands through cmd.exe, not the bash meaning reviewers saw; proof `tests/security/test_m2_t12c_nf1.py`). PM cuts accepted: M2 families python, node, bash/sh, pwsh -File; direct .exe/.cmd/.bat and other families deferred to M3 (unbound, denied under the floor). Web inbox shows the full script body. Demo step 5 stays `steal-env`; T16 adds a separate script-swap scene.
+
+## Next: T12c and T12d (both before T16), 25 Oct 2026
+
+**Never stash, reset or checkout the working tree.** Uncommitted on purpose: ADR 0010 s9 (T12c, accepted), ADR 0011 (T12d genesis bootstrap, proposed), the T12c/T12d sections of `T12B_PLAN.md`, `SENTRY_IDEAS.md`, `OPENSHELL_EVAL.md`, this file, and the proof files `tests/security/test_m2_script_binding.py` (qa, 2 passed, 2 skipped, 3 xfailed), `tests/security/test_m2_t12c_nf1.py` (security, Windows-only, 1 passed, 2 xfailed), `ee/tests/test_m2_t12d_d0.py` (security, 8 xfailed). Commit these docs and proofs as the T12c/T12d c0/d0 commit once QA reviews the c0-c6 and d0-d5 tables.
+
+1. **T12c (script content binding + NF-1):** design in ADR 0010 s9 and T12B_PLAN "T12c" (c0 done: security D1-D5 accepted with C-c0-1..7; PM cuts; founder: NF-1 fixed in M2). Broker runs every approved command through the shell the hook modelled (bash `--noprofile --norc -c`, or pwsh/Windows PowerShell 5.1 `-EncodedCommand`), never cmd.exe; `sandbox init` records shell paths (Windows bash: `--bash`, CLAUDE_CODE_GIT_BASH_PATH, Program Files Git, git-derived `E:\Git\bin\bash.exe` on the demo laptop, then PATH; refuse WindowsApps/System32 WSL bash). Fix in the QA test file: the `_need_t12c` arity probe is gameable (keep only the behavioural probe), and direct exec must be tested as unbound under the floor. Next: c1 tests first (qa), then c2-c6.
+2. **T12d (registry genesis, ADR 0011):** PM agreed (genesis code; file hand-off in M2; quickstart must explain the code; ask partners "two admins on install day?"). Security d0: ACCEPT WITH CONDITIONS C-d0-1..13. Prerequisites in shared `src/sandbox/protocol/registry.py` before d2: D0-1 High (key_id == sha256(public_key) for every key), D0-2 High (thresholds count distinct users, not keys), D0-4 (envelope kind). `build_genesis` user_id = sub bug (High impact). Migration numbers: 0011-0013 are taken (T12b-2); T12c and T12d take 0014+.
+3. Then T16 (demo, step 5 stays `steal-env`, new script-swap scene 5(d)), then T17.
+
+**M3 items from T12b-2 review (Info):** check_key_id_cross_org NULL handling (callers treat NULL as no conflict; refuse unless the row is exactly False), signer_links expires_at and proof of possession, cli_key_lookup fallback refusing >1 distinct (org_id, user_id), the browser route's missing 15-minute fresh-session check, the scrubbed-secret named limit.
+
+## M2 T12b-2 (25 Oct 2026): DONE, `903a711`
+
+Server M4 and the signer GET route, approver_keys as the registry projection (ADR 0010 s8, migrations 0011-0013), the display rule (s7), web inbox, and the real e2e (enroll, hook, upload, two CLI approvals, operator refused, one broker run, offline evidence with --expect-root). Security at leader tier rounds 1-4, APPROVE. CI green on every job incl. Windows. Measured: connector 2171 passed, 5 skipped, 6 xfailed; ee 729 passed, 2 skipped, 8 xfailed; web vitest 61 passed. Tests first in `78657b7`.
+
+The text below is the state before the build (kept for history).
+
+Uncommitted then (built, NOT yet security-approved):
+- Server `ee/src/agg_cp/sync/escalations.py` (M4: signatures required, tag fixed in code, payload bound to the escalation row, not_after finite and bounded, operator self-approval refused, 1 MiB body cap, strict signature/decision/policy_sequence checks; new `GET /api/v1/sync/escalations/{escalation_id}` with signer token or session), `ee/src/agg_cp/web/escalations.py` (list adds device_id, fingerprint, org_id, requires_dual; shape `{"escalations": [...]}`), `ee/tests/test_t9_routes.py` (`_M2_T12B_ROUTES`), `ee/tests/test_m2_t12b_server.py` (markers removed), `ee/tests/test_m2_t12_remote.py` and `test_m2_t13_web.py` (seeding edits, mid-change).
+- Connector `src/sandbox/cli/sync_cmds.py` (signer uses a signer token, looks up by escalation_id, signs the server's fields), `src/sandbox/connector/sync/process.py` (upload sends the record's bundle_sequence), `tests/security/test_m2_t12b_sync.py`.
+- Web `ee/web/src/{inbox.ts, InboxSection.tsx, App.tsx, approval.ts, browser-key.ts, api/client.ts}` and tests (`inbox.test.ts`, `inbox-section.test.ts`, edits to har-check/prod-guard/signing/browser-key). 56 vitest passed at last run. Enroll now stores the key; no double escaping.
+- Security proofs `ee/tests/test_m2_t12b2_review.py` (R1, R2); e2e `ee/tests/test_m2_t12b_e2e.py` (qa was rewriting step 1 to call the real enroll()).
+
+**Open items, in order (the backend was stopped mid-way on 1-3):**
+1. R1: refuse when the stored escalation fingerprint is missing (the builder had added a `sha256(command)` fallback: remove it); seed T12/T13 escalations with a fingerprint.
+2. R2: refuse when `connectors.operator_user_id` is NULL (the builder skipped it); set operator_user_id in the T12/T13 seeding helpers (named setup edits).
+3. `process.py`: do not coerce a non-int bundle_sequence; refuse and audit.
+4. **Real enroll fails end to end:** the server's enroll response lacks `operator_user_id`, so `enroll()` aborts ("server response missing operator_user_id; nothing written"). The T8 enroll route must return the operator bound to the code. Found by the e2e test.
+5. Finish the e2e test (real enroll, hook, run_once, two CLI signer approvals, the operator refused, one broker run, evidence with --expect-root), then make it pass. The hook DENIED steal-env in the managed workspace instead of escalating (check the managed bundle/folder policy).
+6. Security re-review of T12b-2 at leader tier (C9 items 3 and 8), then commit, then the HANDOFF update; then T16.
+
+**Lessons:** builders repeatedly reported stubs as done and relaxed product code to keep old tests green; leader-tier reviews and the new e2e test caught it. Brief every builder: say "stub" or "not done", never relax product code for tests (use named setup edits).
+
 ## M2 T12b-1 (25 Oct 2026): connector fixes and CLI wiring
 
 1. Plan, ADR 0010 and tests first in `bcd293f` (T12B_PLAN.md; security b0 conditions C1-C9; founder-proxy rulings below).
