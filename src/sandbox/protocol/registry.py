@@ -147,6 +147,13 @@ def verify_chain(
     # -- Genesis -----------------------------------------------------------
 
     genesis = envelopes[0]
+
+    # D0-4: every envelope must be agg/registry/v1
+    if genesis.get("kind") != REGISTRY:
+        raise RegistryError(
+            f"envelope kind {genesis.get('kind')!r} is not {REGISTRY!r}"
+        )
+
     genesis_payload = genesis["payload"]
 
     if genesis_payload.get("version") != 1:
@@ -160,10 +167,12 @@ def verify_chain(
     # Validate key entries in genesis
     _validate_key_entries(genesis_payload.get("keys", []))
 
+    # R3: validate threshold before any signature counting
+    genesis_threshold = _validate_threshold(genesis_payload)
+
     # Build trusted key map from genesis admins
     genesis_keys = _key_map(genesis_payload)
     genesis_admins = set(genesis_payload.get("admins", []))
-    genesis_threshold = genesis_payload.get("threshold", 1)
 
     # Check that all genesis admins are CLI keys
     _check_admin_kinds(genesis_keys, genesis_admins)
@@ -176,19 +185,20 @@ def verify_chain(
         raise RegistryError(str(exc)) from exc
 
     admin_verified = verified & genesis_admins
-    if len(admin_verified) < genesis_threshold:
+    # D0-2: count distinct users, not key_ids (ADR 0003 M2 3.3)
+    genesis_admin_user_count = _distinct_signer_users(genesis_keys, admin_verified)
+    if genesis_admin_user_count < genesis_threshold:
         raise RegistryError(
-            f"genesis needs {genesis_threshold} admin sigs, got {len(admin_verified)}"
+            f"genesis needs {genesis_threshold} admin sigs, got {genesis_admin_user_count}"
         )
 
     # Track admin sig counts per version (for counts_for_dual)
     admin_sigs_at_add: dict[str, int] = {}
-    genesis_admin_sig_count = len(admin_verified)
     for k in genesis_payload.get("keys", []):
-        admin_sigs_at_add[k["key_id"]] = genesis_admin_sig_count
+        admin_sigs_at_add[k["key_id"]] = genesis_admin_user_count
 
-    # Track the floor (once 2+ admins exist, threshold >= 2)
-    max_admin_count = len(genesis_admins)
+    # Track the floor (once 2+ distinct admin users exist, threshold >= 2)
+    max_admin_count = _distinct_admin_users(genesis_keys, genesis_admins)
 
     prev_payload = genesis_payload
     prev_admins = genesis_admins
@@ -203,6 +213,12 @@ def verify_chain(
     # -- Subsequent versions -----------------------------------------------
 
     for i, env in enumerate(envelopes[1:], start=2):
+        # D0-4: every envelope must be agg/registry/v1
+        if env.get("kind") != REGISTRY:
+            raise RegistryError(
+                f"envelope kind {env.get('kind')!r} is not {REGISTRY!r}"
+            )
+
         payload = env["payload"]
         version = payload.get("version")
 
@@ -230,22 +246,25 @@ def verify_chain(
 
         cur_keys = _key_map(payload)
         cur_admins = set(payload.get("admins", []))
-        cur_threshold = payload.get("threshold", 1)
+        cur_threshold = _validate_threshold(payload)
 
         # Check admin kinds (only CLI may sign registry)
         _check_admin_kinds(cur_keys, cur_admins)
 
-        # Floor rule: once 2+ admins existed, threshold >= 2
+        # D0-2: count distinct admin users, not key_ids
+        cur_admin_user_count = _distinct_admin_users(cur_keys, cur_admins)
+
+        # Floor rule: once 2+ distinct admin users existed, threshold >= 2
         if max_admin_count >= 2 and cur_threshold < 2:
             raise RegistryError(
                 f"threshold {cur_threshold} below floor 2 "
                 f"(max admin count reached {max_admin_count})"
             )
 
-        # Floor rule: cannot cut admins below 2 once 2+ existed
-        if max_admin_count >= 2 and len(cur_admins) < 2:
+        # Floor rule: cannot cut distinct admin users below 2 once 2+ existed
+        if max_admin_count >= 2 and cur_admin_user_count < 2:
             raise RegistryError(
-                f"admins cut to {len(cur_admins)}, below floor 2"
+                f"admins cut to {cur_admin_user_count}, below floor 2"
             )
 
         # Verify signatures: need prev_threshold from prev_admins
@@ -261,32 +280,35 @@ def verify_chain(
             raise RegistryError(str(exc)) from exc
 
         admin_verified_prev = verified & prev_admins
-        if len(admin_verified_prev) < prev_threshold:
+        # D0-2: count distinct signer users, not key_ids
+        prev_signer_users = _distinct_signer_users(prev_keys, admin_verified_prev)
+        if prev_signer_users < prev_threshold:
             raise RegistryError(
                 f"version {version} needs {prev_threshold} admin sigs "
-                f"from previous admins, got {len(admin_verified_prev)}"
+                f"from previous admins, got {prev_signer_users}"
             )
 
         admin_verified_cur = verified & cur_admins
-        if len(admin_verified_cur) < cur_threshold:
+        cur_signer_users = _distinct_signer_users(cur_keys, admin_verified_cur)
+        if cur_signer_users < cur_threshold:
             raise RegistryError(
                 f"version {version} needs {cur_threshold} admin sigs "
-                f"from its own admins, got {len(admin_verified_cur)}"
+                f"from its own admins, got {cur_signer_users}"
             )
 
         # Check duplicates across all keys in this version
         _check_duplicates(payload.get("keys", []))
 
-        # Track admin sig counts for new keys (S9)
+        # Track admin sig counts for new keys (S9), using distinct user count
         prev_key_ids = set(prev_keys.keys())
         for k in payload.get("keys", []):
             kid = k["key_id"]
             if kid not in prev_key_ids:
                 # New key added in this version
-                admin_sigs_at_add[kid] = len(admin_verified_prev)
+                admin_sigs_at_add[kid] = prev_signer_users
 
-        # Update tracking
-        max_admin_count = max(max_admin_count, len(cur_admins))
+        # Update tracking -- distinct admin users, not key_ids
+        max_admin_count = max(max_admin_count, cur_admin_user_count)
         prev_payload = payload
         prev_admins = cur_admins
         prev_threshold = cur_threshold
@@ -295,16 +317,27 @@ def verify_chain(
 
     # Honour bundle_signer field from the LATEST version only (F3).
     # An earlier version's signer is not in the key map after rotation.
+    _synthesized_bs_kid: str | None = None
     latest_bs = envelopes[-1]["payload"].get("bundle_signer")
     if latest_bs and isinstance(latest_bs, dict):
         bs_kid = latest_bs.get("key_id", "")
         bs_pub = latest_bs.get("public_key", "")
         bs_alg = latest_bs.get("alg", "ed25519")
         if bs_pub:
+            # R5: validate hex decode and 32-byte length
+            try:
+                bs_pub_bytes = bytes.fromhex(bs_pub)
+            except (ValueError, TypeError) as exc:
+                raise RegistryError(
+                    f"bundle_signer public_key hex decode failed: {exc}"
+                ) from exc
+            if len(bs_pub_bytes) != 32:
+                raise RegistryError(
+                    f"bundle_signer public_key length "
+                    f"{len(bs_pub_bytes)}, expected 32"
+                )
             # Verify key_id == sha256(public_key)
-            expected_kid = hashlib.sha256(
-                bytes.fromhex(bs_pub)
-            ).hexdigest()
+            expected_kid = hashlib.sha256(bs_pub_bytes).hexdigest()
             if bs_kid != expected_kid:
                 raise RegistryError(
                     f"bundle_signer key_id mismatch: "
@@ -317,6 +350,7 @@ def verify_chain(
                     f"a key in keys"
                 )
             # Add as a key entry with kind=bundle-signer
+            _synthesized_bs_kid = bs_kid
             all_keys[bs_kid] = {
                 "key_id": bs_kid,
                 "public_key": bs_pub,
@@ -329,15 +363,15 @@ def verify_chain(
                 "added_in": envelopes[-1]["payload"].get("version", 1),
             }
 
-    # R3a: the Registry uses only the LATEST version's keys (plus the
-    # bundle_signer added above).  A key removed in a signed later version
-    # is effectively revoked and must not approve (ADR 0010 C4).
+    # R3a / R6: the Registry uses only the LATEST version's keys plus the
+    # synthesized bundle_signer.  A key removed in a signed later version
+    # (including bundle-signer kind entries in keys[]) is effectively
+    # revoked and must not approve (ADR 0010 C4).
     latest = envelopes[-1]["payload"]
     latest_keys = dict(prev_keys)  # prev_keys == the last version's key map
-    # Re-add the bundle_signer if it was added to all_keys above
-    for kid, entry in all_keys.items():
-        if entry.get("kind") == "bundle-signer":
-            latest_keys[kid] = entry
+    # R6: only add the synthesized bundle_signer, not resurrected entries
+    if _synthesized_bs_kid and _synthesized_bs_kid in all_keys:
+        latest_keys[_synthesized_bs_kid] = all_keys[_synthesized_bs_kid]
     return Registry(
         keys=latest_keys,
         admins=set(latest.get("admins", [])),
@@ -399,7 +433,8 @@ def _check_admin_kinds(
     keys: dict[str, dict[str, Any]],
     admins: set[str],
 ) -> None:
-    """Ensure all admin keys have a kind that may sign registry versions."""
+    """Ensure all admin keys have a kind that may sign registry versions
+    and carry the admin role (R4)."""
     for kid in admins:
         entry = keys.get(kid)
         if entry is None:
@@ -408,6 +443,10 @@ def _check_admin_kinds(
             raise RegistryError(
                 f"admin key {kid} has kind={entry.get('kind')!r}, "
                 f"only {_REGISTRY_SIGNING_KINDS} may sign registry versions"
+            )
+        if "admin" not in entry.get("roles", []):
+            raise RegistryError(
+                f"admin key {kid} does not carry the admin role"
             )
 
 
@@ -419,12 +458,90 @@ def _validate_key_entries(entries: list[dict[str, Any]]) -> None:
             raise RegistryError(
                 f"key entry has extra fields: {extra} (forged count?)"
             )
+        kid = entry.get("key_id", "")
+        # R1, R2: user_id must be a non-empty string
+        uid = entry.get("user_id")
+        if not isinstance(uid, str):
+            raise RegistryError(
+                f"key {kid}: user_id must be a non-empty string, "
+                f"got {type(uid).__name__}"
+            )
+        if not uid:
+            raise RegistryError(
+                f"key {kid}: user_id must be non-empty"
+            )
+        # R4b: roles must be a list of strings (a str would match "admin"
+        # as a substring in `"admin" in roles`)
+        roles = entry.get("roles")
+        if not isinstance(roles, list) or not all(
+            isinstance(r, str) for r in roles
+        ):
+            raise RegistryError(
+                f"key {kid}: roles must be a list of strings"
+            )
         # L R5: the connector: prefix is reserved and never a human approver
-        uid = entry.get("user_id", "")
         if uid.startswith("connector:"):
             raise RegistryError(
                 f"user_id {uid!r} uses the reserved connector: prefix"
             )
+        # D0-1 (ADR 0003 M2 3.1, 2.4 N1): key_id must equal sha256(public_key)
+        pub_hex = entry.get("public_key", "")
+        try:
+            pub_bytes = bytes.fromhex(pub_hex)
+        except (ValueError, TypeError) as exc:
+            raise RegistryError(
+                f"key {kid}: public_key hex decode failed: {exc}"
+            ) from exc
+        if len(pub_bytes) != 32:
+            raise RegistryError(
+                f"key {kid}: public_key length {len(pub_bytes)}, expected 32"
+            )
+        expected_kid = hashlib.sha256(pub_bytes).hexdigest()
+        if kid != expected_kid:
+            raise RegistryError(
+                f"key {kid}: key_id != sha256(public_key) "
+                f"(expected {expected_kid})"
+            )
+
+
+def _distinct_admin_users(
+    keys: dict[str, dict[str, Any]],
+    admins: set[str],
+) -> int:
+    """Count distinct user_ids among admin key_ids (D0-2, ADR 0003 M2 3.3)."""
+    users: set[str] = set()
+    for kid in admins:
+        entry = keys.get(kid)
+        if entry is not None:
+            users.add(entry["user_id"])
+    return len(users)
+
+
+def _distinct_signer_users(
+    keys: dict[str, dict[str, Any]],
+    verified_kids: set[str],
+) -> int:
+    """Count distinct user_ids among verified signing key_ids (D0-2)."""
+    users: set[str] = set()
+    for kid in verified_kids:
+        entry = keys.get(kid)
+        if entry is not None:
+            users.add(entry["user_id"])
+    return len(users)
+
+
+def _validate_threshold(payload: dict[str, Any]) -> int:
+    """Validate threshold is an int >= 1 (R3).  Returns the value."""
+    threshold = payload.get("threshold")
+    if isinstance(threshold, bool) or not isinstance(threshold, int):
+        raise RegistryError(
+            f"threshold must be an int >= 1, got {threshold!r}"
+        )
+    if threshold < 1:
+        raise RegistryError(
+            f"threshold must be >= 1, got {threshold}"
+        )
+    return threshold
 
 
 def _check_duplicates(entries: list[dict[str, Any]]) -> None:
