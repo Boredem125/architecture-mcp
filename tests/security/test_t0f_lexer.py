@@ -67,7 +67,14 @@ def test_nul_byte_is_denied():
     ("echo " + "a " * 4100, "SHELL_BOUND"),
     ("echo 'x", "SHELL_LEXER_ERROR"),
 ])
-def test_bounds_deny_with_a_reason_code(cmd, code):
+def test_bounds_deny_with_a_reason_code(cmd, code, monkeypatch):
+    # Named test-setup edit (T12c c2 CI follow-up): the size bounds and the
+    # 100 ms deadline are both fail-closed denies; on a slow CI runner the
+    # deadline won the race on the 4100-word case (SHELL_DEADLINE instead of
+    # SHELL_BOUND). Pin the deadline out of the way so the asserted code is
+    # the bound.
+    from sandbox.connector import shellwords as _sw
+    monkeypatch.setattr(_sw, "DEADLINE_SECONDS", 60.0)
     assert analyse_shell(cmd).deny[0] == code
 
 
