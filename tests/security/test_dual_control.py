@@ -28,9 +28,13 @@ def layout(tmp_path):
 
 
 def submit(layout, *, dual: bool, **extra) -> str:
+    # Named test-setup edit (T12c c2): fp_v=2 and tool_name required by broker
     return EscalationQueue(layout).submit({
         "kind": "command", "command": "echo dual-control-test", "exec_cwd": str(layout.root),
-        "root": str(layout.root), "requires_dual": dual, "trigger": ["shell"], "reason_code": "EXFIL", **extra,
+        "root": str(layout.root), "requires_dual": dual, "trigger": ["shell"], "reason_code": "EXFIL",
+        "tool_name": "Bash", "fp_v": 2,
+        "script": None, "script_unbound": "", "script_preview": None,
+        **extra,
     })
 
 

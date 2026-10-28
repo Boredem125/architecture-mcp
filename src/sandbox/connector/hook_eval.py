@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sys
 import time
@@ -946,6 +947,7 @@ async def _escalate_shell(
 
     # Read bundle_sequence from verified state (if available)
     _hook_bundle_seq = 0
+    _is_enrolled = False
     try:
         from sandbox.connector.sync.verified_state import load_verified_state as _lvs
         _vs = _lvs(layout)
@@ -953,6 +955,56 @@ async def _escalate_shell(
             _hook_bundle_seq = _vs.policy_sequence
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from sandbox.connector.sync.state import is_managed as _is_mgd
+        _is_enrolled = _is_mgd(layout)
+    except ImportError:
+        pass
+
+    # T12c: resolve script content binding (ADR 0010 s9)
+    from sandbox.connector.script_pin import resolve as _resolve_script
+
+    _script_res = _resolve_script(
+        result.command, tool_name, str(layout.root), str(layout.root),
+        key_home=os.environ.get("SANDBOX_KEY_HOME", ""),
+    )
+
+    # The floor applies when the workspace is enrolled OR when requires_dual
+    # is true (ADR 0010 s9 9.3).  Both conditions mean the command may be
+    # approved by someone who cannot inspect the file at rest, so the script
+    # must be content-bound.
+    _under_floor = _is_enrolled or result.requires_dual
+
+    # Floor deny: unbound under the floor
+    if _under_floor and _script_res.binding == "unbound":
+        _audit(layout, session_id, {
+            "event": "denied", "tool": tool_name,
+            "reason_code": "SCRIPT_UNPINNABLE",
+            "reason": f"SCRIPT_UNPINNABLE: {_script_res.script_unbound}; "
+                      "run it as one command: `python path/x.py args`",
+        })
+        return _pre_output("deny", (
+            f"SANDBOX DENIED [SCRIPT_UNPINNABLE]: the command cannot be content-bound "
+            f"({_script_res.script_unbound}). Under the floor (enrolled or dual-control), "
+            "only bound script forms are allowed. Run it as one command: "
+            "`python path/x.py args` (or node, bash, sh, pwsh -File)."
+        ))
+
+    # Floor deny: bound but body cannot be shown
+    if (_under_floor and _script_res.binding == "bound"
+            and _script_res.script_preview is not None
+            and not _script_res.script_preview.get("shown", False)):
+        _why = _script_res.script_preview.get("why", "unshowable")
+        _audit(layout, session_id, {
+            "event": "denied", "tool": tool_name,
+            "reason_code": "SCRIPT_UNPINNABLE",
+            "reason": f"SCRIPT_UNPINNABLE: script body cannot be shown ({_why})",
+        })
+        return _pre_output("deny", (
+            f"SANDBOX DENIED [SCRIPT_UNPINNABLE]: the script body cannot be displayed "
+            f"for review ({_why}). Under the floor, only scripts with a valid preview "
+            "are allowed."
+        ))
 
     record = {
         "root": str(layout.root),
@@ -978,7 +1030,20 @@ async def _escalate_shell(
         "execute_on_approve": True,
         "request_id": _hook_request_id,
         "bundle_sequence": _hook_bundle_seq,
+        # T12c: script content binding fields (ADR 0010 s9 9.2)
+        "fp_v": 2,
+        "script": _script_res.script,
+        "script_unbound": _script_res.script_unbound,
+        "script_preview": _script_res.script_preview,
     }
+
+    # Outside the floor: add a warning for unbound commands
+    if _script_res.binding == "unbound" and _script_res.script_unbound:
+        record["reason"] = (
+            record.get("reason", "") +
+            f" | content NOT bound: {_script_res.script_unbound}"
+        )
+
     # Stamp the binding fingerprint (C4, R1c)
     from sandbox.connector.approval import _binding_fingerprint
     record["fingerprint"] = _binding_fingerprint(record)

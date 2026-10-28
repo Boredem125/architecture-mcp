@@ -7,6 +7,7 @@ connector's own entries and preserves everything else, including the M1
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -146,6 +147,156 @@ def codex_config_snippet(layout: FolderLayout) -> str:
     )
 
 
+def _is_valid_shell(path: str, root: Path) -> tuple[bool, str]:
+    """Check if a shell candidate is valid. Returns (ok, reason)."""
+    if not path or not os.path.isabs(path):
+        return False, "not absolute"
+    if not os.path.isfile(path):
+        return False, "not a file"
+    # Must not be under root
+    try:
+        Path(path).resolve().relative_to(root.resolve())
+        return False, "under root"
+    except (ValueError, OSError):
+        pass
+    # Refuse WSL/WindowsApps bash (Windows)
+    if sys.platform == "win32":
+        # Resolve 8.3 short names and normalise before comparing (R1: short
+        # names like C:\WINDOW~1\System32\bash.exe must not dodge the WSL
+        # refusal).  os.path.realpath expands short-name components and
+        # resolves symlinks/junctions on Windows.
+        resolved = os.path.realpath(path).lower().replace("/", "\\")
+        # System32\bash.exe is WSL
+        sysroot = os.environ.get("SystemRoot", r"C:\Windows").lower().replace("/", "\\")
+        sysroot = os.path.realpath(sysroot).lower().replace("/", "\\")
+        if resolved == os.path.join(sysroot, "system32", "bash.exe").lower():
+            return False, "WSL System32 bash"
+        # Any bash.exe under a WindowsApps folder
+        if "windowsapps" in resolved and resolved.endswith("bash.exe"):
+            return False, "WindowsApps bash"
+        local_appdata = os.environ.get("LOCALAPPDATA", "").lower().replace("/", "\\")
+        if local_appdata:
+            local_appdata = os.path.realpath(local_appdata).lower().replace("/", "\\")
+        if local_appdata and resolved.startswith(local_appdata):
+            if "windowsapps" in resolved and resolved.endswith("bash.exe"):
+                return False, "WindowsApps bash"
+    # Check for reparse point (Windows)
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            attrs = ctypes.windll.kernel32.GetFileAttributesW(path)
+            if attrs != -1 and attrs & 0x400:  # FILE_ATTRIBUTE_REPARSE_POINT
+                return False, "reparse point"
+        except Exception:
+            pass
+    # Check for symlink
+    if os.path.islink(path):
+        # On POSIX, symlinks are normal for shells (e.g., /usr/bin/bash)
+        if sys.platform == "win32":
+            return False, "symlink"
+    # Not a regular file check
+    try:
+        st = os.stat(path)
+        import stat as _stat
+        if not _stat.S_ISREG(st.st_mode):
+            return False, "not regular file"
+    except OSError:
+        return False, "stat failed"
+    return True, ""
+
+
+def _resolve_bash(root: Path) -> str | None:
+    """Resolve the bash binary path (ADR 0010 s9 9.4).
+
+    Windows lookup order:
+    1. CLAUDE_CODE_GIT_BASH_PATH
+    2. %ProgramFiles%\\Git\\bin\\bash.exe
+    3. git-derived <git root>\\bin\\bash.exe
+    4. PATH lookup
+
+    POSIX: PATH lookup only.
+    """
+    candidates: list[str] = []
+
+    if sys.platform == "win32":
+        # 1. CLAUDE_CODE_GIT_BASH_PATH
+        env_bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH", "")
+        if env_bash:
+            candidates.append(env_bash)
+
+        # 2. %ProgramFiles%\Git\bin\bash.exe
+        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+        candidates.append(os.path.join(pf, "Git", "bin", "bash.exe"))
+
+        # 3. git-derived
+        try:
+            git_path = shutil.which("git")
+            if git_path:
+                # git is usually at <root>\cmd\git.exe or <root>\bin\git
+                git_dir = os.path.dirname(os.path.realpath(git_path))
+                # Try parent\bin\bash.exe
+                git_root = os.path.dirname(git_dir)
+                candidates.append(os.path.join(git_root, "bin", "bash.exe"))
+        except Exception:
+            pass
+        try:
+            ep = subprocess.run(
+                ["git", "--exec-path"], capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+            if ep:
+                # exec-path is usually <root>/libexec/git-core
+                git_root = os.path.dirname(os.path.dirname(ep))
+                candidates.append(os.path.join(git_root, "bin", "bash.exe"))
+        except Exception:
+            pass
+
+    # PATH lookup (both platforms)
+    path_bash = shutil.which("bash")
+    if path_bash:
+        candidates.append(path_bash)
+
+    # Try each candidate
+    for c in candidates:
+        ok, reason = _is_valid_shell(c, root)
+        if ok:
+            return os.path.realpath(c)
+
+    return None
+
+
+def _resolve_pwsh(root: Path) -> str | None:
+    """Resolve the PowerShell binary path (ADR 0010 s9 9.4).
+
+    1. pwsh by PATH lookup
+    2. System32 WindowsPowerShell\\v1.0\\powershell.exe (Windows only)
+    """
+    # 1. pwsh by PATH
+    pwsh = shutil.which("pwsh")
+    if pwsh:
+        ok, _ = _is_valid_shell(pwsh, root)
+        if ok:
+            return os.path.realpath(pwsh)
+
+    # 2. System32 powershell.exe (Windows only)
+    if sys.platform == "win32":
+        sysroot = os.environ.get("SystemRoot", r"C:\Windows")
+        ps_path = os.path.join(
+            sysroot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"
+        )
+        ok, _ = _is_valid_shell(ps_path, root)
+        if ok:
+            return ps_path
+
+    return None
+
+
+def _resolve_shells(root: Path) -> dict[str, str | None]:
+    """Resolve bash and pwsh paths once at init time."""
+    bash = _resolve_bash(root)
+    pwsh = _resolve_pwsh(root)
+    return {"bash": bash, "pwsh": pwsh}
+
+
 def init(
     root: str | Path,
     *,
@@ -172,6 +323,8 @@ def init(
         save_policy(policy, layout.policy_file)
 
     # session.json — capture the absolute interpreter + package src.
+    # T12c: resolve and record shell paths for the broker.
+    shells = _resolve_shells(layout.root)
     session = {
         "schema": 1,
         "root": str(layout.root),
@@ -180,6 +333,7 @@ def init(
         "python": sys.executable,
         "package_src": _package_src(),
         "connector_version": "1.0.0",
+        "shells": shells,
     }
     layout.session_file.write_text(
         json.dumps(session, indent=2), encoding="utf-8"

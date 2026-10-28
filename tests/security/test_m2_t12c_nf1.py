@@ -67,7 +67,7 @@ def test_nf1_reviewer_view_is_single_benign_bash_segment(tmp_path):
 
 
 @windows_only
-@pytest.mark.xfail(raises=M2T12cNf1Pending, strict=True)
+
 def test_nf1_broker_must_not_run_cmd_split_of_bash_command(tmp_path):
     """Local approve path (approval.py:199 -> FolderBroker.execute)."""
     marker = tmp_path / "nf1_local_marker.txt"
@@ -89,7 +89,7 @@ def test_nf1_broker_must_not_run_cmd_split_of_bash_command(tmp_path):
 
 
 @windows_only
-@pytest.mark.xfail(raises=M2T12cNf1Pending, strict=True)
+
 def test_nf1_remote_apply_external_same_broker_split(tmp_path):
     """Remote path (apply_external -> approval.py:884 -> FolderBroker.execute)
     reaches the identical broker primitive, so the split applies there too. We

@@ -121,6 +121,9 @@ def build_server(root: Path | None = None) -> Any:
         The command runs OUTSIDE the sandbox on your behalf — you never receive
         root yourself. Returns the captured stdout/stderr on approval.
         """
+        # T12c: resolve script binding and stamp fp_v=2
+        from sandbox.connector.script_pin import resolve as _resolve_script
+        _sr = _resolve_script(command, "Bash", str(layout.root), str(layout.root))
         record = {
             "root": str(layout.root),
             "origin": "mcp",
@@ -131,6 +134,11 @@ def build_server(root: Path | None = None) -> Any:
             "reason": reason or "MCP run_privileged",
             "agent": {"kind": "mcp"},
             "execute_on_approve": True,
+            "tool_name": "Bash",
+            "fp_v": 2,
+            "script": _sr.script,
+            "script_unbound": _sr.script_unbound,
+            "script_preview": _sr.script_preview,
         }
         return await _submit_and_wait(record)
 

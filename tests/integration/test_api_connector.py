@@ -69,10 +69,13 @@ def test_approve_runs_and_finishes(client, folder):
 
     layout = FolderLayout(folder)
     queue = EscalationQueue(layout)
+    # Named test-setup edit (T12c c2): fp_v=2 and tool_name required by broker
     rid = queue.submit({
         "root": str(folder), "origin": "hook", "trigger": ["shell"],
         "command": f'{sys.executable} -c "print(123)"',
         "exec_cwd": str(folder), "kind": "command",
+        "tool_name": "Bash", "fp_v": 2,
+        "script": None, "script_unbound": "", "script_preview": None,
     })
     resp = client.post(
         f"/api/v1/connector/{rid}/approve", params={"root": str(folder)},

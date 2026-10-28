@@ -151,10 +151,13 @@ def test_r3_agent_token_cannot_decide_or_read(app, tmp_path):
     layout = FolderLayout(tmp_path)
     queue = EscalationQueue(layout)
     marker = tmp_path / "side_effect.txt"
+    # Named test-setup edit (T12c c2): fp_v=2 and tool_name required by broker
     rid = queue.submit({
         "root": str(tmp_path), "origin": "hook", "trigger": ["shell"],
         "command": f'"{sys.executable}" -c "open(\'side_effect.txt\', \'w\').write(\'ran\')"',
         "exec_cwd": str(tmp_path), "kind": "command",
+        "tool_name": "Bash", "fp_v": 2,
+        "script": None, "script_unbound": "", "script_preview": None,
     })
     assert queue.status(rid) == "pending"
     audit_before = _audit_lines(layout)

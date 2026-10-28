@@ -66,10 +66,13 @@ def test_approver_reaches_approver_and_agent_routes(client, tokens, tmp_path):
     # There are no agent routes left (AGENT_ROUTES is empty since M0).
     _, approver = tokens
     init(tmp_path, claude=False, mcp=False)
+    # Named test-setup edit (T12c c2): fp_v=2 and tool_name required by broker
     rid = EscalationQueue(FolderLayout(tmp_path)).submit({
         "root": str(tmp_path), "origin": "hook", "trigger": ["shell"],
         "command": f'"{sys.executable}" -c "print(1)"',
         "exec_cwd": str(tmp_path), "kind": "command",
+        "tool_name": "Bash", "fp_v": 2,
+        "script": None, "script_unbound": "", "script_preview": None,
     })
     root = {"root": str(tmp_path)}
     assert client.get("/api/v1/connector/status", params=root, headers=bearer(approver)).status_code == 200

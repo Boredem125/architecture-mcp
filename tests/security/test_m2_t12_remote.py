@@ -102,7 +102,10 @@ def _need(module: str, attr: str) -> None:
 
 
 def _ws(path: Path):
-    """Create a workspace and return the FolderLayout."""
+    """Create a workspace and return the FolderLayout.
+
+    Named test-setup edit (T12c c2): init now records shells in session.json.
+    """
     from sandbox.connector.install import init
     from sandbox.connector.layout import FolderLayout
     path.mkdir(parents=True, exist_ok=True)
@@ -467,14 +470,20 @@ def _setup_managed_workspace(
 
 
 def _create_pending_request(lay, request_id, *, command="echo test",
-                            requires_dual=True):
+                            requires_dual=True, fp_v=2):
     """Write a pending escalation record to the layout's pending dir.
 
     Named test edit (a): writes to ``layout.pending_dir``
     (``escalations/pending/``) and includes binding fields (kind, tool_name,
     exec_cwd, bundle_sequence) so that ``_binding_fingerprint`` can be
     computed.
+
+    Named test-setup edit (T12c c2): adds fp_v=2, script=None,
+    script_unbound="", script_preview=None so that apply_external accepts
+    the record (ADR 0010 s9 9.2: a record without fp_v is refused).
+    Pass ``fp_v=None`` for tests that need old-style records.
     """
+    from sandbox.connector.approval import _binding_fingerprint
     from sandbox.connector.queue import EscalationQueue
     # Write to both .sandbox/pending/ (for TOCTOU tests that edit it)
     # and layout.pending_dir (for queue.claim used by approve() and apply_external).
@@ -493,18 +502,13 @@ def _create_pending_request(lay, request_id, *, command="echo test",
         "exec_cwd": str(lay.root),
         "bundle_sequence": 1,
     }
-    # Compute binding fingerprint (same as the builder's _binding_fingerprint)
-    binding_data = json.dumps({
-        "kind": record.get("kind", ""),
-        "tool_name": record.get("tool_name", ""),
-        "command": command,
-        "exec_cwd": record.get("exec_cwd", ""),
-        "root": str(lay.root),
-        "requires_dual": requires_dual,
-        "bundle_sequence": record.get("bundle_sequence", 0),
-        "request_id": request_id,
-    }, sort_keys=True, separators=(",", ":")).encode()
-    record["fingerprint"] = hashlib.sha256(binding_data).hexdigest()
+    # T12c: script content binding fields (ADR 0010 s9 9.2)
+    if fp_v is not None:
+        record["fp_v"] = fp_v
+        record["script"] = None
+        record["script_unbound"] = ""
+        record["script_preview"] = None
+    record["fingerprint"] = _binding_fingerprint(record)
     record_text = json.dumps(record)
     (pending_dir / f"{request_id}.json").write_text(
         record_text, encoding="utf-8"

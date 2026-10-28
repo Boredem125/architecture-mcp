@@ -49,9 +49,13 @@ def submit_tool_call(layout, **extra) -> str:
 
 
 def submit_command(layout, **extra) -> str:
+    # Named test-setup edit (T12c c2): fp_v=2 and tool_name required by broker
     return EscalationQueue(layout).submit({
         "kind": "command", "command": "echo oversight-test", "exec_cwd": str(layout.root),
-        "root": str(layout.root), "trigger": ["shell"], **extra,
+        "root": str(layout.root), "trigger": ["shell"],
+        "tool_name": "Bash", "fp_v": 2,
+        "script": None, "script_unbound": "", "script_preview": None,
+        **extra,
     })
 
 

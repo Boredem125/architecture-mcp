@@ -330,6 +330,11 @@ def test_prod_is_stricter_than_dev_for_restricted_reads(layout):
 
 def test_classification_factor_is_itemized(layout):
     configure(layout, rules=RULES)
+    # Named test-setup edit (T12c c2, security R2): RESTRICTED data makes this
+    # requires_dual, which is under the script floor (ADR 0010 s9 9.3), so the
+    # script must exist for `python tool.py` to bind; otherwise the hook denies
+    # SCRIPT_UNPINNABLE before any risk factor is itemized.
+    (layout.root / "tool.py").write_text("print('x')\n", encoding="utf-8")
     plain = assess(trigger="shell", command="python tool.py x")
     _, rec = decide(layout, "Bash", {"command": "python tool.py data/customers/a.csv"})
     f = next(f for f in rec["risk"]["factors"] if f["name"] == "data-classification")

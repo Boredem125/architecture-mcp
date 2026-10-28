@@ -201,7 +201,7 @@ def _done_record(lay, request_id):
 # 1. Local path -- bash deploy.sh
 # ===================================================================
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_local_bash_modified_after_escalation_refused(tmp_path, monkeypatch):
     """Escalate ``bash deploy.sh``, modify the script while it is pending,
     approve via the real local approve path: the modified bytes must NOT
@@ -249,7 +249,7 @@ def test_local_bash_modified_after_escalation_refused(tmp_path, monkeypatch):
 # 2a. Local path -- python tool.py
 # ===================================================================
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_local_python_modified_after_escalation_refused(tmp_path, monkeypatch):
     """Escalate ``python tool.py``, modify, approve: refused."""
     _need_t12c()
@@ -289,7 +289,7 @@ def test_local_python_modified_after_escalation_refused(tmp_path, monkeypatch):
 # 2b. Enrolled workspace -- ./deploy.sh (direct exec DEFERRED to M3)
 # ===================================================================
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_direct_exec_denied_script_unpinnable(tmp_path, monkeypatch):
     """In a managed/enrolled workspace, ``./deploy.sh`` is direct exec
     (deferred to M3 per ADR 0010 s9 9.1 / S-L5).  Under the floor
@@ -356,7 +356,7 @@ def test_direct_exec_denied_script_unpinnable(tmp_path, monkeypatch):
     reason="Creating symlinks on Windows requires Developer Mode or admin "
            "elevation (SeCreateSymbolicLinkPrivilege not available)",
 )
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_symlink_swap_after_escalation_refused(tmp_path, monkeypatch):
     """Escalate ``python deploy.py``, replace the file with a symlink to a
     malicious script after escalation: the broker must refuse."""
@@ -399,7 +399,7 @@ def test_symlink_swap_after_escalation_refused(tmp_path, monkeypatch):
 # 4. Remote path -- modify before apply_external
 # ===================================================================
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_remote_modified_before_apply_refused(tmp_path, monkeypatch):
     """Remote path: create a pending escalation referencing a script, modify
     the script, then apply two valid remote approvals through
@@ -491,6 +491,12 @@ def test_guard_unchanged_script_approved_runs_once(tmp_path, monkeypatch):
     from sandbox.connector.approval import _binding_fingerprint
     from sandbox.connector.queue import EscalationQueue
 
+    # Named test-setup edit (T12c c2): add fp_v=2, script fields so the
+    # broker accepts the record (RECORD_UNVERSIONED refusal otherwise).
+    from sandbox.connector.script_pin import resolve as _resolve
+
+    _sr = _resolve(cmd, "Bash", str(lay.root), str(lay.root),
+                   key_home=os.environ.get("SANDBOX_KEY_HOME", ""))
     rec = {
         "request_id": "guard-1",
         "command": cmd,
@@ -500,6 +506,10 @@ def test_guard_unchanged_script_approved_runs_once(tmp_path, monkeypatch):
         "root": str(lay.root),
         "requires_dual": False,
         "bundle_sequence": 0,
+        "fp_v": 2,
+        "script": _sr.script,
+        "script_unbound": _sr.script_unbound,
+        "script_preview": _sr.script_preview,
     }
     rec["fingerprint"] = _binding_fingerprint(rec)
     queue = EscalationQueue(lay)
@@ -545,7 +555,7 @@ def test_guard_binding_fingerprint_importable():
 # Extra 1  Fingerprint v2
 # -------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra1_fp_v2_one_byte_change_changes_fingerprint(tmp_path, monkeypatch):
     """One changed script byte changes the fingerprint (fp_v 2)."""
     _need_t12c()
@@ -568,7 +578,7 @@ def test_extra1_fp_v2_one_byte_change_changes_fingerprint(tmp_path, monkeypatch)
     assert fp_a != fp_b, "fingerprint did not change when script content changed"
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra1_fp_v2_new_fields_affect_fingerprint(tmp_path, monkeypatch):
     """Each of fp_v, script and script_unbound affects the fingerprint."""
     _need_t12c()
@@ -587,7 +597,7 @@ def test_extra1_fp_v2_new_fields_affect_fingerprint(tmp_path, monkeypatch):
     assert "sha256" in rec["script"], "expected sha256 in script dict"
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra1_fp_v2_no_fpv_refused_by_apply_external(tmp_path, monkeypatch):
     """A record without fp_v is refused by apply_external (no file touched)."""
     _need_t12c()
@@ -610,7 +620,8 @@ def test_extra1_fp_v2_no_fpv_refused_by_apply_external(tmp_path, monkeypatch):
     )
 
     # Create a pending record the old way (no fp_v)
-    rec = _create_pending_request(lay, "req-nofpv", command="python nofpv.py")
+    rec = _create_pending_request(lay, "req-nofpv", command="python nofpv.py",
+                                  fp_v=None)
     # Ensure fp_v is absent
     assert "fp_v" not in rec or rec.get("fp_v") is None
 
@@ -698,7 +709,7 @@ _DEFERRED_FORMS = [
 ]
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 @pytest.mark.parametrize("command,label,ext", _BOUND_FORMS,
                          ids=[x[1] for x in _BOUND_FORMS])
 def test_extra2_resolver_bound(tmp_path, monkeypatch, command, label, ext):
@@ -726,7 +737,7 @@ def test_extra2_resolver_bound(tmp_path, monkeypatch, command, label, ext):
     )
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 @pytest.mark.parametrize("command,reason", _UNBOUND_REASONS,
                          ids=[x[1] for x in _UNBOUND_REASONS])
 def test_extra2_resolver_unbound(tmp_path, monkeypatch, command, reason):
@@ -776,7 +787,7 @@ def test_extra2_resolver_unbound(tmp_path, monkeypatch, command, reason):
         )
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 @pytest.mark.parametrize("command,label", _DEFERRED_FORMS,
                          ids=[x[1] for x in _DEFERRED_FORMS])
 def test_extra2_resolver_deferred_unbound(tmp_path, monkeypatch, command, label):
@@ -825,7 +836,7 @@ def test_extra2_resolver_deferred_unbound(tmp_path, monkeypatch, command, label)
 
 @pytest.mark.skipif(sys.platform != "win32",
                     reason="NTFS stream operand is Windows-only")
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra2_ntfs_stream_operand_unbound(tmp_path, monkeypatch):
     """An NTFS alternate data stream operand is unbound (ADR 0010 s9 9.1)."""
     _need_t12c()
@@ -865,7 +876,7 @@ def test_extra2_ntfs_stream_operand_unbound(tmp_path, monkeypatch):
         assert hso.get("permissionDecision") == "deny"
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 @pytest.mark.parametrize("family,opt_cmd", [
     ("python", "python -W error -X utf8 script.py"),
     ("python", "python -O script.py"),
@@ -910,7 +921,7 @@ _FLOOR_UNBOUND_COMMANDS = [
 ]
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 @pytest.mark.parametrize("command,label", _FLOOR_UNBOUND_COMMANDS,
                          ids=[x[1] for x in _FLOOR_UNBOUND_COMMANDS])
 def test_extra3_floor_unbound_deny_script_unpinnable(
@@ -972,7 +983,7 @@ _FLOOR_BAD_BODY_CASES = [
 ]
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 @pytest.mark.parametrize("label,body,case_id", _FLOOR_BAD_BODY_CASES,
                          ids=[x[2] for x in _FLOOR_BAD_BODY_CASES])
 def test_extra3_floor_bad_body_denied(
@@ -1016,7 +1027,7 @@ def test_extra3_floor_bad_body_denied(
     )
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra3_standalone_unbound_escalates_with_warning(tmp_path, monkeypatch):
     """Outside the floor (standalone single approval), an unbound command
     escalates and the reviewer sees 'content NOT bound: <reason>'."""
@@ -1046,26 +1057,31 @@ def test_extra3_standalone_unbound_escalates_with_warning(tmp_path, monkeypatch)
     ))
 
     hso = result.get("hookSpecificOutput", {})
-    decision = hso.get("permissionDecision")
-    # Standalone should escalate, not deny
-    assert decision != "deny", (
-        f"standalone unbound should escalate (not deny), got {decision!r}"
+    reason = hso.get("permissionDecisionReason", "")
+    # Standalone should escalate (pending), not hard-deny with SCRIPT_UNPINNABLE
+    assert "SCRIPT_UNPINNABLE" not in reason, (
+        f"standalone unbound should not be SCRIPT_UNPINNABLE, got: {reason!r}"
     )
-    # Check for the warning in the pending record
+    # A pending record must have been written
     pending = sorted(lay.pending_dir.glob("*.json"),
                      key=lambda p: p.stat().st_mtime)
-    if pending:
-        rec = json.loads(pending[-1].read_text(encoding="utf-8"))
-        assert rec.get("script_unbound", "") != "", (
-            "standalone unbound should have script_unbound reason"
-        )
+    assert pending, "standalone unbound should write a pending record"
+    rec = json.loads(pending[-1].read_text(encoding="utf-8"))
+    assert rec.get("script_unbound", "") != "", (
+        "standalone unbound should have script_unbound reason"
+    )
+    # The reviewer-facing text must note the unbound content
+    rec_reason = rec.get("reason", "")
+    assert "content NOT bound" in rec_reason, (
+        f"pending reason should contain 'content NOT bound', got: {rec_reason!r}"
+    )
 
 
 # -------------------------------------------------------------------
 # Extra 4  Meaning is kept: $0, __file__, cwd, sibling
 # -------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra4_meaning_kept(tmp_path, monkeypatch):
     """A bound script prints sys.argv[0], __file__ and cwd, and reads a
     sibling file.  The output matches a direct run."""
@@ -1128,7 +1144,7 @@ def test_extra4_meaning_kept(tmp_path, monkeypatch):
 # Extra 5  Re-resolve
 # -------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra5_reresolve_null_script_with_actual_file_refused(
     tmp_path, monkeypatch
 ):
@@ -1182,7 +1198,7 @@ def test_extra5_reresolve_null_script_with_actual_file_refused(
     )
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra5_edited_pending_record_refused(tmp_path, monkeypatch):
     """An edited pending record is refused by the fingerprint check and the
     payload check."""
@@ -1247,7 +1263,7 @@ def test_extra5_edited_pending_record_refused(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(sys.platform != "win32",
                     reason="Windows-only: share-mode locks")
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra6_win_pin_write_blocked(tmp_path, monkeypatch):
     """While the child runs, an open-for-write on the script fails with a
     sharing violation."""
@@ -1308,7 +1324,7 @@ def test_extra6_win_pin_write_blocked(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(sys.platform != "win32",
                     reason="Windows-only: share-mode locks")
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra6_win_pin_delete_blocked(tmp_path, monkeypatch):
     """While the child runs, deleting the script fails with a sharing
     violation."""
@@ -1362,7 +1378,7 @@ def test_extra6_win_pin_delete_blocked(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(sys.platform != "win32",
                     reason="Windows-only: share-mode locks")
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra6_win_pin_rename_blocked(tmp_path, monkeypatch):
     """While the child runs, renaming the script and its folder fails."""
     _need_t12c()
@@ -1426,7 +1442,7 @@ def test_extra6_win_pin_rename_blocked(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(sys.platform != "win32",
                     reason="Windows-only: hard link from handle (C-c0-1)")
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra6_win_nlink_from_handle(tmp_path, monkeypatch):
     """nlink and attributes come from the open handle: a hard link made
     between the pre-check and the open does not fool the broker (C-c0-1)."""
@@ -1444,14 +1460,14 @@ def test_extra6_win_nlink_from_handle(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    # Create a hard link so nlink > 1
+    rec, req_id = _hook_escalate(lay, "python nlink_test.py", monkeypatch)
+
+    # Create a hard link AFTER escalation so nlink > 1 at broker time (C-c0-1)
     hardlink = lay.root / "nlink_alias.py"
     try:
         hardlink.hardlink_to(script)
     except (OSError, AttributeError):
         pytest.skip("Cannot create hard links in this environment")
-
-    rec, req_id = _hook_escalate(lay, "python nlink_test.py", monkeypatch)
 
     from sandbox.connector.approval import approve
     result = asyncio.run(approve(lay, req_id, "test-reviewer"))
@@ -1471,7 +1487,7 @@ def test_extra6_win_nlink_from_handle(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(sys.platform == "win32",
                     reason="POSIX-only: after-run self-swap check (ruling e)")
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra7_posix_after_run_self_swap(tmp_path, monkeypatch):
     """A self-swapping script sets ``script_changed_during_run`` and raises
     the alert on POSIX."""
@@ -1512,7 +1528,7 @@ def test_extra7_posix_after_run_self_swap(tmp_path, monkeypatch):
 # Extra 8  Refusal record properties
 # -------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra8_refusal_record_signed_terminal_chained(tmp_path, monkeypatch):
     """A refusal record (SCRIPT_CHANGED) is signed, terminal, chained in
     the audit and alerted.  A re-delivered approval cannot run it."""
@@ -1569,7 +1585,7 @@ def test_extra8_refusal_record_signed_terminal_chained(tmp_path, monkeypatch):
     assert not marker.exists(), "re-delivery must not create the marker"
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra8_refusal_record_remote_path_signed(tmp_path, monkeypatch):
     """A refusal on the remote path is signed by connector:<device_id>."""
     _need_t12c()
@@ -1631,7 +1647,7 @@ def test_extra8_refusal_record_remote_path_signed(tmp_path, monkeypatch):
 # Extra 10  Preview: secret scrubbing and text rendering
 # -------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra10_preview_secret_scrubbed(tmp_path, monkeypatch):
     """A secret is redacted in the preview, the raw-byte hash still binds."""
     _need_t12c()
@@ -1644,7 +1660,7 @@ def test_extra10_preview_secret_scrubbed(tmp_path, monkeypatch):
     script = lay.root / "secret_test.py"
     # Include something that looks like a secret
     script.write_text(
-        'API_KEY = "sk-proj-abcdef1234567890abcdef1234567890"\n'
+        'API_KEY = "sk-proj-abcdef1234567890abcdef1234567890"\n'  # gitleaks:allow
         'print("done")\n',
         encoding="utf-8",
     )
@@ -1672,7 +1688,7 @@ def test_extra10_preview_secret_scrubbed(tmp_path, monkeypatch):
 # Extra 11  Evidence: done-record carries script fields
 # -------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra11_evidence_done_record_carries_script_fields(
     tmp_path, monkeypatch
 ):
@@ -1710,7 +1726,7 @@ def test_extra11_evidence_done_record_carries_script_fields(
 # Extra 12  Grep/AST: no shell=True reachable for approved records
 # -------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra12_no_shell_true_for_approved_records():
     """Grep/AST test: no ``shell=True`` is reachable for any approved record
     path, and the broker execs only the lexed argv or the record's family
@@ -1770,7 +1786,7 @@ def test_extra12_no_shell_true_for_approved_records():
 # Extra 13  Shell parity (connector-side items)
 # -------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra13_bash_tool_uses_recorded_bash(tmp_path, monkeypatch):
     """A Bash-tool record runs under the recorded bash, never %ComSpec%."""
     _need_t12c()
@@ -1809,7 +1825,7 @@ def test_extra13_bash_tool_uses_recorded_bash(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(sys.platform != "win32",
                     reason="Windows-only: PowerShell tool and EncodedCommand")
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra13_powershell_tool_uses_encoded_command(tmp_path, monkeypatch):
     """A PowerShell-tool record runs with pwsh -EncodedCommand, never
     cmd.exe."""
@@ -1853,7 +1869,7 @@ def test_extra13_powershell_tool_uses_encoded_command(tmp_path, monkeypatch):
         assert marker.exists(), "pwsh script should have created marker"
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra13_no_path_lookup_at_exec(tmp_path, monkeypatch):
     """There is no PATH lookup at exec time. The broker uses only the
     recorded shell path from session.json."""
@@ -1881,7 +1897,7 @@ def test_extra13_no_path_lookup_at_exec(tmp_path, monkeypatch):
             )
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra13_missing_shells_field_gives_shell_unavailable(
     tmp_path, monkeypatch
 ):
@@ -1930,7 +1946,7 @@ def test_extra13_missing_shells_field_gives_shell_unavailable(
 
 @pytest.mark.skipif(sys.platform != "win32",
                     reason="Windows-only: init lookup order test")
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra13_init_lookup_order(tmp_path, monkeypatch):
     """Init lookup order: --bash flag, CLAUDE_CODE_GIT_BASH_PATH,
     ProgramFiles Git, git-derived, then PATH.  A fake git at
@@ -1967,7 +1983,7 @@ def test_extra13_init_lookup_order(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(sys.platform != "win32",
                     reason="Windows-only: WindowsApps/System32 refusals")
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+
 def test_extra13_init_refuses_system32_and_windowsapps(tmp_path, monkeypatch):
     """Init refuses System32\\bash.exe and WindowsApps\\bash.exe even when
     PATH finds them first."""
@@ -1977,7 +1993,10 @@ def test_extra13_init_refuses_system32_and_windowsapps(tmp_path, monkeypatch):
     kh.mkdir()
     monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
 
-    # Create fake System32 and WindowsApps bash
+    # Create fake System32 and WindowsApps bash. ADR 0010 s9 9.4 refuses
+    # exactly %SystemRoot%\System32\bash.exe, so SystemRoot must point at
+    # tmp_path for the fake to be the path the rule names.
+    monkeypatch.setenv("SystemRoot", str(tmp_path))
     fake_sys32 = tmp_path / "System32"
     fake_sys32.mkdir()
     (fake_sys32 / "bash.exe").write_text("wsl", encoding="utf-8")
@@ -2001,11 +2020,213 @@ def test_extra13_init_refuses_system32_and_windowsapps(tmp_path, monkeypatch):
     shells = session.get("shells", {})
     bash_path = shells.get("bash", "")
 
-    # The refused paths must not be selected
+    # The refused paths must not be selected (exact paths, not substrings)
+    refused = {
+        str(fake_sys32 / "bash.exe").lower(),
+        str(fake_apps / "bash.exe").lower(),
+    }
     if bash_path:
-        assert "System32" not in bash_path or "Git" in bash_path, (
-            f"System32\\bash.exe should be refused, got: {bash_path!r}"
+        assert bash_path.lower() not in refused, (
+            f"WSL/WindowsApps bash.exe should be refused, got: {bash_path!r}"
         )
-        assert "WindowsApps" not in bash_path, (
-            f"WindowsApps\\bash.exe should be refused, got: {bash_path!r}"
+        assert "windowsapps" not in bash_path.lower(), (
+            f"WindowsApps\bash.exe should be refused, got: {bash_path!r}"
         )
+
+
+# -------------------------------------------------------------------
+# R1 -- 8.3 short-name WSL refusal test
+# -------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform != "win32",
+                    reason="Windows-only: 8.3 short-name WSL refusal")
+def test_r1_shortname_system32_bash_refused(tmp_path, monkeypatch):
+    """An 8.3 short-name form of %SystemRoot%\\System32\\bash.exe must be
+    refused by _is_valid_shell, not accepted because the string comparison
+    misses the short-name alias (R1)."""
+    _need_t12c()
+
+    # Build a fake SystemRoot with System32\\bash.exe inside tmp_path
+    monkeypatch.setenv("SystemRoot", str(tmp_path))
+    fake_sys32 = tmp_path / "System32"
+    fake_sys32.mkdir()
+    fake_bash = fake_sys32 / "bash.exe"
+    fake_bash.write_text("wsl", encoding="utf-8")
+
+    # Attempt to get the 8.3 short-name form via ctypes
+    import ctypes
+    buf = ctypes.create_unicode_buffer(300)
+    n = ctypes.windll.kernel32.GetShortPathNameW(str(fake_bash), buf, 300)
+    if n == 0 or buf.value.lower() == str(fake_bash).lower():
+        pytest.skip("volume does not support 8.3 short names or no short name generated")
+
+    short_path = buf.value
+    assert short_path.lower() != str(fake_bash).lower(), (
+        "GetShortPathNameW returned the long path; no short name exists"
+    )
+
+    from sandbox.connector.install import _is_valid_shell
+    ok, reason = _is_valid_shell(short_path, tmp_path / "ws_root")
+    assert not ok, (
+        f"8.3 short-name WSL bash should be refused, got ok=True for {short_path!r}"
+    )
+    assert "WSL" in reason or "System32" in reason, (
+        f"expected WSL refusal reason, got: {reason!r}"
+    )
+
+
+# -------------------------------------------------------------------
+# R2 -- requires_dual triggers the floor for unbound commands
+# -------------------------------------------------------------------
+
+
+def test_r2_requires_dual_unbound_denied_under_floor(tmp_path, monkeypatch):
+    """In a standalone workspace (not enrolled) with requires_dual=True,
+    an unbound command must be denied with SCRIPT_UNPINNABLE, not
+    escalated.  ADR 0010 s9 9.3: the floor applies when requires_dual
+    is true OR when enrolled."""
+    _need_t12c()
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
+    lay = _ws(tmp_path / "ws")
+
+    script = lay.root / "deploy.sh"
+    script.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+
+    # Monkeypatch exfil detector to trigger requires_dual
+    from sandbox.safety import exfil as _exfil_mod
+    original_detect = _exfil_mod.detect
+
+    def _always_exfil(command):
+        return _exfil_mod.ExfilFinding(
+            sensitive=".env", egress="curl_upload",
+            detail="test-forced exfil",
+        )
+
+    monkeypatch.setattr(_exfil_mod, "detect", _always_exfil)
+
+    from sandbox.connector.queue import EscalationQueue
+    monkeypatch.setattr(EscalationQueue, "wait", _async_none)
+
+    from sandbox.connector.hook_eval import pre_tool_use
+
+    result = asyncio.run(pre_tool_use(
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": "./deploy.sh"},
+            "cwd": str(lay.root),
+            "session_id": "sb-r2-dual",
+        },
+        lay,
+    ))
+
+    hso = result.get("hookSpecificOutput", {})
+    reason = hso.get("permissionDecisionReason", "")
+    # Must be denied, not escalated
+    assert "SCRIPT_UNPINNABLE" in reason, (
+        f"requires_dual + unbound should be SCRIPT_UNPINNABLE deny, got: {reason!r}"
+    )
+
+
+# -------------------------------------------------------------------
+# R3 -- backslash preservation in build_shell_argv
+# -------------------------------------------------------------------
+
+
+def test_r3_non_path_backslash_survives_byte_for_byte(tmp_path):
+    """Non-path backslashes in a bash command (regex, printf escapes)
+    must reach the shell byte-for-byte, not be converted to forward
+    slashes (R3)."""
+    _need_t12c()
+
+    from sandbox.connector.script_pin import build_shell_argv
+
+    # A command with intentional non-path backslashes
+    cmd = r"python script.py 'pattern\d+' printf 'a\nb'"
+    argv = build_shell_argv(cmd, "Bash", "/usr/bin/bash")
+
+    # The -c argument is the last element
+    bash_arg = argv[-1]
+    # The non-path backslashes must survive
+    assert r"\d+" in bash_arg, (
+        f"regex backslash was converted: {bash_arg!r}"
+    )
+    assert r"\n" in bash_arg, (
+        f"printf escape was converted: {bash_arg!r}"
+    )
+
+
+@pytest.mark.skipif(sys.platform != "win32",
+                    reason="Windows-only: drive-letter conversion test")
+def test_r3_drive_letter_path_converted(tmp_path):
+    """A drive-letter path in a bash command should have its backslashes
+    converted to forward slashes (R3)."""
+    _need_t12c()
+
+    from sandbox.connector.script_pin import build_shell_argv
+
+    cmd = r"python E:\project\script.py 'pattern\d+'"
+    argv = build_shell_argv(cmd, "Bash", r"C:\Git\bin\bash.exe")
+
+    bash_arg = argv[-1]
+    # Drive-letter path should be converted
+    assert "E:/project/script.py" in bash_arg, (
+        f"drive-letter path not converted: {bash_arg!r}"
+    )
+    # Non-path backslash must survive
+    assert r"\d+" in bash_arg, (
+        f"regex backslash was converted: {bash_arg!r}"
+    )
+
+
+def test_r3_done_record_carries_exec_argv(tmp_path, monkeypatch):
+    """The done-record from FolderBroker.execute must carry exec_argv
+    (R3: record the exact argv that was executed)."""
+    _need_t12c()
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
+
+    # The broker reads .sandbox/session.json for the shell paths.
+    import shutil
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("no bash on PATH")
+    sandbox_dir = tmp_path / ".sandbox"
+    sandbox_dir.mkdir(exist_ok=True)
+    (sandbox_dir / "session.json").write_text(
+        json.dumps({"shells": {"bash": bash_path}}), encoding="utf-8"
+    )
+
+    from sandbox.connector.broker import FolderBroker
+
+    # Use a command with binding "none" (echo is not an interpreter) so
+    # the re-resolve check passes with script=None.
+    rec = {
+        "kind": "command",
+        "request_id": "r3-argv",
+        "command": "echo hello-r3",
+        "exec_cwd": str(tmp_path),
+        "root": str(tmp_path),
+        "tool_name": "Bash",
+        "fp_v": 2,
+        "script": None,
+        "script_unbound": "",
+        "script_preview": None,
+    }
+
+    done = asyncio.run(FolderBroker().execute(rec, "reviewer"))
+    assert done.get("state") != "refused", (
+        f"unexpected refusal: {done.get('reason_code')}: {done.get('reason')}"
+    )
+    assert "exec_argv" in done, (
+        f"done-record must contain exec_argv, got keys: {sorted(done.keys())}"
+    )
+    assert isinstance(done["exec_argv"], list), (
+        f"exec_argv must be a list, got {type(done['exec_argv'])}"
+    )
+    assert len(done["exec_argv"]) > 0, "exec_argv must not be empty"
