@@ -1,5 +1,15 @@
 # Control-plane hand-off (M2 T6-T10 done, 22 Oct 2026)
 
+**28 Oct 2026, distribution review and founder rulings.** The PM wrote `docs/PM_DISTRIBUTION_ASSESSMENT.md`; the founder rejected the governance channel in its Appendix A. Lead-architect reviewed it in `docs/ARCH_REVIEW_PM_DISTRIBUTION.md` (CONFIRM WITH AMENDMENTS), and the PM accepted every correction in its "PM response to architect review" section. The founder's positioning ruling: AI security is the moat, not AI governance. The founder then approved six rulings, recorded in `T12B_PLAN.md` "Founder rulings (28 Oct 2026)":
+1. c5 is kept.
+2. The suite spend is approved, with vendor disclosure first.
+3. The kill dates are split: 15 Nov and 30 Nov.
+4. ADR 0012 (broker credential custody) is the M3 exit item 1 candidate.
+5. lasso mcp-gateway is excluded from the shell suite.
+6. Leader-tier review also covers d2 and c4.
+
+T12d d2-d5 are finished in M2, not paused. The amended order, the sizes and lane X are in `T12B_PLAN.md`.
+
 ## Founder rulings (25 Oct 2026, terminal)
 
 1. The F3 operator named limit is **Low**, fixed in M3 (ADR 0010 updated).
