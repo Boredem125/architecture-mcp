@@ -64,6 +64,11 @@ def test_f8_signer_approve_shows_kind_tool_bundle_sequence(tmp_path, monkeypatch
         "kind": "tool_call",
         "tool_name": _TOOL,
         "bundle_sequence": 4242,
+        # T12c c2 named test-setup edit: fp_v 2 and script fields
+        "fp_v": 2,
+        "script": None,
+        "script_unbound": "",
+        "script_preview": None,
     }
     from sandbox.connector.approval import _binding_fingerprint
     detail["fingerprint"] = _binding_fingerprint(detail)
@@ -118,9 +123,12 @@ def test_guard_signer_approve_refuses_fingerprint_mismatch(tmp_path, monkeypatch
     (ws_dir / f"{bob[2][:16]}.seed").write_bytes(bytes(bob[0]))
 
     esc_id = "esc-r4-guard"
+    # T12c c2 named test-setup edit: fp_v 2 and script fields
     real = {"kind": "bash", "tool_name": "Bash", "command": "rm -rf ~/prod",
             "exec_cwd": "/srv/repo", "root": "/srv/repo", "requires_dual": True,
-            "bundle_sequence": 1, "request_id": "req-r4-guard"}
+            "bundle_sequence": 1, "request_id": "req-r4-guard",
+            "fp_v": 2, "script": None, "script_unbound": "",
+            "script_preview": None}
     shown = dict(real, command="echo hello")
     detail = dict(shown, escalation_id=esc_id,
                   fingerprint=_binding_fingerprint(real),

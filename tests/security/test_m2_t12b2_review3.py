@@ -67,6 +67,11 @@ def test_f1_signer_approve_checks_every_displayed_field(tmp_path, monkeypatch):
         "status": "pending",
         "exec_cwd": "/srv/repo",
         "root": "/srv/repo",
+        # T12c c2 named test-setup edit: fp_v 2 and script fields
+        "fp_v": 2,
+        "script": None,
+        "script_unbound": "",
+        "script_preview": None,
     }
     # Round 3: a consistent server fingerprint, so the round-4 local
     # recompute does not refuse first and the display check stays live.

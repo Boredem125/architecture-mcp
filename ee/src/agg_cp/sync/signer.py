@@ -1,4 +1,4 @@
-"""Server-side signer routes and logic (D5.2, D7.2, D10.6).
+"""Server-side signer routes and logic (D5.2, D7.2, D10.6, T12d).
 
 Routes under ``/api/v1/sync/signer/``.  Signer auth uses
 ``agg/signer-assert/v1`` tokens: 10 min, stored as SHA-256 hash.
@@ -6,11 +6,18 @@ Routes under ``/api/v1/sync/signer/``.  Signer auth uses
 Reuses T5 SECURITY DEFINER functions: ``signer_link_consume``,
 ``cli_key_lookup``, ``signer_token_lookup``, ``signer_nonce_insert``.
 Reuses ``agg_cp.sync.registry.store_registry_version``.
+
+T12d additions: genesis route, candidates route, D0-5 scope allowlist,
+own-key publish rule on /signatures.
 """
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
+import hmac
+import json
 import secrets
+import time as _time_mod
 import uuid
 from typing import Any
 
@@ -104,14 +111,27 @@ def check_signer_token_scope(
 ) -> None:
     """Check that *token_scope* allows access to *route*.
 
-    A pending-link token (status ``"pending_link"``) may only access
-    the ``"link"`` route (F5).  A confirmed token accesses all routes.
+    Allowlist (D0-5 fix: fail closed for unknown scopes):
+
+    - ``"confirmed"`` may access all routes.
+    - ``"pending_link"`` may access ``"link"``, ``"genesis"`` and
+      ``"signatures"`` only (the own-key check for signatures is
+      done in the route handler, not here).
+    - Any other scope (empty, ``"revoked"``, unknown) is refused.
     """
     status = token_scope.get("status", "")
-    if status == "pending_link" and route != "link":
+    if status == "confirmed":
+        return  # confirmed may access everything
+    if status == "pending_link":
+        if route in ("link", "genesis", "signatures"):
+            return
         raise SignerScopeError(
             f"pending_link token cannot access route {route!r}"
         )
+    # Unknown / empty / revoked: fail closed
+    raise SignerScopeError(
+        f"scope {status!r} cannot access route {route!r}"
+    )
 
 
 def get_pending(
@@ -680,12 +700,29 @@ def build_signer_router(db_url: str, clock: Any = None) -> APIRouter:
             auth_conn.close()
             auth_conn = None
 
+            body = await request.json()
+
+            # Own-key publish rule (T12d): a pending_link token may
+            # post a registry envelope ONLY if it adds the token's
+            # own key.  Any other pending_link post is 403.
+            if info.get("scope") == "pending_link":
+                envelope = body.get("envelope") or {}
+                payload = envelope.get("payload") or {}
+                keys = payload.get("keys") or []
+                own_kid = info.get("key_id", "")
+                adds_own = any(
+                    k.get("key_id") == own_kid for k in keys
+                )
+                if not adds_own:
+                    return JSONResponse(
+                        {"error": "scope denied"}, status_code=403
+                    )
+
             # Signatures use autocommit=False so store_registry_version
             # can use transaction-local set_config + commit.
             conn = psycopg.connect(url, autocommit=False)
             conn.execute("SET ROLE agg_app")
 
-            body = await request.json()
             target_org = body.get("org_id", info["org_id"])
 
             # IDOR: token's org must match
@@ -719,6 +756,576 @@ def build_signer_router(db_url: str, clock: Any = None) -> APIRouter:
         finally:
             if auth_conn is not None:
                 auth_conn.close()
+            if conn is not None:
+                conn.close()
+
+    # -- POST /genesis (T12d, ADR 0011) ------------------------------------
+
+    @rbac_route(router, "post", "/api/v1/sync/signer/genesis",
+                role="signer", scope="token")
+    async def genesis_route(
+        request: Request,
+        authorization: str = Header(default=""),
+    ):
+        auth_conn = None
+        conn = None
+        try:
+            import psycopg
+
+            url = db_url.replace("postgresql+psycopg://", "postgresql://")
+
+            # --- Auth (autocommit) ----------------------------------------
+            auth_conn = psycopg.connect(url, autocommit=True)
+            auth_conn.execute("SET ROLE agg_app")
+            try:
+                info = _auth_from_bearer(
+                    auth_conn, authorization, "genesis"
+                )
+            except SignerScopeError:
+                return JSONResponse(
+                    {"error": "scope denied"}, status_code=403
+                )
+            except EnvelopeError:
+                return JSONResponse(
+                    {"error": "unauthorized"}, status_code=401
+                )
+            finally:
+                auth_conn.close()
+                auth_conn = None
+
+            body = await request.json()
+            genesis_code_raw = body.get("genesis_code", "")
+            envelope = body.get("envelope") or {}
+
+            org_id = info["org_id"]
+            user_id = info["user_id"]
+            key_id = info["key_id"]
+
+            # --- Transaction with advisory lock ---------------------------
+            conn = psycopg.connect(url, autocommit=False)
+            conn.execute("SET ROLE agg_app")
+            conn.execute(
+                "SELECT set_config('app.org_id', %s, true)", [org_id]
+            )
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                [f"agg-genesis:{org_id}"],
+            )
+
+            # Step 1 (ADR 0011 2.2): if any key_registry_versions
+            # row exists for the org, return 409 genesis_exists and
+            # commit a second_genesis alert BEFORE the code is
+            # checked.  Any valid pending_link token is already
+            # org-authenticated; the ADR accepts it learns a
+            # registry exists.
+            existing = conn.execute(
+                "SELECT 1 FROM key_registry_versions "
+                "WHERE org_id = %s::uuid LIMIT 1",
+                [org_id],
+            ).fetchone()
+            if existing is not None:
+                conn.execute(
+                    "INSERT INTO sync_alerts "
+                    "(id, org_id, project_id, kind, created_at) "
+                    "VALUES (%s::uuid, %s::uuid, "
+                    "'00000000-0000-0000-0000-000000000000'::uuid, "
+                    "'second_genesis', now())",
+                    [str(uuid.uuid4()), org_id],
+                )
+                conn.commit()
+                return JSONResponse(
+                    {"error": "genesis_exists"}, status_code=409
+                )
+
+            # Step 2: find live genesis code by hash (FOR UPDATE).
+            # Hash first, then look up by hash so each concurrent
+            # caller matches its own code row (ADR 0011 allows
+            # multiple live codes per org before any is used).
+            code_hash = hashlib.sha256(
+                genesis_code_raw.encode()
+            ).hexdigest()
+
+            code_row = conn.execute(
+                "SELECT id, expires_at, failed_attempts "
+                "FROM setup_codes "
+                "WHERE org_id = %s::uuid "
+                "AND purpose = 'registry_genesis' "
+                "AND code_hash = %s "
+                "AND used_at IS NULL "
+                "FOR UPDATE",
+                [org_id, code_hash],
+            ).fetchone()
+
+            if code_row is None:
+                # No matching code.  Increment failures on the
+                # latest live code (if any) to rate-limit brute
+                # force, then return 400.
+                fallback = conn.execute(
+                    "SELECT id FROM setup_codes "
+                    "WHERE org_id = %s::uuid "
+                    "AND purpose = 'registry_genesis' "
+                    "AND used_at IS NULL "
+                    "AND expires_at > now() "
+                    "ORDER BY created_at DESC LIMIT 1 "
+                    "FOR UPDATE",
+                    [org_id],
+                ).fetchone()
+                if fallback is not None:
+                    conn.execute(
+                        "UPDATE setup_codes "
+                        "SET failed_attempts = failed_attempts + 1 "
+                        "WHERE id = %s",
+                        [fallback[0]],
+                    )
+                    conn.commit()
+                else:
+                    conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_code"}, status_code=400
+                )
+
+            code_id = code_row[0]
+            expires_at = code_row[1]
+            failed_attempts = code_row[2]
+
+            # Expiry check
+            now_utc = dt.datetime.now(dt.timezone.utc)
+            ea = expires_at
+            if ea.tzinfo is None:
+                ea = ea.replace(tzinfo=dt.timezone.utc)
+            if now_utc > ea:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_code"}, status_code=400
+                )
+
+            # Failure count
+            if failed_attempts >= 5:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_code"}, status_code=400
+                )
+
+            # Step 3: token user must hold org admin role
+            admin_row = conn.execute(
+                "SELECT 1 FROM role_bindings "
+                "WHERE org_id = %s::uuid AND user_id = %s::uuid "
+                "AND role = 'admin' LIMIT 1",
+                [org_id, user_id],
+            ).fetchone()
+            if admin_row is None:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "admin_required"}, status_code=400
+                )
+
+            # Step 3b: token's key must be that user's pending link
+            link_row = conn.execute(
+                "SELECT key_id, public_key FROM signer_links "
+                "WHERE org_id = %s::uuid AND user_id = %s::uuid "
+                "AND key_id = %s AND public_key IS NOT NULL "
+                "AND status = 'pending' LIMIT 1",
+                [org_id, user_id, key_id],
+            ).fetchone()
+            if link_row is None:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "pending_link_required"}, status_code=400
+                )
+            link_pub = link_row[1]
+
+            # Step 4: envelope field-by-field (ADR 0011 2.4)
+            payload = envelope.get("payload") or {}
+
+            if payload.get("version") != 1:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope", "field": "version"},
+                    status_code=400,
+                )
+            if str(payload.get("org_id", "")) != org_id:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope", "field": "org_id"},
+                    status_code=400,
+                )
+            if payload.get("prev_hash") != "":
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope", "field": "prev_hash"},
+                    status_code=400,
+                )
+            if payload.get("threshold") != 1:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope", "field": "threshold"},
+                    status_code=400,
+                )
+            if payload.get("admins") != [key_id]:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope", "field": "admins"},
+                    status_code=400,
+                )
+
+            keys = payload.get("keys") or []
+            if len(keys) != 1:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope", "field": "key_count"},
+                    status_code=400,
+                )
+
+            ke = keys[0]
+            if ke.get("key_id") != key_id:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope", "field": "key_id"},
+                    status_code=400,
+                )
+            if ke.get("public_key") != link_pub:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope", "field": "public_key"},
+                    status_code=400,
+                )
+            if ke.get("kind") != "cli":
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope", "field": "kind"},
+                    status_code=400,
+                )
+            if ke.get("alg") != "ed25519":
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope", "field": "alg"},
+                    status_code=400,
+                )
+
+            # user_id must be the server user id, not the IdP sub
+            user_row = conn.execute(
+                "SELECT oidc_issuer, oidc_subject FROM users "
+                "WHERE id = %s::uuid AND org_id = %s::uuid",
+                [user_id, org_id],
+            ).fetchone()
+            if user_row is None:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "user_not_found"}, status_code=400
+                )
+            user_iss, user_sub = user_row[0], user_row[1]
+
+            if ke.get("user_id") != user_id:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope", "field": "user_id"},
+                    status_code=400,
+                )
+            if ke.get("iss") != user_iss:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope", "field": "iss"},
+                    status_code=400,
+                )
+            if ke.get("sub") != user_sub:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope", "field": "sub"},
+                    status_code=400,
+                )
+
+            # roles: must contain admin, only admin|approver allowed
+            roles = ke.get("roles")
+            if not isinstance(roles, list):
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope", "field": "roles"},
+                    status_code=400,
+                )
+            allowed_roles = {"admin", "approver"}
+            if "admin" not in roles or not set(roles).issubset(
+                allowed_roles
+            ):
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope", "field": "roles"},
+                    status_code=400,
+                )
+
+            if ke.get("added_in") != 1:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope", "field": "added_in"},
+                    status_code=400,
+                )
+
+            # bundle_signer: structural validation
+            bs = payload.get("bundle_signer") or {}
+            bs_kid = bs.get("key_id", "")
+            bs_pub_hex = bs.get("public_key", "")
+            if not bs_kid or not bs_pub_hex:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope",
+                     "field": "bundle_signer"},
+                    status_code=400,
+                )
+            try:
+                bs_pub_bytes = bytes.fromhex(bs_pub_hex)
+                if len(bs_pub_bytes) != 32:
+                    raise ValueError("not 32 bytes")
+                expected_bs = hashlib.sha256(bs_pub_bytes).hexdigest()
+                if bs_kid != expected_bs:
+                    raise ValueError("key_id mismatch")
+            except (ValueError, TypeError):
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope",
+                     "field": "bundle_signer"},
+                    status_code=400,
+                )
+
+            # R1: bundle_signer must match server's configured key
+            from ..sync.bundles import _load_bundle_signer_key
+            server_bs = _load_bundle_signer_key()
+            if server_bs is None:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "bundle_signer_not_configured"},
+                    status_code=400,
+                )
+            server_bs_pub_hex = bytes(
+                server_bs.verify_key
+            ).hex()
+            if bs_pub_hex != server_bs_pub_hex:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope",
+                     "field": "bundle_signer"},
+                    status_code=400,
+                )
+
+            # expires_at
+            env_exp = payload.get("expires_at")
+            if env_exp is None or not isinstance(env_exp, (int, float)):
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope",
+                     "field": "expires_at"},
+                    status_code=400,
+                )
+            if env_exp < _time_mod.time():
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope",
+                     "field": "expires_at"},
+                    status_code=400,
+                )
+
+            # R2: ceiling 7 d (72 h if the org has any prod project)
+            _has_prod = conn.execute(
+                "SELECT 1 FROM projects "
+                "WHERE org_id = %s::uuid AND environment = 'prod' "
+                "LIMIT 1",
+                [org_id],
+            ).fetchone()
+            _max_secs = (72 if _has_prod else 7 * 24) * 3600
+            if env_exp > _time_mod.time() + _max_secs:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope",
+                     "field": "expires_at",
+                     "reason": "exceeds_ceiling"},
+                    status_code=400,
+                )
+
+            # signatures: exactly one, by the token's key
+            sigs = envelope.get("signatures") or []
+            if len(sigs) != 1:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope",
+                     "field": "signatures"},
+                    status_code=400,
+                )
+            if sigs[0].get("key_id") != key_id:
+                conn.rollback()
+                return JSONResponse(
+                    {"error": "invalid_envelope",
+                     "field": "signer_key_id"},
+                    status_code=400,
+                )
+
+            # Step 5: mark code used, link consumed, audit -- BEFORE
+            # store_registry_version so they share the same commit.
+            conn.execute(
+                "UPDATE setup_codes SET used_at = now() WHERE id = %s",
+                [code_id],
+            )
+            conn.execute(
+                "UPDATE signer_links SET status = 'consumed' "
+                "WHERE org_id = %s::uuid AND user_id = %s::uuid "
+                "AND key_id = %s",
+                [org_id, user_id, key_id],
+            )
+
+            payload_sha256 = hashlib.sha256(
+                json.dumps(
+                    payload, sort_keys=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest()
+            conn.execute(
+                "INSERT INTO admin_audit "
+                "(id, org_id, action, detail) "
+                "VALUES (%s, %s, 'registry_genesis', %s)",
+                [
+                    str(uuid.uuid4()),
+                    org_id,
+                    json.dumps({
+                        "user_id": user_id,
+                        "key_id": key_id,
+                        "payload_sha256": payload_sha256,
+                    }),
+                ],
+            )
+
+            # store_registry_version calls verify_chain and commits
+            try:
+                store_registry_version(conn, org_id, envelope)
+            except (RegistryError, Exception) as exc:
+                import logging as _logging
+                _logging.getLogger("agg_cp.sync.signer").warning(
+                    "genesis store_registry_version failed: %s", exc,
+                )
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return JSONResponse(
+                    {"error": "envelope_rejected"}, status_code=400
+                )
+
+            # Step 6: respond {version: 1} only -- no fingerprint
+            return JSONResponse({"version": 1})
+
+        except Exception as exc:
+            import logging as _logging
+            _logging.getLogger("agg_cp.sync.signer").exception(
+                "genesis unexpected error",
+            )
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            return JSONResponse(
+                {"error": "internal_error"}, status_code=500
+            )
+        finally:
+            if auth_conn is not None:
+                auth_conn.close()
+            if conn is not None:
+                conn.close()
+
+    # -- GET /candidates (T12d, ADR 0011) ----------------------------------
+
+    @rbac_route(router, "get", "/api/v1/sync/signer/candidates",
+                role="signer", scope="token")
+    async def candidates_route(
+        request: Request,
+        org_id: str | None = Query(default=None),
+        authorization: str = Header(default=""),
+    ):
+        conn = None
+        try:
+            import psycopg
+
+            url = db_url.replace("postgresql+psycopg://", "postgresql://")
+            conn = psycopg.connect(url, autocommit=True)
+            conn.execute("SET ROLE agg_app")
+
+            try:
+                info = _auth_from_bearer(
+                    conn, authorization, "candidates"
+                )
+            except SignerScopeError:
+                return JSONResponse(
+                    {"error": "scope denied"}, status_code=403
+                )
+            except EnvelopeError:
+                # IDOR: if org_id param given, return 404
+                if org_id:
+                    return JSONResponse(
+                        {"error": "not found"}, status_code=404
+                    )
+                return JSONResponse(
+                    {"error": "unauthorized"}, status_code=401
+                )
+
+            # Confirmed admin only
+            if info.get("scope") != "confirmed":
+                return JSONResponse(
+                    {"error": "scope denied"}, status_code=403
+                )
+
+            # Check admin role
+            conn.execute(
+                "SELECT set_config('app.org_id', %s, false)",
+                [info["org_id"]],
+            )
+            admin = conn.execute(
+                "SELECT 1 FROM role_bindings "
+                "WHERE org_id = %s::uuid AND user_id = %s::uuid "
+                "AND role = 'admin' LIMIT 1",
+                [info["org_id"], info["user_id"]],
+            ).fetchone()
+            if admin is None:
+                return JSONResponse(
+                    {"error": "admin_required"}, status_code=403
+                )
+
+            # Org scoped: requested org must match token's org
+            target = org_id or info["org_id"]
+            if target != info["org_id"]:
+                return JSONResponse(
+                    {"error": "not found"}, status_code=404
+                )
+
+            # List pending CLI links (with public_key set)
+            rows = conn.execute(
+                "SELECT sl.key_id, sl.public_key, "
+                "sl.user_id::text, u.oidc_issuer, u.oidc_subject, "
+                "'cli'::text AS kind "
+                "FROM signer_links sl "
+                "JOIN users u ON u.id = sl.user_id "
+                "WHERE sl.org_id = %s::uuid "
+                "AND sl.public_key IS NOT NULL "
+                "AND sl.status = 'pending'",
+                [info["org_id"]],
+            ).fetchall()
+
+            candidates = []
+            for r in rows:
+                candidates.append({
+                    "key_id": r[0],
+                    "public_key": r[1],
+                    "user_id": str(r[2]),
+                    "iss": r[3],
+                    "sub": r[4],
+                    "kind": r[5],
+                })
+
+            # Also list pending browser keys (approver_keys with
+            # kind='browser' and status not yet in the registry)
+            # For now, browser keys are not yet implemented in candidates
+            # but the route structure is ready.
+
+            return JSONResponse(candidates)
+        except Exception as exc:
+            return JSONResponse(
+                {"error": str(exc)}, status_code=500
+            )
+        finally:
             if conn is not None:
                 conn.close()
 

@@ -36,6 +36,32 @@ def _has_control_chars(s: str) -> bool:
     return any(ord(c) in _CONTROL_CODEPOINTS for c in s)
 
 
+# Body-specific set: LF (0x0A), CR (0x0D) and TAB (0x09) are allowed in
+# script body text (they are layout characters).  Everything else in
+# _CONTROL_CODEPOINTS still refuses.
+_BODY_CONTROL_CODEPOINTS: frozenset[int] = _CONTROL_CODEPOINTS - {0x09, 0x0A, 0x0D}
+
+
+def _has_body_control_chars(s: str) -> bool:
+    """Return True if *s* contains a dangerous control character for body text.
+
+    Unlike ``_has_control_chars``, this allows TAB, LF and CR (layout).
+    """
+    return any(ord(c) in _BODY_CONTROL_CODEPOINTS for c in s)
+
+
+def _check_body_display_safety(body: str) -> None:
+    """Raise ``click.ClickException`` if the body contains dangerous controls.
+
+    Allows TAB, LF, CR; refuses everything else in the control set.
+    """
+    if _has_body_control_chars(body):
+        click.echo("REFUSED: Script body contains control characters")
+        raise click.ClickException(
+            "refusing to sign: script body contains control characters"
+        )
+
+
 def _check_display_safety(fields: dict[str, str]) -> None:
     """Raise ``click.ClickException`` if any field contains control chars.
 
@@ -369,9 +395,26 @@ def _build_and_sign_envelope(
     Fix 3 (T12b-2): sign the server's canonical fields exactly as
     returned by GET /api/v1/sync/escalations/{id}.  Never recompute the
     fingerprint locally or substitute local vs.* values.
+
+    T12c c3 (ADR 0010 s9 9.5): the payload includes script_rel,
+    script_sha256 and preview_sha256, built from the same parsed values
+    that were rendered (display rule: what you see is what you sign).
     """
     # Use server-supplied fields from the GET detail response
     user_id = vs.registry._keys[kid]["user_id"] if (vs and vs.registry) else ""
+
+    # T12c c3: extract script fields from the record for the signed payload
+    _script = rec.get("script")
+    _script_rel = ""
+    _script_sha256 = ""
+    if isinstance(_script, dict):
+        _script_rel = _script.get("rel", "")
+        _script_sha256 = _script.get("sha256", "")
+    _preview = rec.get("script_preview")
+    _preview_sha256 = ""
+    if isinstance(_preview, dict):
+        _preview_sha256 = _preview.get("sha256", "")
+
     payload = {
         "request_id": rec.get("request_id", request_id),
         "command": rec.get("command", ""),
@@ -388,6 +431,10 @@ def _build_and_sign_envelope(
         "key_id": kid,
         "nonce": secrets.token_hex(16),
         "not_after": time.time() + 900,
+        # T12c c3: script content binding fields (ADR 0010 s9 9.5)
+        "script_rel": _script_rel,
+        "script_sha256": _script_sha256,
+        "preview_sha256": _preview_sha256,
     }
     tag = "agg/remote-approval/v1"
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -438,6 +485,72 @@ def _post_approval(server: str, request_id: str, envelope: dict, token: str | No
         )
 
 
+def _display_script_panel(rec: dict) -> None:
+    """Display the script content panel (ADR 0010 s9 9.5).
+
+    Shows script.rel, sha256, size and the preview body with line numbers.
+    For unbound records, shows "content NOT bound: <reason>".
+    Scope line: "Only <rel> is bound. Files it loads are not." (S-L1).
+    """
+    _script = rec.get("script")
+    _preview = rec.get("script_preview")
+    _unbound = rec.get("script_unbound", "")
+
+    # Unbound warning
+    if _unbound:
+        click.echo(f"  content NOT bound: {_unbound}")
+        return
+
+    # No script (binding "none"): nothing to show
+    if _script is None:
+        return
+
+    # Script metadata
+    rel = _script.get("rel", "")
+    sha = _script.get("sha256", "")
+    size = _script.get("size", 0)
+    click.echo(f"Script file:     {rel}")
+    click.echo(f"Script sha256:   {sha}")
+    click.echo(f"Script size:     {size}")
+    click.echo(f"  Only {rel} is bound. Files it loads are not.")
+
+    # Preview body with line numbers
+    if _preview is not None and _preview.get("shown", False):
+        body_text = _preview.get("text", "")
+        if body_text:
+            click.echo("--- script body ---")
+            for i, line in enumerate(body_text.splitlines(), 1):
+                click.echo(f"  {i:4d} | {line}")
+            click.echo("--- end ---")
+
+
+def _check_body_hash(rec: dict) -> None:
+    """Recompute sha256 of the displayed preview body and refuse on mismatch.
+
+    ADR 0010 s9 9.5: the CLI signer recomputes the sha256 of the displayed
+    body and refuses to sign when it differs from the record's
+    script_preview.sha256 (exit non-zero, sign and send nothing).
+    """
+    _preview = rec.get("script_preview")
+    if _preview is None:
+        return  # no preview: nothing to check
+    if not _preview.get("shown", False):
+        return  # preview not shown: check not applicable
+
+    body_text = _preview.get("text", "")
+    expected_sha = _preview.get("sha256", "")
+    if not expected_sha:
+        return  # no expected hash: nothing to verify
+
+    computed_sha = hashlib.sha256(body_text.encode("utf-8")).hexdigest()
+    if computed_sha != expected_sha:
+        raise click.ClickException(
+            f"body hash mismatch: computed {computed_sha[:16]}... "
+            f"vs record {expected_sha[:16]}...; refusing to sign "
+            "(the server may have altered the preview body)"
+        )
+
+
 @click.command("approve")
 @click.argument("escalation_id")
 @click.option("--server", default=None, help="Control plane URL")
@@ -446,9 +559,16 @@ def signer_approve(escalation_id: str, server: str | None, yes: bool) -> None:
     """Approve a pending escalation as a CLI signer.
 
     Fetches the escalation detail from the server (by escalation_id),
-    shows the canonical fields, signs them with the approver's CLI key,
+    shows the canonical fields and the script panel (rel, sha256, size,
+    body with line numbers), signs them with the approver's CLI key,
     and POSTs the signed envelope back.  Uses a signer token (T12b-2).
     Never calls apply_external or the broker locally (S7).
+
+    T12c c3 (ADR 0010 s9 9.5): shows every field covered by fingerprint v2,
+    the "content NOT bound: <reason>" line for unbound records, recomputes
+    sha256 over the displayed body and refuses to sign when it differs
+    from the record's script_preview.sha256.  The signed payload includes
+    script_rel, script_sha256 and preview_sha256.
     """
     from sandbox.connector.layout import FolderLayout
     from sandbox.connector.sync.verified_state import load_verified_state
@@ -475,6 +595,14 @@ def signer_approve(escalation_id: str, server: str | None, yes: bool) -> None:
     if rec is None:
         raise click.ClickException(f"escalation {escalation_id} not found on server")
 
+    # T12c c3: refuse if fp_v is missing (a pre-c2 record that cannot be
+    # fingerprint-verified with v2 fields)
+    if rec.get("fp_v") is None:
+        raise click.ClickException(
+            "server record has no fp_v; it predates script content binding "
+            "and cannot be approved with a v2 signer"
+        )
+
     # F1 fix: validate policy_sequence as int and requires_dual as bool
     # so the signer prints only values it computed itself, never raw server
     # strings for these two fields.  Every other displayed field is already
@@ -495,7 +623,11 @@ def signer_approve(escalation_id: str, server: str | None, yes: bool) -> None:
             )
 
     # S2: refuse to sign if any displayed field contains control chars
-    _check_display_safety({
+    # R1 fix (c3 security review): script.rel and preview body text are
+    # displayed and must be checked (ADR 0010 s7).
+    _script_obj = rec.get("script")
+    _preview_obj = rec.get("script_preview")
+    _display_fields: dict[str, str] = {
         "Request ID": str(rec.get("request_id", "")),
         "Command": str(rec.get("command", "")),
         "Device ID": str(rec.get("device_id", "")),
@@ -507,7 +639,17 @@ def signer_approve(escalation_id: str, server: str | None, yes: bool) -> None:
         "Kind": str(rec.get("kind", "")),
         "Tool name": str(rec.get("tool_name", "")),
         "Status": str(rec.get("status", "")),
-    })
+    }
+    if isinstance(_script_obj, dict) and _script_obj.get("rel"):
+        _display_fields["Script file"] = str(_script_obj["rel"])
+    _check_display_safety(_display_fields)
+    # Body uses a separate check that allows TAB, LF and CR (layout chars)
+    if isinstance(_preview_obj, dict) and _preview_obj.get("text"):
+        _check_body_display_safety(str(_preview_obj["text"]))
+
+    # T12c c3: body-hash check (ADR 0010 s9 9.5) -- refuse to sign if
+    # the server altered the preview body
+    _check_body_hash(rec)
 
     # F8: recompute binding fingerprint and refuse if it doesn't match
     # the server's fingerprint.  Import only -- do not change approval.py.
@@ -535,6 +677,9 @@ def signer_approve(escalation_id: str, server: str | None, yes: bool) -> None:
     click.echo(f"Bundle sequence: {raw_bs if raw_bs is not None else ''}")
     click.echo(f"Fingerprint:     {rec.get('fingerprint', '')}")
     click.echo(f"Requires dual:   {safe_requires_dual}")
+
+    # T12c c3: script panel (ADR 0010 s9 9.5)
+    _display_script_panel(rec)
 
     if not yes:
         click.confirm("Approve this request?", abort=True)

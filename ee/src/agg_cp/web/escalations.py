@@ -63,7 +63,8 @@ def web_escalation_router(db_url: str, clock=None) -> APIRouter:
             rows = conn.execute(
                 "SELECT e.id, e.request_id, e.record, e.project_id, "
                 "e.policy_sequence, e.status, p.environment, "
-                "e.connector_id, e.org_id, e.requires_dual "
+                "e.connector_id, e.org_id, e.requires_dual, "
+                "e.script, e.script_preview "
                 "FROM escalations e "
                 "LEFT JOIN projects p ON p.id = e.project_id "
                 "WHERE e.status = 'pending' "
@@ -124,6 +125,20 @@ def web_escalation_router(db_url: str, clock=None) -> APIRouter:
                 item["tool_name"] = tool_name
             if bundle_sequence is not None:
                 item["bundle_sequence"] = bundle_sequence
+            # T12c c3: fp_v and script_unbound from the record jsonb
+            fp_v = record.get("fp_v") if isinstance(record, dict) else None
+            script_unbound = record.get("script_unbound") if isinstance(record, dict) else None
+            if fp_v is not None:
+                item["fp_v"] = fp_v
+            if script_unbound is not None:
+                item["script_unbound"] = script_unbound
+            # T12c: script and script_preview from separate columns
+            script_col = row[10]
+            preview_col = row[11]
+            if script_col is not None:
+                item["script"] = script_col
+            if preview_col is not None:
+                item["script_preview"] = preview_col
             items.append(item)
 
         resp = JSONResponse({"escalations": items})

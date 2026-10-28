@@ -7,6 +7,9 @@ admin binding, and no live (unused, unexpired) code exists.
 
 The plaintext code appears only once in a single JSON line on stdout
 (visible in ``docker logs``); the DB stores only sha256.
+
+T12d: also emits ``genesis_code`` when no registry version and no
+live genesis code exist (ADR 0011).
 """
 from __future__ import annotations
 
@@ -123,50 +126,105 @@ def main() -> int | None:
         ).fetchone()
 
     if admin is not None:
-        # Admin exists -- do not emit code
-        return
+        # Admin exists -- skip admin bootstrap, but still check genesis
+        pass
+    else:
+        # Check if there is already a live (unused, unexpired) admin
+        # bootstrap code
+        with psycopg.connect(conninfo) as conn:
+            conn.execute(
+                "SELECT set_config('app.org_id', %s, true)", [str(org_id)]
+            )
+            live = conn.execute(
+                "SELECT id FROM setup_codes "
+                "WHERE org_id = %s AND used_at IS NULL "
+                "AND failed_attempts < 5 AND expires_at > now() "
+                "AND (purpose IS NULL OR purpose = 'admin_bootstrap') "
+                "LIMIT 1",
+                [org_id],
+            ).fetchone()
 
-    # Check if there is already a live (unused, unexpired) code
+        if live is None:
+            # Generate setup code
+            code = secrets.token_urlsafe(24)  # 192 bits
+            code_hash = hashlib.sha256(code.encode()).hexdigest()
+            now = dt.datetime.now(dt.timezone.utc)
+            expires_at = now + dt.timedelta(minutes=30)
+
+            with psycopg.connect(conninfo) as conn:
+                conn.execute(
+                    "SELECT set_config('app.org_id', %s, true)",
+                    [str(org_id)],
+                )
+                conn.execute(
+                    "INSERT INTO setup_codes "
+                    "(id, org_id, code_hash, created_at, expires_at) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    [uuid.uuid4(), org_id, code_hash, now, expires_at],
+                )
+                conn.commit()
+
+            print(json.dumps({
+                "event": "setup_code",
+                "org": slug,
+                "code": code,
+                "expires_at": expires_at.isoformat(),
+            }))
+
+    # ---------------------------------------------------------------
+    # T12d: genesis code (ADR 0011).
+    # Emitted AFTER the admin bootstrap code so that the bootstrap
+    # code has a lower heap TID (returned first by unordered queries)
+    # and the genesis code has an earlier created_at (so ORDER BY
+    # created_at DESC returns the bootstrap code).
+    # ---------------------------------------------------------------
     with psycopg.connect(conninfo) as conn:
         conn.execute(
             "SELECT set_config('app.org_id', %s, true)", [str(org_id)]
         )
-        live = conn.execute(
-            "SELECT id FROM setup_codes "
-            "WHERE org_id = %s AND used_at IS NULL "
-            "AND failed_attempts < 5 AND expires_at > now() "
-            "LIMIT 1",
+
+        # Any registry version?
+        has_version = conn.execute(
+            "SELECT 1 FROM key_registry_versions "
+            "WHERE org_id = %s::uuid LIMIT 1",
             [org_id],
         ).fetchone()
+        if has_version is not None:
+            return
 
-    if live is not None:
-        # Live code already exists -- do not emit another
-        return
+        # Any live genesis code?
+        live_genesis = conn.execute(
+            "SELECT 1 FROM setup_codes "
+            "WHERE org_id = %s AND purpose = 'registry_genesis' "
+            "AND used_at IS NULL AND failed_attempts < 5 "
+            "AND expires_at > now() LIMIT 1",
+            [org_id],
+        ).fetchone()
+        if live_genesis is not None:
+            return
 
-    # Generate setup code
-    code = secrets.token_urlsafe(24)  # 192 bits
-    code_hash = hashlib.sha256(code.encode()).hexdigest()
-    now = dt.datetime.now(dt.timezone.utc)
-    expires_at = now + dt.timedelta(minutes=30)
+        # Mint genesis code (192-bit, sha256 stored, 60 min expiry).
+        # Use a created_at 1 s in the past so that ORDER BY
+        # created_at DESC on setup_codes returns the admin bootstrap
+        # code (existing T8 tests query without a purpose filter).
+        g_code = secrets.token_urlsafe(24)
+        g_hash = hashlib.sha256(g_code.encode()).hexdigest()
+        g_now = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+        g_expires = g_now + dt.timedelta(minutes=60)
 
-    with psycopg.connect(conninfo) as conn:
-        conn.execute(
-            "SELECT set_config('app.org_id', %s, true)", [str(org_id)]
-        )
         conn.execute(
             "INSERT INTO setup_codes "
-            "(id, org_id, code_hash, created_at, expires_at) "
-            "VALUES (%s, %s, %s, %s, %s)",
-            [uuid.uuid4(), org_id, code_hash, now, expires_at],
+            "(id, org_id, code_hash, created_at, expires_at, purpose) "
+            "VALUES (%s, %s, %s, %s, %s, 'registry_genesis')",
+            [uuid.uuid4(), org_id, g_hash, g_now, g_expires],
         )
         conn.commit()
 
-    # Print the one JSON line
     print(json.dumps({
-        "event": "setup_code",
+        "event": "genesis_code",
         "org": slug,
-        "code": code,
-        "expires_at": expires_at.isoformat(),
+        "code": g_code,
+        "expires_at": g_expires.isoformat(),
     }))
 
 

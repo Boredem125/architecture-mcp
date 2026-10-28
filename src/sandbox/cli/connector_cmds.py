@@ -464,6 +464,118 @@ def _describe_runners(layout) -> str:
     return "opted in (approved): " + ", ".join(runners) + " run without a human"
 
 
+_LOCAL_CTRL = frozenset(
+    set(range(0x00, 0x20))          # C0
+    | set(range(0x80, 0xA0))        # C1
+    | {0x7F}                        # DEL
+    | {0x202A, 0x202B, 0x202C, 0x202D, 0x202E}     # bidi
+    | {0x2066, 0x2067, 0x2068, 0x2069}              # bidi isolates
+    | {0x200E, 0x200F}              # LRM / RLM
+    | {0x061C}                      # ALM
+)
+# Body-specific: TAB (0x09), LF (0x0A), CR (0x0D) are layout, not dangerous
+_LOCAL_BODY_CTRL = _LOCAL_CTRL - {0x09, 0x0A, 0x0D}
+
+
+def _has_control_chars_local(s: str) -> bool:
+    """Return True if *s* contains any dangerous control character.
+
+    R2 fix (c3 security review): same rule as sync_cmds._has_control_chars
+    (C0, C1, DEL, bidi controls).  Duplicated to avoid a cross-module
+    import from the CLI layer.
+    """
+    return any(ord(c) in _LOCAL_CTRL for c in s)
+
+
+def _has_body_control_chars_local(s: str) -> bool:
+    """Body-specific: allows TAB, LF, CR; refuses all other controls."""
+    return any(ord(c) in _LOCAL_BODY_CTRL for c in s)
+
+
+def _display_local_script_panel(rec: dict) -> None:
+    """Display the script content panel for local approve (ADR 0010 s9 9.5).
+
+    Shows script.rel, sha256, size and the preview body with line numbers.
+    For unbound records, shows "content NOT bound: <reason>".
+    Same display as ``signer approve`` (T12c c3).
+
+    R2 fix (c3 security review): refuses with exit 1 if script.rel or
+    preview body text contains control characters (ADR 0010 s7).  The
+    pending record is left untouched on disk.
+    """
+    _script = rec.get("script")
+    _preview = rec.get("script_preview")
+    _unbound = rec.get("script_unbound", "")
+
+    if _unbound:
+        click.echo(f"  content NOT bound: {_unbound}")
+        return
+
+    if _script is None:
+        return
+
+    rel = _script.get("rel", "")
+    sha = _script.get("sha256", "")
+    size = _script.get("size", 0)
+
+    # R2: control-char check on script.rel and preview body (ADR 0010 s7)
+    if rel and _has_control_chars_local(rel):
+        click.echo(
+            f"REFUSED: script file name contains control characters: {repr(rel)}"
+        )
+        raise SystemExit(1)
+
+    body_text = ""
+    if _preview is not None and _preview.get("shown", False):
+        body_text = _preview.get("text", "")
+        if body_text and _has_body_control_chars_local(body_text):
+            click.echo(
+                "REFUSED: script body contains control characters"
+            )
+            raise SystemExit(1)
+
+    click.echo(f"Script file:     {rel}")
+    click.echo(f"Script sha256:   {sha}")
+    click.echo(f"Script size:     {size}")
+    click.echo(f"  Only {rel} is bound. Files it loads are not.")
+
+    if body_text:
+        click.echo("--- script body ---")
+        for i, line in enumerate(body_text.splitlines(), 1):
+            click.echo(f"  {i:4d} | {line}")
+        click.echo("--- end ---")
+
+
+def _check_local_body_hash(rec: dict) -> None:
+    """Recompute sha256 of the preview body and refuse on mismatch.
+
+    Same check as ``signer approve``'s body-hash check (T12c c3,
+    ADR 0010 s9 9.5).  A mismatch means the record's script_preview
+    was tampered with after the hook wrote it.
+    """
+    import hashlib as _hl
+
+    _preview = rec.get("script_preview")
+    if _preview is None:
+        return
+    if not _preview.get("shown", False):
+        return
+
+    body_text = _preview.get("text", "")
+    expected_sha = _preview.get("sha256", "")
+    if not expected_sha:
+        return
+
+    computed_sha = _hl.sha256(body_text.encode("utf-8")).hexdigest()
+    if computed_sha != expected_sha:
+        click.echo(
+            f"REFUSED: body hash mismatch: computed {computed_sha[:16]}... "
+            f"vs record {expected_sha[:16]}...; the preview may have been "
+            "tampered with"
+        )
+        raise SystemExit(1)
+
+
 @click.command("approve")
 @click.argument("request_id")
 @click.argument("path", default=".")
@@ -498,6 +610,12 @@ def approve_cmd(request_id: str, path: str, reason: str, remember: str, reviewer
 
     reviewer = reviewer or default_reviewer()
     rec = EscalationQueue(layout).get(request_id) or {}
+
+    # T12c c3: display the script panel and run the body-hash check
+    # before approving (ADR 0010 s9 9.5, same checks as signer approve).
+    _display_local_script_panel(rec)
+    _check_local_body_hash(rec)
+
     outcome = asyncio.run(approve(layout, request_id, reviewer, reason))
     status = outcome["status"]
     if status == "not_pending":
