@@ -14,3 +14,8 @@ ed57bfa30f0ad25850586bb703035071496369ae:tests/security/test_m2_t12_remote.py:st
 # secrets.token_hex() at runtime; the matched string is a request id.
 52fbbace9ccf522502f18bc31c981926b0b5a612:ee/tests/test_m2_t13_web.py:generic-api-key:1002
 52fbbace9ccf522502f18bc31c981926b0b5a612:ee/tests/test_m2_t13_web.py:generic-api-key:1397
+
+# T12c c1 (d2e758e) added a fake OpenAI-style key as the preview secret-scrubbing
+# fixture (extra test 10). The line carries gitleaks:allow since c2; this entry
+# covers the c1 commit in history. Not a credential.
+d2e758ed784c8a29936affb90a6131c501c3c2b0:tests/security/test_m2_script_binding.py:generic-api-key:1647
