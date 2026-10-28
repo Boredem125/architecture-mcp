@@ -194,3 +194,7 @@ R2 fixed the floor condition to include `requires_dual`. The deny message "enrol
 ### Final verdict: APPROVE
 
 All six findings are fixed. No new findings. The TCB is sound.
+
+---
+
+**28 Oct 2026 -- CI follow-up (test_t0f_lexer).** Setup-only confirmed: monkeypatch pins DEADLINE_SECONDS to 60.0; assertion unchanged. No product change is correct (both codes are fail-closed denies; the race is environmental). Gap: no test asserts SHELL_DEADLINE itself; recommend a c6 extra test with a crafted slow input and a low deadline.

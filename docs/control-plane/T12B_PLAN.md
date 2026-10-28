@@ -133,6 +133,7 @@ Amended 28 Oct 2026 (founder ruling, section "Founder rulings (28 Oct 2026)"; so
     - init lookup order: the `--bash` flag, `CLAUDE_CODE_GIT_BASH_PATH`, `%ProgramFiles%\Git\bin\bash.exe`, the git-derived `<git root>\bin\bash.exe` (a fake git at `X\cmd\git.exe` gives `X\bin\bash.exe`), then PATH;
     - init refuses both `System32\bash.exe` and `...\Microsoft\WindowsApps\bash.exe` even when PATH finds them first (the demo laptop's case);
     - a PowerShell-tool record runs with `pwsh` when present, else System32 `powershell.exe` 5.1, with `-NoProfile -NonInteractive -EncodedCommand`.
+9. (added 28 Oct, security sign-off on the CI follow-up) `SHELL_DEADLINE` has no test of its own: feed a crafted slow input with a low monkeypatched `shellwords.DEADLINE_SECONDS` and assert `deny[0] == "SHELL_DEADLINE"`. Lands in c6.
 
 **T16 notes (founder ruling 25 Oct):**
 - Demo step 5 stays `steal-env` (curl, binding "none").
