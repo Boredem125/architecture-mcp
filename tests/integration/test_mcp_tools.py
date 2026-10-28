@@ -119,9 +119,12 @@ async def test_hook_request_visible_over_mcp(root):
     layout = FolderLayout(root)
     queue = EscalationQueue(layout)
     # Simulate a hook-origin pending request.
+    # Named test-setup edit (T12c c2): fp_v=2 and tool_name required by broker
     rid = queue.submit({
         "root": str(root), "origin": "hook", "trigger": ["shell"],
         "command": f'{sys.executable} -c "print(2)"', "exec_cwd": str(root),
+        "kind": "command", "tool_name": "Bash", "fp_v": 2,
+        "script": None, "script_unbound": "", "script_preview": None,
     })
     broker = FolderBroker()
     rec = queue.claim(rid, "cli")

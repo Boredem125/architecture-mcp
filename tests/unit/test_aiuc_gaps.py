@@ -91,10 +91,13 @@ def test_shell_escalation_is_in_the_chain_before_a_decision(layout):
 # --- A008.5: secrets scrubbed from output, logs and audit -----------------
 
 def test_secrets_in_approved_output_are_scrubbed(layout):
+    # Named test-setup edit (T12c c2): fp_v=2 and tool_name required by broker
     rid = EscalationQueue(layout).submit({
         "kind": "command", "root": str(layout.root), "exec_cwd": str(layout.root),
         "command": f"echo API_KEY={FAKE_VALUE} commit 3f9a1c2b7d4e5f60718293a4b5c6d7e8f9012345",
         "trigger": ["shell"], "reason_code": "SHELL",
+        "tool_name": "Bash", "fp_v": 2,
+        "script": None, "script_unbound": "", "script_preview": None,
     })
     out = asyncio.run(approve(layout, rid, "alice", "ok"))
     done = out["result"]
@@ -119,9 +122,12 @@ def test_secrets_scrubbed_from_audit_and_activity_log(layout):
 
 def test_scrub_off_keeps_output_raw(layout):
     tune(layout, lambda p: setattr(p.output, "scrub_secrets", False))
+    # Named test-setup edit (T12c c2): fp_v=2 and tool_name required by broker
     rid = EscalationQueue(layout).submit({
         "kind": "command", "root": str(layout.root), "exec_cwd": str(layout.root),
         "command": f"echo API_KEY={FAKE_VALUE}", "trigger": ["shell"], "reason_code": "SHELL",
+        "tool_name": "Bash", "fp_v": 2,
+        "script": None, "script_unbound": "", "script_preview": None,
     })
     done = asyncio.run(approve(layout, rid, "alice", "ok"))["result"]
     assert FAKE_VALUE in done["stdout"] and "secrets_redacted" not in done

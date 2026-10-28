@@ -85,9 +85,13 @@ def _ws(path: Path) -> FolderLayout:
 
 
 def _submit(layout: FolderLayout, command: str = "echo t3", **extra) -> str:
+    # Named test-setup edit (T12c c2): fp_v=2 and tool_name required by broker
     return EscalationQueue(layout).submit({
         "kind": "command", "command": command, "exec_cwd": str(layout.root),
-        "root": str(layout.root), "trigger": ["shell"], **extra,
+        "root": str(layout.root), "trigger": ["shell"],
+        "tool_name": "Bash", "fp_v": 2,
+        "script": None, "script_unbound": "", "script_preview": None,
+        **extra,
     })
 
 

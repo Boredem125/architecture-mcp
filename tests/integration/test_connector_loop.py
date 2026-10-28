@@ -26,7 +26,13 @@ def layout(tmp_path):
     policy = default_policy()
     policy.escalation_timeout_seconds = 5
     save_policy(policy, lo.policy_file)
-    lo.session_file.write_text(json.dumps({"session_id": "s-e2e"}), encoding="utf-8")
+    # T12c: use the same shell resolution as install.py (named test-setup edit)
+    from sandbox.connector.install import _resolve_shells
+    shells = _resolve_shells(lo.root)
+    lo.session_file.write_text(json.dumps({
+        "session_id": "s-e2e",
+        "shells": shells,
+    }), encoding="utf-8")
     return lo
 
 
@@ -34,7 +40,9 @@ async def test_full_loop_executes_and_returns_output(layout):
     queue = EscalationQueue(layout)
     broker = FolderBroker()
     # A command that really runs and prints a known marker.
-    command = f'{sys.executable} -c "print(\'LOOP_MARKER_42\')"'
+    # T12c: the broker runs through bash, so use POSIX path form.
+    from pathlib import Path
+    command = f"'{Path(sys.executable).as_posix()}' -c \"print('LOOP_MARKER_42')\""
 
     async def approver():
         for _ in range(100):

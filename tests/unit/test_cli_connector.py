@@ -34,10 +34,15 @@ def test_approve_runs_a_queued_command(tmp_path):
     runner.invoke(cli, ["init", str(tmp_path), "--no-claude"])
 
     queue = EscalationQueue(FolderLayout(tmp_path))
+    # Named test-setup edit (T12c c2): fp_v=2, tool_name required by broker;
+    # POSIX-form path for bash -c (T12c: broker runs through bash, not cmd.exe)
+    from pathlib import Path as _P
     rid = queue.submit({
-        "command": f'{sys.executable} -c "print(7)"',
+        "command": f"'{_P(sys.executable).as_posix()}' -c \"print(7)\"",
         "trigger": ["shell"], "root": str(tmp_path),
         "exec_cwd": str(tmp_path),
+        "kind": "command", "tool_name": "Bash", "fp_v": 2,
+        "script": None, "script_unbound": "", "script_preview": None,
     })
 
     r = runner.invoke(cli, ["approve", rid, str(tmp_path)])

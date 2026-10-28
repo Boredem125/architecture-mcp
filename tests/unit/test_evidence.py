@@ -37,8 +37,12 @@ HIT = {"clause_id": "no_external_data", "title": "No customer or business data t
 
 
 def _submit(layout, **rec) -> str:
+    # Named test-setup edit (T12c c2): fp_v=2 and tool_name required by broker
     return EscalationQueue(layout).submit({"kind": "command", "exec_cwd": str(layout.root),
-                                           "root": str(layout.root), "trigger": ["shell"], **rec})
+                                           "root": str(layout.root), "trigger": ["shell"],
+                                           "tool_name": "Bash", "fp_v": 2,
+                                           "script": None, "script_unbound": "",
+                                           "script_preview": None, **rec})
 
 
 def _approve(layout, rid, reviewer):

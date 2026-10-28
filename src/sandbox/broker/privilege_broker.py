@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import sys
 import time
 import uuid
 from collections.abc import Callable
@@ -353,15 +354,39 @@ class PrivilegeBroker:
         # R4: use a clean environment (explicit allowlist, C9 item 6)
         clean_env = self._clean_env()
 
+        # T12c (ADR 0010 s9, C-c0-6): no subprocess shell on any path.
+        # Parse the command into argv for shell=False execution.
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                import ctypes.wintypes
+                _CmdToArgv = ctypes.windll.shell32.CommandLineToArgvW
+                _CmdToArgv.argtypes = [
+                    ctypes.wintypes.LPCWSTR,
+                    ctypes.POINTER(ctypes.c_int),
+                ]
+                _CmdToArgv.restype = ctypes.POINTER(ctypes.wintypes.LPWSTR)
+                _argc = ctypes.c_int()
+                _p = _CmdToArgv(req.command, ctypes.byref(_argc))
+                if _p and _argc.value > 0:
+                    _argv = [_p[i] for i in range(_argc.value)]
+                    ctypes.windll.kernel32.LocalFree(_p)
+                else:
+                    _argv = req.command.split()
+            except Exception:
+                _argv = req.command.split()
+        else:
+            import shlex
+            try:
+                _argv = shlex.split(req.command)
+            except ValueError:
+                _argv = req.command.split()
+
         try:
             result = await asyncio.get_event_loop().run_in_executor(
                 None,
-                # shell=True is the point: the approver approved this exact
-                # shell string (pipes, redirects). Only the approver token can
-                # approve (sandbox/api/auth.py); agents can only submit.
-                lambda: subprocess.run(  # nosemgrep: python.lang.security.audit.subprocess-shell-true.subprocess-shell-true
-                    req.command,
-                    shell=True,  # nosemgrep: python.lang.security.audit.subprocess-shell-true.subprocess-shell-true
+                lambda: subprocess.run(
+                    _argv,
                     capture_output=True,
                     text=True,
                     timeout=self._exec_timeout,

@@ -53,11 +53,20 @@ def _binding_fingerprint(record: dict[str, Any]) -> str:
     """Compute the binding fingerprint for a pending record.
 
     sha256(canonical{kind, tool_name, command, exec_cwd, root,
-                     requires_dual, bundle_sequence, request_id})
+                     requires_dual, bundle_sequence, request_id,
+                     fp_v, script, script_unbound, preview_sha256})
 
-    Used by the hook to stamp the pending record, and by apply_external to
-    recompute and compare before and after the claim.
+    T12c (ADR 0010 s9 9.2): adds fp_v, script, script_unbound and
+    script_preview.sha256 to the canonical object.  The preview's hash
+    is covered, not its text.  tool_name (which sets the shell family) is
+    already covered.  There is no v1 fallback.
     """
+    # Extract preview sha256 (covers the preview hash, not text)
+    _preview = record.get("script_preview")
+    _preview_sha = ""
+    if isinstance(_preview, dict):
+        _preview_sha = _preview.get("sha256", "")
+
     binding_data = json.dumps({
         "kind": record.get("kind", ""),
         "tool_name": record.get("tool_name", ""),
@@ -67,6 +76,10 @@ def _binding_fingerprint(record: dict[str, Any]) -> str:
         "requires_dual": record.get("requires_dual", True),
         "bundle_sequence": record.get("bundle_sequence", 0),
         "request_id": record.get("request_id", ""),
+        "fp_v": record.get("fp_v", None),
+        "script": record.get("script", None),
+        "script_unbound": record.get("script_unbound", ""),
+        "preview_sha256": _preview_sha,
     }, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(binding_data).hexdigest()
 
@@ -202,6 +215,11 @@ async def approve(layout: FolderLayout, request_id: str, reviewer_id: str, reaso
         result["approvals"] = approvals
         result["requires_dual"] = True
     queue.finish(request_id, result)
+    # T12c: a refusal from the broker (SCRIPT_CHANGED, SHELL_UNAVAILABLE) is
+    # terminal; return its state rather than "executed".
+    broker_state = result.get("state", "executed")
+    if broker_state == "refused":
+        return {"status": broker_state, "result": result, **extra}
     return {"status": "executed", "result": result, **extra}
 
 
@@ -687,6 +705,23 @@ async def apply_external(
     if not expected_fp:
         return {"status": "not_pending"}
 
+    # T12c (ADR 0010 s9): refuse records that cannot be remotely approved.
+    # The fp_v check is implicit: a record without fp_v produces a different
+    # fingerprint (the recompute in _binding_fingerprint includes fp_v), so
+    # the payload.fingerprint won't match and the approval is dropped.
+    # An explicit refuse for records with non-empty script_unbound:
+    _su = pending_rec.get("script_unbound", "")
+    if _su:
+        return {"status": "refused",
+                "reason": f"script_unbound: {_su}"}
+    # A record with script set while preview.shown is false is refused
+    _script_rec = pending_rec.get("script")
+    _preview_rec = pending_rec.get("script_preview")
+    if _script_rec is not None and isinstance(_preview_rec, dict):
+        if not _preview_rec.get("shown", False):
+            return {"status": "refused",
+                    "reason": "script preview not shown"}
+
     # R3b: policy_sequence must be >= the record's bundle_sequence
     rec_bundle_seq = pending_rec.get("bundle_sequence", 0)
     if isinstance(rec_bundle_seq, int) and effective_seq < rec_bundle_seq:
@@ -923,4 +958,8 @@ async def apply_external(
     except Exception:  # noqa: BLE001 -- audit is additive
         pass
 
+    # T12c: a refusal from the broker is terminal
+    broker_state = result.get("state", "executed")
+    if broker_state == "refused":
+        return {"status": broker_state, "result": result}
     return {"status": "executed", "result": result}
