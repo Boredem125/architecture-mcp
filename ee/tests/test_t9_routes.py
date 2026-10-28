@@ -97,13 +97,24 @@ _M2_T12B_ROUTES = frozenset({
     ("GET", "/api/v1/sync/escalations/{escalation_id}"),
 })
 
+# M2 T12c named exception: sync escalations list (ADR 0010 s9)
+_M2_T12C_ROUTES = frozenset({
+    ("GET", "/api/v1/sync/escalations"),
+})
+
+# M2 T12d named exception: genesis bootstrap routes (ADR 0011)
+_M2_T12D_ROUTES = frozenset({
+    ("POST", "/api/v1/sync/signer/genesis"),
+    ("GET", "/api/v1/sync/signer/candidates"),
+})
+
 # Infrastructure routes
 _INFRA_ROUTES = frozenset({
     ("GET", "/health"),
     ("GET", "/ready"),
 })
 
-EXPECTED_ROUTES = _AUTH_PRE_AUTH | _AUTH_SESSION | _T9_ROUTES | _M2_T7_T8_ROUTES | _M2_T9_ROUTES | _M2_ENROLL_PERSIST_ROUTES | _M2_T11_ROUTES | _M2_T12_ROUTES | _M2_T13_ROUTES | _M2_T12B_ROUTES | _INFRA_ROUTES
+EXPECTED_ROUTES = _AUTH_PRE_AUTH | _AUTH_SESSION | _T9_ROUTES | _M2_T7_T8_ROUTES | _M2_T9_ROUTES | _M2_ENROLL_PERSIST_ROUTES | _M2_T11_ROUTES | _M2_T12_ROUTES | _M2_T13_ROUTES | _M2_T12B_ROUTES | _M2_T12C_ROUTES | _M2_T12D_ROUTES | _INFRA_ROUTES
 
 
 # ---------------------------------------------------------------------------

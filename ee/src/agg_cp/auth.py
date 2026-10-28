@@ -736,6 +736,7 @@ def build_auth_router(
                 "SELECT id, code_hash, expires_at, used_at, failed_attempts "
                 "FROM setup_codes WHERE org_id = %s "
                 "AND used_at IS NULL AND failed_attempts < 5 "
+                "AND (purpose IS NULL OR purpose = 'admin_bootstrap') "
                 "ORDER BY created_at DESC LIMIT 1 "
                 "FOR UPDATE",
                 [org_id],

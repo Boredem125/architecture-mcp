@@ -1,6 +1,7 @@
-"""Server-side escalation and approval routes (D6.1, D6.2, T12, T13, T12b-2).
+"""Server-side escalation and approval routes (D6.1, D6.2, T12, T13, T12b-2, T12c).
 
 POST /api/v1/sync/escalations                       -- upload escalation
+GET  /api/v1/sync/escalations                        -- list (session/signer)
 GET  /api/v1/sync/decisions                          -- poll decisions
 POST /api/v1/sync/escalations/{escalation_id}/approvals -- submit approval
 GET  /api/v1/sync/escalations/{escalation_id}        -- escalation detail
@@ -9,9 +10,16 @@ Connections ``SET ROLE agg_app`` like enroll.py/signer.py/bundles.py.
 Auth: device token for upload/decisions.
 Approval submission accepts ONLY signer tokens or web session+CSRF (T13).
 Device tokens on the approval route get 401/403.
-GET detail accepts signer tokens or web sessions; device tokens refused.
+GET list and GET detail accept signer tokens or web sessions; device tokens refused.
 
 Uses scrub.py to clean records before storage (threat 19).
+
+T12c additions (ADR 0010 s9):
+- ``script`` and ``script_preview`` stored as separate jsonb columns.
+- Preview text over 64 KiB rejected (400), never truncated.
+- GET list and GET detail carry the ``script`` and ``script_preview`` fields.
+- M4 equality on ``script_rel``, ``script_sha256`` and ``preview_sha256``
+  in the approvals route.
 """
 from __future__ import annotations
 
@@ -41,12 +49,21 @@ _T12B_BATCH_LIMIT = True
 # T12b-2 approver_keys projection: approvals route checks roles + revoked_at.
 _T12B2_APPROVER_KEYS = True
 
+# T12c sentinels: script content binding server features.
+_T12C_SCRIPT_FIELDS = True
+_T12C_PREVIEW_VALIDATION = True
+_T12C_M4_SCRIPT_BINDING = True
+
 # Protocol constant: the fixed tag for remote-approval envelopes (M4).
 # The server never trusts the envelope's kind field for verification.
 REMOTE_APPROVAL_TAG = "agg/remote-approval/v1"
 
 # Batch upload limit (C9 item 3)
 _BATCH_LIMIT = 50
+
+# T12c: maximum preview text size (64 KiB, ADR 0010 s9 C-c0-7).
+# A preview over this limit is rejected, never truncated.
+_MAX_PREVIEW_BYTES = 64 * 1024
 
 # Body-size cap (1 MiB, matching audit_upload)
 _MAX_BODY_BYTES = 1_048_576
@@ -408,6 +425,33 @@ def escalation_router(db_url: str, clock=None) -> APIRouter:
                         {"error": "invalid request_id"}, status_code=400,
                     )
 
+                # T12c: extract and validate script fields (ADR 0010 s9)
+                script_field = None
+                script_preview_field = None
+                if isinstance(record, dict):
+                    raw_script = record.get("script")
+                    if isinstance(raw_script, dict):
+                        script_field = raw_script
+                    raw_preview = record.get("script_preview")
+                    if isinstance(raw_preview, dict):
+                        # C-c0-7: reject preview text over 64 KiB,
+                        # never truncate
+                        preview_text = raw_preview.get("text", "")
+                        # c4 security R1: a non-string text (array, object,
+                        # number) must not slip past the size check.
+                        if not isinstance(preview_text, str):
+                            return JSONResponse(
+                                {"error": "preview text must be a string"},
+                                status_code=400,
+                            )
+                        if len(preview_text.encode("utf-8",
+                                errors="surrogatepass")) > _MAX_PREVIEW_BYTES:
+                            return JSONResponse(
+                                {"error": "preview text exceeds 64 KiB limit"},
+                                status_code=400,
+                            )
+                        script_preview_field = raw_preview
+
                 # Scrub the record before storage (threat 19)
                 scrubbed_record = (
                     _scrub_record(record)
@@ -421,9 +465,13 @@ def escalation_router(db_url: str, clock=None) -> APIRouter:
                         "INSERT INTO escalations "
                         "(id, org_id, project_id, connector_id, "
                         "request_id, record, risk, requires_dual, "
-                        "status, policy_sequence, created_at) "
+                        "status, policy_sequence, "
+                        "script, script_preview, "
+                        "created_at) "
                         "VALUES (%s::uuid, %s::uuid, %s::uuid, %s::uuid, "
-                        "%s, %s::jsonb, %s, %s, %s, %s, now())",
+                        "%s, %s::jsonb, %s, %s, %s, %s, "
+                        "%s::jsonb, %s::jsonb, "
+                        "now())",
                         [
                             esc_id, org_id, project_id, connector_id,
                             request_id,
@@ -434,6 +482,10 @@ def escalation_router(db_url: str, clock=None) -> APIRouter:
                              if isinstance(record, dict) else False),
                             "pending",
                             policy_seq,
+                            (json.dumps(script_field)
+                             if script_field is not None else None),
+                            (json.dumps(script_preview_field)
+                             if script_preview_field is not None else None),
                         ],
                     )
                     conn.commit()
@@ -458,6 +510,114 @@ def escalation_router(db_url: str, clock=None) -> APIRouter:
                 return JSONResponse({"escalation_id": esc_id})
         except Exception:
             _log.exception("escalation upload error")
+            return JSONResponse(
+                {"error": "internal_error"}, status_code=500,
+            )
+
+    # -----------------------------------------------------------------
+    # GET /api/v1/sync/escalations (session/signer auth, org-scoped)
+    # T12c: list pending escalations with script and script_preview.
+    # -----------------------------------------------------------------
+    @rbac_route(
+        router, "get", "/api/v1/sync/escalations",
+        role="signer_or_session", scope="org",
+    )
+    async def list_sync_escalations(request: Request) -> JSONResponse:
+        import logging
+        _log = logging.getLogger("agg_cp.sync.escalations")
+
+        try:
+          with _conn() as conn:
+            org_id, auth_user_id, auth_err = _auth_signer_or_session(
+                conn, request,
+            )
+            if auth_err is not None:
+                return auth_err
+
+            conn.execute(
+                "SELECT set_config('app.org_id', %s, true)", [org_id]
+            )
+
+            rows = conn.execute(
+                "SELECT e.id, e.request_id, e.record, e.project_id, "
+                "e.policy_sequence, e.status, e.connector_id, e.org_id, "
+                "e.requires_dual, e.script, e.script_preview "
+                "FROM escalations e "
+                "WHERE e.status = 'pending' "
+                "ORDER BY e.created_at DESC",
+            ).fetchall()
+
+            # Latest registry version for the org
+            rv_row = conn.execute(
+                "SELECT COALESCE(MAX(version), 1) "
+                "FROM key_registry_versions "
+                "WHERE org_id = %s::uuid",
+                [org_id],
+            ).fetchone()
+            latest_rv = rv_row[0] if rv_row else 1
+
+            conn.commit()
+
+          items = []
+          for row in rows:
+            record = row[2] or {}
+            command = record.get("command", "") if isinstance(record, dict) else ""
+            fingerprint = record.get("fingerprint", "") if isinstance(record, dict) else ""
+            exec_cwd = record.get("exec_cwd", "") if isinstance(record, dict) else ""
+            root = record.get("root", "") if isinstance(record, dict) else ""
+            kind = record.get("kind") if isinstance(record, dict) else None
+            tool_name = record.get("tool_name") if isinstance(record, dict) else None
+            bundle_sequence = record.get("bundle_sequence") if isinstance(record, dict) else None
+            if kind is not None and not isinstance(kind, str):
+                kind = str(kind)
+            if tool_name is not None and not isinstance(tool_name, str):
+                tool_name = str(tool_name)
+            if bundle_sequence is not None:
+                if isinstance(bundle_sequence, bool) or not isinstance(bundle_sequence, int):
+                    bundle_sequence = None
+
+            item = {
+                "escalation_id": str(row[0]),
+                "request_id": row[1],
+                "command": command,
+                "fingerprint": fingerprint,
+                "device_id": str(row[6]) if row[6] else "",
+                "project_id": str(row[3]),
+                "org_id": str(row[7]) if row[7] else "",
+                "policy_sequence": row[4],
+                "requires_dual": bool(row[8]) if row[8] is not None else True,
+                "exec_cwd": exec_cwd,
+                "root": root,
+                "registry_version": latest_rv,
+            }
+            if kind is not None:
+                item["kind"] = kind
+            if tool_name is not None:
+                item["tool_name"] = tool_name
+            if bundle_sequence is not None:
+                item["bundle_sequence"] = bundle_sequence
+
+            # T12c c3: fp_v and script_unbound from the record jsonb
+            fp_v = record.get("fp_v") if isinstance(record, dict) else None
+            script_unbound = record.get("script_unbound") if isinstance(record, dict) else None
+            if fp_v is not None:
+                item["fp_v"] = fp_v
+            if script_unbound is not None:
+                item["script_unbound"] = script_unbound
+
+            # T12c: script and script_preview from separate columns
+            script_col = row[9]
+            preview_col = row[10]
+            if script_col is not None:
+                item["script"] = script_col
+            if preview_col is not None:
+                item["script_preview"] = preview_col
+
+            items.append(item)
+
+          return JSONResponse({"escalations": items})
+        except Exception:
+            _log.exception("sync escalations list error")
             return JSONResponse(
                 {"error": "internal_error"}, status_code=500,
             )
@@ -701,7 +861,8 @@ def escalation_router(db_url: str, clock=None) -> APIRouter:
             # ---- Lock escalation row early (RLS: cross-org -> 404) ----
             esc_row = conn.execute(
                 "SELECT id, org_id, project_id, connector_id, "
-                "request_id, record, policy_sequence, requires_dual "
+                "request_id, record, policy_sequence, requires_dual, "
+                "script, script_preview "
                 "FROM escalations "
                 "WHERE id = %s::uuid FOR UPDATE",
                 [esc_id],
@@ -888,6 +1049,45 @@ def escalation_router(db_url: str, clock=None) -> APIRouter:
                     status_code=400,
                 )
 
+            # ---- T12c M4: script field equality (ADR 0010 s9 9.5) ----
+            # The approval payload's script_rel, script_sha256 and
+            # preview_sha256 must equal the stored escalation's values.
+            # esc_row columns: 0=id, 1=org_id, 2=project_id,
+            # 3=connector_id, 4=request_id, 5=record, 6=policy_seq,
+            # 7=requires_dual, 8=script, 9=script_preview.
+            stored_script = esc_row[8]  # jsonb or None
+            stored_preview = esc_row[9]  # jsonb or None
+
+            # Derive expected values from stored columns
+            expected_script_rel = ""
+            expected_script_sha256 = ""
+            expected_preview_sha256 = ""
+            if isinstance(stored_script, dict):
+                expected_script_rel = stored_script.get("rel", "")
+                expected_script_sha256 = stored_script.get("sha256", "")
+            if isinstance(stored_preview, dict):
+                expected_preview_sha256 = stored_preview.get("sha256", "")
+
+            payload_script_rel = payload.get("script_rel", "")
+            payload_script_sha256 = payload.get("script_sha256", "")
+            payload_preview_sha256 = payload.get("preview_sha256", "")
+
+            if str(payload_script_rel) != str(expected_script_rel):
+                return JSONResponse(
+                    {"error": "binding: script_rel mismatch"},
+                    status_code=400,
+                )
+            if str(payload_script_sha256) != str(expected_script_sha256):
+                return JSONResponse(
+                    {"error": "binding: script_sha256 mismatch"},
+                    status_code=400,
+                )
+            if str(payload_preview_sha256) != str(expected_preview_sha256):
+                return JSONResponse(
+                    {"error": "binding: preview_sha256 mismatch"},
+                    status_code=400,
+                )
+
             # R2: when operator_user_id is NULL, refuse (fail closed)
             if operator_uid is None:
                 return JSONResponse(
@@ -1010,7 +1210,8 @@ def escalation_router(db_url: str, clock=None) -> APIRouter:
             # RLS-scoped: cross-org sees nothing -> 404
             row = conn.execute(
                 "SELECT id, org_id, project_id, connector_id, "
-                "request_id, record, policy_sequence, requires_dual, status "
+                "request_id, record, policy_sequence, requires_dual, status, "
+                "script, script_preview "
                 "FROM escalations "
                 "WHERE id = %s::uuid",
                 [esc_id],
@@ -1093,6 +1294,29 @@ def escalation_router(db_url: str, clock=None) -> APIRouter:
                 resp_body["tool_name"] = tool_name
             if bundle_sequence is not None:
                 resp_body["bundle_sequence"] = bundle_sequence
+
+            # T12c c3: fp_v and script_unbound from the record jsonb
+            # (needed by the signer to recompute fingerprint v2)
+            fp_v = (
+                esc_record.get("fp_v")
+                if isinstance(esc_record, dict) else None
+            )
+            script_unbound = (
+                esc_record.get("script_unbound")
+                if isinstance(esc_record, dict) else None
+            )
+            if fp_v is not None:
+                resp_body["fp_v"] = fp_v
+            if script_unbound is not None:
+                resp_body["script_unbound"] = script_unbound
+
+            # T12c: script and script_preview from separate columns
+            script_col = row[9]
+            preview_col = row[10]
+            if script_col is not None:
+                resp_body["script"] = script_col
+            if preview_col is not None:
+                resp_body["script_preview"] = preview_col
 
             return JSONResponse(resp_body)
         except Exception:

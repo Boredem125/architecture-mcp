@@ -68,6 +68,13 @@ class M2T12dPending(Exception):
 
 
 # ---------------------------------------------------------------------------
+# Module-level bundle-signer public key (set by the fixture, read by helpers)
+# ---------------------------------------------------------------------------
+
+_SERVER_BUNDLE_SIGNER_PUB: bytes | None = None
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -78,8 +85,8 @@ def _conninfo(url: str) -> str:
 def _seed_user_row(conn, org_id: str, email: str,
                    *, iss: str = "https://idp.test",
                    sub: str | None = None,
-                   roles: list[str] | None = None) -> str:
-    """Insert a users row; return user_id (uuid str)."""
+                   roles: list[str] | None = None) -> tuple[str, str, str]:
+    """Insert a users row; return (user_id, iss, sub) as strings."""
     user_id = str(uuid.uuid4())
     actual_sub = sub or f"sub-{uuid.uuid4().hex[:8]}"
     conn.execute(
@@ -88,7 +95,7 @@ def _seed_user_row(conn, org_id: str, email: str,
         "'active', now()) ON CONFLICT DO NOTHING",
         [user_id, org_id, iss, actual_sub, email],
     )
-    return user_id
+    return user_id, iss, actual_sub
 
 
 def _grant_role(conn, org_id: str, user_id: str, role: str,
@@ -127,22 +134,35 @@ def _create_signer_link(conn, org_id: str, user_id: str) -> str:
     return code
 
 
-def _link_cli_key(client, code: str, sk: SigningKey):
-    """POST /api/v1/sync/signer/link to bind a CLI key."""
-    pub = bytes(sk.verify_key).hex()
-    kid = hashlib.sha256(bytes(sk.verify_key)).hexdigest()
-    r = client.post("/api/v1/sync/signer/link", json={
-        "code": code,
-        "key_id": kid,
-        "public_key": pub,
-    })
-    return r
+def _kid(sk: SigningKey) -> str:
+    return hashlib.sha256(bytes(sk.verify_key)).hexdigest()
 
 
-def _get_signer_token(client, sk: SigningKey, kid: str) -> str | None:
-    """Obtain a signer token via assertion."""
+def _link_and_token_httpx(base_url: str, owner_url: str, org_id: str,
+                          user_id: str) -> tuple[SigningKey, str, str]:
+    """Create link, link CLI key, get signer token.
+    Returns (sk, kid, token).  Uses httpx against the live server."""
+    import httpx
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        code = _create_signer_link(conn, org_id, user_id)
+    sk = SigningKey.generate()
+    kid = _kid(sk)
+    r = httpx.post(f"{base_url}/api/v1/sync/signer/link", json={
+        "code": code, "key_id": kid,
+        "public_key": bytes(sk.verify_key).hex(),
+    }, timeout=10)
+    assert r.status_code == 200, f"link failed: {r.status_code} {r.text}"
+    token = _get_signer_token_httpx(base_url, sk, kid)
+    assert token is not None, "signer token not obtained"
+    return sk, kid, token
+
+
+def _get_signer_token_httpx(base_url: str, sk: SigningKey, kid: str) -> str | None:
+    """Obtain a signer token via httpx (for live server tests)."""
+    import httpx
     nonce = secrets.token_hex(16)
-    payload = {"key_id": kid, "nonce": nonce, "aud": "http://testserver", "iat": time.time()}
+    payload = {"key_id": kid, "nonce": nonce, "aud": base_url, "iat": time.time()}
     tag = b"agg/signer-assert/v1"
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     msg = tag + b"\x00" + canonical
@@ -153,14 +173,10 @@ def _get_signer_token(client, sk: SigningKey, kid: str) -> str | None:
         "payload": payload,
         "signatures": [{"key_id": kid, "alg": "ed25519", "sig": sig}],
     }
-    r = client.post("/api/v1/sync/signer/token", json=assertion)
+    r = httpx.post(f"{base_url}/api/v1/sync/signer/token", json=assertion, timeout=10)
     if r.status_code == 200:
         return r.json().get("token")
     return None
-
-
-def _kid(sk: SigningKey) -> str:
-    return hashlib.sha256(bytes(sk.verify_key)).hexdigest()
 
 
 def _build_genesis_envelope(
@@ -199,7 +215,7 @@ def _build_genesis_envelope(
     actual_roles = roles if roles is not None else ["admin"]
 
     if bundle_signer_pub is None:
-        bundle_signer_pub = bytes(SigningKey.generate().verify_key)
+        bundle_signer_pub = _SERVER_BUNDLE_SIGNER_PUB or bytes(SigningKey.generate().verify_key)
     bs_kid = hashlib.sha256(bundle_signer_pub).hexdigest()
 
     payload = {
@@ -304,12 +320,113 @@ def _seed_genesis_code(conn, org_id: str, *, minutes: int = 60) -> str:
     return code
 
 
+def _fresh_org(owner_url: str, name: str = "Fresh Org") -> str:
+    """Create a brand-new org and return its id (uuid str)."""
+    org_id = str(uuid.uuid4())
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        create_org(conn, org_id, name)
+    return org_id
+
+
+def _seed_admin_with_link_and_code(
+    base_url: str,
+    owner_url: str,
+    org_id: str,
+    email: str,
+    *,
+    iss: str = "https://idp.test",
+    sub: str | None = None,
+) -> tuple[str, str, str, SigningKey, str, str, str]:
+    """Full bootstrap: user + admin role + signer link + linked CLI key +
+    pending_link signer token + genesis code.
+
+    Returns (user_id, iss, sub, sk, kid, token, genesis_code).
+    """
+    import httpx
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        user_id, act_iss, act_sub = _seed_user_row(
+            conn, org_id, email, iss=iss, sub=sub,
+        )
+        _grant_role(conn, org_id, user_id, "admin")
+        link_code = _create_signer_link(conn, org_id, user_id)
+        genesis_code = _seed_genesis_code(conn, org_id)
+
+    sk = SigningKey.generate()
+    kid = _kid(sk)
+    r = httpx.post(f"{base_url}/api/v1/sync/signer/link", json={
+        "code": link_code, "key_id": kid,
+        "public_key": bytes(sk.verify_key).hex(),
+    }, timeout=10)
+    assert r.status_code == 200, f"link failed: {r.status_code} {r.text}"
+
+    token = _get_signer_token_httpx(base_url, sk, kid)
+    assert token is not None, "signer token not obtained"
+
+    return user_id, act_iss, act_sub, sk, kid, token, genesis_code
+
+
+def _do_genesis(base_url: str, owner_url: str, org_id: str,
+                email: str = "gen@test.example") -> tuple[str, SigningKey, str, str]:
+    """Run a full genesis on a fresh org.
+    Returns (user_id, sk, kid, token_after_genesis).
+    The token returned is a *confirmed* signer token (after genesis
+    the key is in approver_keys)."""
+    import httpx
+    uid, iss, sub, sk, kid, token, gcode = _seed_admin_with_link_and_code(
+        base_url, owner_url, org_id, email,
+    )
+    env = _build_genesis_envelope(sk, org_id, user_id=uid, iss=iss, sub=sub)
+    r = httpx.post(
+        f"{base_url}/api/v1/sync/signer/genesis",
+        json={"genesis_code": gcode, "envelope": env},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10,
+    )
+    assert r.status_code == 200, f"genesis failed: {r.status_code} {r.text}"
+    # After genesis the key is in approver_keys; get a confirmed token
+    confirmed_token = _get_signer_token_httpx(base_url, sk, kid)
+    assert confirmed_token is not None, "confirmed signer token not obtained"
+    return uid, sk, kid, confirmed_token
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
-def genesis_server(pg_url, app_url, owner_url, pg_roles):
+def bundle_signer_info(tmp_path_factory):
+    """Provide a bundle-signer key file and set AGG_BUNDLE_SIGNER_KEY_FILE.
+
+    Module-scoped: runs before genesis_server starts its subprocess,
+    so the server inherits the env var.  The public key is also stored
+    in the module-level _SERVER_BUNDLE_SIGNER_PUB so that
+    _build_genesis_envelope uses it by default (R1 fix).
+    """
+    global _SERVER_BUNDLE_SIGNER_PUB
+    key_dir = tmp_path_factory.mktemp("bundle_signer_genesis")
+    key_file = key_dir / "bundle_signer.key"
+    sk = SigningKey.generate()
+    key_file.write_bytes(bytes(sk).hex().encode("ascii"))
+    old_env = os.environ.get("AGG_BUNDLE_SIGNER_KEY_FILE")
+    os.environ["AGG_BUNDLE_SIGNER_KEY_FILE"] = str(key_file)
+    _SERVER_BUNDLE_SIGNER_PUB = bytes(sk.verify_key)
+    yield {
+        "key_file": str(key_file),
+        "signing_key": sk,
+        "public_key_bytes": bytes(sk.verify_key),
+        "public_key_hex": bytes(sk.verify_key).hex(),
+    }
+    _SERVER_BUNDLE_SIGNER_PUB = None
+    if old_env is None:
+        os.environ.pop("AGG_BUNDLE_SIGNER_KEY_FILE", None)
+    else:
+        os.environ["AGG_BUNDLE_SIGNER_KEY_FILE"] = old_env
+
+
+@pytest.fixture(scope="module")
+def genesis_server(pg_url, app_url, owner_url, pg_roles, bundle_signer_info):
     yield from make_sync_server(
         pg_url, app_url, owner_url,
         org_names=["Genesis Org", "Evil Org"],
@@ -322,30 +439,30 @@ def genesis_server(pg_url, app_url, owner_url, pg_roles):
 
 
 @pytest.mark.pg
-def test_guard_genesis_route_returns_404_today(genesis_server):
-    """POST /api/v1/sync/signer/genesis does not exist today -> 404 or 405."""
+def test_guard_genesis_unauthenticated_post_refused(genesis_server):
+    """An unauthenticated POST to /genesis gets 401 (not 404)."""
     import httpx
     r = httpx.post(
         f"{genesis_server['base_url']}/api/v1/sync/signer/genesis",
         json={"genesis_code": "x", "envelope": {}},
         timeout=10,
     )
-    assert r.status_code in (404, 405), (
-        f"genesis route should not exist yet, got {r.status_code}"
+    assert r.status_code == 401, (
+        f"unauthenticated genesis POST should be 401, got {r.status_code}"
     )
 
 
 @pytest.mark.pg
-def test_guard_candidates_route_returns_404_today(genesis_server):
-    """GET /api/v1/sync/signer/candidates does not exist today -> 404 or 405."""
+def test_guard_candidates_unauthenticated_refused(genesis_server):
+    """An unauthenticated GET to /candidates gets 401 (not 404)."""
     import httpx
     r = httpx.get(
         f"{genesis_server['base_url']}/api/v1/sync/signer/candidates",
         headers={"Authorization": "Bearer fake"},
         timeout=10,
     )
-    assert r.status_code in (401, 404, 405), (
-        f"candidates route should not exist yet, got {r.status_code}"
+    assert r.status_code == 401, (
+        f"candidates with fake token should be 401, got {r.status_code}"
     )
 
 
@@ -355,62 +472,25 @@ def test_guard_candidates_route_returns_404_today(genesis_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: genesis route not implemented")
 def test_genesis_happy_path(genesis_server):
     """POST genesis with a valid code and envelope -> 200 {version: 1}.
-    The key's status in approver_keys becomes 'signer'."""
+    The key appears in approver_keys with the admin role and
+    signer_links is consumed."""
     import httpx
     base = genesis_server["base_url"]
-    org_id = genesis_server["org_id"]
     owner_url = genesis_server["owner_url"]
 
-    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
-        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        user_id = _seed_user_row(conn, org_id, "alice@test.example",
-                                 sub="sub-alice")
-        _grant_role(conn, org_id, user_id, "admin")
-        code = _create_signer_link(conn, org_id, user_id)
+    # Fresh org so no prior v1
+    org_id = _fresh_org(owner_url, "Happy Org")
 
-    # Link the CLI key
-    sk = SigningKey.generate()
-    kid = _kid(sk)
-    r = httpx.post(f"{base}/api/v1/sync/signer/link", json={
-        "code": code,
-        "key_id": kid,
-        "public_key": bytes(sk.verify_key).hex(),
-    }, timeout=10)
-    assert r.status_code == 200, f"link failed: {r.status_code} {r.text}"
-
-    # Get signer token (pending_link scope)
-    token = _get_signer_token_httpx(base, sk, kid)
-    assert token is not None, "signer token not obtained"
-
-    # Seed genesis code
-    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
-        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        genesis_code = _seed_genesis_code(conn, org_id)
-
-    # Read the user's OIDC identity for the envelope
-    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
-        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        row = conn.execute(
-            "SELECT oidc_issuer, oidc_subject FROM users WHERE id = %s",
-            [user_id],
-        ).fetchone()
-        iss, sub = row[0], row[1]
-
-    # Build envelope -- look up the server's bundle signer key
-    # For the test, the server must have a configured bundle signer
-    # Use a generated key for the test
-    bundle_sk = SigningKey.generate()
-    bundle_pub = bytes(bundle_sk.verify_key)
+    uid, iss, sub, sk, kid, token, genesis_code = _seed_admin_with_link_and_code(
+        base, owner_url, org_id, "alice@test.example",
+    )
 
     envelope = _build_genesis_envelope(
         sk, org_id,
-        user_id=user_id, iss=iss, sub=sub,
+        user_id=uid, iss=iss, sub=sub,
         roles=["admin"],
-        bundle_signer_pub=bundle_pub,
     )
 
     r = httpx.post(
@@ -419,7 +499,6 @@ def test_genesis_happy_path(genesis_server):
         headers={"Authorization": f"Bearer {token}"},
         timeout=10,
     )
-    # The route does not exist today
     if r.status_code in (404, 405):
         raise M2T12dPending("genesis route not implemented")
     assert r.status_code == 200, f"genesis failed: {r.status_code} {r.text}"
@@ -428,36 +507,34 @@ def test_genesis_happy_path(genesis_server):
     # No fingerprint in response (S2)
     assert "fingerprint" not in body
 
-    # Verify the key is now 'signer' in approver_keys
+    # Verify: approver_keys row exists with admin role (projection)
+    # Schema: id, org_id, user_id, public_key, alg, kind, key_id,
+    #         registry_version, enrolled_at, revoked_at,
+    #         enrollment_signatures, created_at, roles (jsonb, 0010)
     with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
         row = conn.execute(
-            "SELECT status FROM approver_keys WHERE key_id = %s AND org_id = %s",
+            "SELECT key_id, roles, revoked_at "
+            "FROM approver_keys WHERE key_id = %s AND org_id = %s::uuid",
             [kid, org_id],
         ).fetchone()
         assert row is not None, "approver_keys row missing after genesis"
-        assert row[0] == "signer", f"expected status 'signer', got {row[0]!r}"
+        roles_val = row[1] if isinstance(row[1], list) else json.loads(row[1])
+        assert "admin" in roles_val, f"expected admin in roles, got {roles_val}"
+        assert row[2] is None, "revoked_at should be NULL for active key"
 
-
-def _get_signer_token_httpx(base_url: str, sk: SigningKey, kid: str) -> str | None:
-    """Obtain a signer token via httpx (for live server tests)."""
-    import httpx
-    nonce = secrets.token_hex(16)
-    payload = {"key_id": kid, "nonce": nonce, "aud": base_url, "iat": time.time()}
-    tag = b"agg/signer-assert/v1"
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    msg = tag + b"\x00" + canonical
-    sig = sk.sign(msg).signature.hex()
-    assertion = {
-        "kind": "agg/signer-assert/v1",
-        "sig_v": 1,
-        "payload": payload,
-        "signatures": [{"key_id": kid, "alg": "ed25519", "sig": sig}],
-    }
-    r = httpx.post(f"{base_url}/api/v1/sync/signer/token", json=assertion, timeout=10)
-    if r.status_code == 200:
-        return r.json().get("token")
-    return None
+    # Verify: signer_links row is consumed
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        link_row = conn.execute(
+            "SELECT status FROM signer_links "
+            "WHERE org_id = %s::uuid AND key_id = %s",
+            [org_id, kid],
+        ).fetchone()
+        assert link_row is not None, "signer_links row missing"
+        assert link_row[0] == "consumed", (
+            f"expected link status 'consumed', got {link_row[0]!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -466,24 +543,31 @@ def _get_signer_token_httpx(base_url: str, sk: SigningKey, kid: str) -> str | No
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: genesis route not implemented")
 def test_second_genesis_returns_409_with_alert(genesis_server):
     """Once v1 exists, a second genesis attempt returns 409 genesis_exists
     and the genesis code is not consumed (threat 22, second_genesis alert)."""
     import httpx
     base = genesis_server["base_url"]
-    org_id = genesis_server["org_id"]
+    owner_url = genesis_server["owner_url"]
+
+    # Create a fresh org and run genesis to completion
+    org_id = _fresh_org(owner_url, "SecondGenesis Org")
+    _do_genesis(base, owner_url, org_id, "first@test.example")
+
+    # Now attempt a second genesis with a real pending_link token
+    uid2, iss2, sub2, sk2, kid2, token2, gcode2 = _seed_admin_with_link_and_code(
+        base, owner_url, org_id, "second@test.example",
+    )
+    env2 = _build_genesis_envelope(sk2, org_id, user_id=uid2, iss=iss2, sub=sub2)
 
     r = httpx.post(
         f"{base}/api/v1/sync/signer/genesis",
-        json={"genesis_code": "anything", "envelope": {}},
-        headers={"Authorization": "Bearer fake"},
+        json={"genesis_code": gcode2, "envelope": env2},
+        headers={"Authorization": f"Bearer {token2}"},
         timeout=10,
     )
     if r.status_code in (404, 405):
         raise M2T12dPending("genesis route not implemented")
-    # If v1 already exists from the happy-path test, we should get 409
     assert r.status_code == 409
     body = r.json()
     assert body.get("error") == "genesis_exists"
@@ -495,61 +579,88 @@ def test_second_genesis_returns_409_with_alert(genesis_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: genesis route not implemented")
 def test_genesis_code_single_use(genesis_server):
     """A genesis code can be used only once."""
     import httpx
     base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, "SingleUse Org")
+    uid, iss, sub, sk, kid, token, genesis_code = _seed_admin_with_link_and_code(
+        base, owner_url, org_id, "once@test.example",
+    )
+    env = _build_genesis_envelope(sk, org_id, user_id=uid, iss=iss, sub=sub)
+
     r = httpx.post(
         f"{base}/api/v1/sync/signer/genesis",
-        json={"genesis_code": "some-code", "envelope": {}},
-        headers={"Authorization": "Bearer fake"},
+        json={"genesis_code": genesis_code, "envelope": env},
+        headers={"Authorization": f"Bearer {token}"},
         timeout=10,
     )
     if r.status_code in (404, 405):
         raise M2T12dPending("genesis route not implemented")
-    # Specifics depend on implementation order; the key fact is
-    # a reuse of the same code must fail
+    assert r.status_code == 200, f"first genesis failed: {r.status_code}"
+
+    # Attempt reuse -- should fail (409 because v1 exists now)
+    r2 = httpx.post(
+        f"{base}/api/v1/sync/signer/genesis",
+        json={"genesis_code": genesis_code, "envelope": env},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10,
+    )
+    assert r2.status_code == 409, (
+        f"second use of genesis code should be refused, got {r2.status_code}"
+    )
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: genesis route not implemented")
 def test_genesis_code_expired_refused(genesis_server):
     """An expired genesis code is refused."""
     import httpx
+    import datetime as dt
     base = genesis_server["base_url"]
-    org_id = genesis_server["org_id"]
     owner_url = genesis_server["owner_url"]
 
-    # Seed an already-expired genesis code
+    org_id = _fresh_org(owner_url, "Expired Org")
+
     with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        code = secrets.token_urlsafe(24)
-        code_hash = hashlib.sha256(code.encode()).hexdigest()
-        import datetime as dt
+        uid, iss, sub_val = _seed_user_row(conn, org_id, "exp@test.example")
+        _grant_role(conn, org_id, uid, "admin")
+        link_code = _create_signer_link(conn, org_id, uid)
+
+        # Seed an already-expired genesis code
+        exp_code = secrets.token_urlsafe(24)
+        exp_hash = hashlib.sha256(exp_code.encode()).hexdigest()
         now = dt.datetime.now(dt.timezone.utc)
-        expired = now - dt.timedelta(minutes=1)
         try:
             conn.execute(
                 "INSERT INTO setup_codes "
                 "(id, org_id, code_hash, created_at, expires_at, purpose) "
                 "VALUES (%s, %s, %s, %s, %s, 'registry_genesis')",
-                [str(uuid.uuid4()), org_id, code_hash,
-                 now - dt.timedelta(hours=2), expired],
+                [str(uuid.uuid4()), org_id, exp_hash,
+                 now - dt.timedelta(hours=2),
+                 now - dt.timedelta(minutes=1)],
             )
         except Exception as exc:
             if "purpose" in str(exc).lower() or "column" in str(exc).lower():
-                raise M2T12dPending(
-                    "setup_codes.purpose column missing (d2 migration)"
-                ) from exc
+                raise M2T12dPending("setup_codes.purpose column missing") from exc
             raise
 
+    sk = SigningKey.generate()
+    kid = _kid(sk)
+    httpx.post(f"{base}/api/v1/sync/signer/link", json={
+        "code": link_code, "key_id": kid,
+        "public_key": bytes(sk.verify_key).hex(),
+    }, timeout=10)
+    token = _get_signer_token_httpx(base, sk, kid)
+    assert token is not None
+
+    env = _build_genesis_envelope(sk, org_id, user_id=uid, iss=iss, sub=sub_val)
     r = httpx.post(
         f"{base}/api/v1/sync/signer/genesis",
-        json={"genesis_code": code, "envelope": {}},
-        headers={"Authorization": "Bearer fake"},
+        json={"genesis_code": exp_code, "envelope": env},
+        headers={"Authorization": f"Bearer {token}"},
         timeout=10,
     )
     if r.status_code in (404, 405):
@@ -558,63 +669,57 @@ def test_genesis_code_expired_refused(genesis_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: genesis route not implemented")
 def test_genesis_code_5_failures_locks_out(genesis_server):
     """After 5 wrong attempts the code is locked even with the right code."""
     import httpx
     base = genesis_server["base_url"]
-    org_id = genesis_server["org_id"]
     owner_url = genesis_server["owner_url"]
 
-    # Seed a fresh genesis code
-    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
-        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        genesis_code = _seed_genesis_code(conn, org_id)
+    org_id = _fresh_org(owner_url, "Lockout Org")
+    uid, iss, sub_val, sk, kid, token, genesis_code = _seed_admin_with_link_and_code(
+        base, owner_url, org_id, "lock@test.example",
+    )
 
-    # 5 wrong attempts
+    # 5 wrong attempts (with a real token so the route doesn't bail at auth)
     for i in range(5):
         r = httpx.post(
             f"{base}/api/v1/sync/signer/genesis",
             json={"genesis_code": f"wrong-{i}", "envelope": {}},
-            headers={"Authorization": "Bearer fake"},
+            headers={"Authorization": f"Bearer {token}"},
             timeout=10,
         )
         if r.status_code in (404, 405):
             raise M2T12dPending("genesis route not implemented")
 
     # Now try the right code -- should be locked
+    env = _build_genesis_envelope(sk, org_id, user_id=uid, iss=iss, sub=sub_val)
     r = httpx.post(
         f"{base}/api/v1/sync/signer/genesis",
-        json={"genesis_code": genesis_code, "envelope": {}},
-        headers={"Authorization": "Bearer fake"},
+        json={"genesis_code": genesis_code, "envelope": env},
+        headers={"Authorization": f"Bearer {token}"},
         timeout=10,
     )
-    if r.status_code in (404, 405):
-        raise M2T12dPending("genesis route not implemented")
     assert r.status_code == 400, (
         f"expected 400 after 5 failures, got {r.status_code}"
     )
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: genesis route not implemented")
 def test_genesis_wrong_code_increments_failure_count(genesis_server):
     """A wrong code increments failed_attempts (observable)."""
     import httpx
     base = genesis_server["base_url"]
-    org_id = genesis_server["org_id"]
     owner_url = genesis_server["owner_url"]
 
-    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
-        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        genesis_code = _seed_genesis_code(conn, org_id)
+    org_id = _fresh_org(owner_url, "FailCount Org")
+    uid, iss, sub_val, sk, kid, token, genesis_code = _seed_admin_with_link_and_code(
+        base, owner_url, org_id, "fail@test.example",
+    )
 
     r = httpx.post(
         f"{base}/api/v1/sync/signer/genesis",
         json={"genesis_code": "definitely-wrong", "envelope": {}},
-        headers={"Authorization": "Bearer fake"},
+        headers={"Authorization": f"Bearer {token}"},
         timeout=10,
     )
     if r.status_code in (404, 405):
@@ -624,20 +729,13 @@ def test_genesis_wrong_code_increments_failure_count(genesis_server):
     # Check the failure count incremented
     with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        try:
-            row = conn.execute(
-                "SELECT failed_attempts FROM setup_codes "
-                "WHERE org_id = %s AND purpose = 'registry_genesis' "
-                "AND used_at IS NULL "
-                "ORDER BY created_at DESC LIMIT 1",
-                [org_id],
-            ).fetchone()
-        except Exception as exc:
-            if "purpose" in str(exc).lower() or "column" in str(exc).lower():
-                raise M2T12dPending(
-                    "setup_codes.purpose column missing (d2 migration)"
-                ) from exc
-            raise
+        row = conn.execute(
+            "SELECT failed_attempts FROM setup_codes "
+            "WHERE org_id = %s AND purpose = 'registry_genesis' "
+            "AND used_at IS NULL "
+            "ORDER BY created_at DESC LIMIT 1",
+            [org_id],
+        ).fetchone()
         assert row is not None, "genesis code row missing"
         assert row[0] >= 1, f"expected failed_attempts >= 1, got {row[0]}"
 
@@ -648,35 +746,34 @@ def test_genesis_wrong_code_increments_failure_count(genesis_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: genesis route not implemented")
 def test_genesis_non_admin_refused(genesis_server):
     """A user without the admin role is refused."""
     import httpx
     base = genesis_server["base_url"]
-    org_id = genesis_server["org_id"]
     owner_url = genesis_server["owner_url"]
+
+    # Fresh org so no v1
+    org_id = _fresh_org(owner_url, "NonAdmin Org")
 
     with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        user_id = _seed_user_row(conn, org_id, "viewer@test.example")
-        # No admin role granted
-        _grant_role(conn, org_id, user_id, "viewer")
-        code = _create_signer_link(conn, org_id, user_id)
+        uid, iss, sub_val = _seed_user_row(conn, org_id, "viewer@test.example")
+        # Viewer only -- no admin
+        _grant_role(conn, org_id, uid, "viewer")
+        link_code = _create_signer_link(conn, org_id, uid)
         genesis_code = _seed_genesis_code(conn, org_id)
 
     sk = SigningKey.generate()
     kid = _kid(sk)
-    r = httpx.post(f"{base}/api/v1/sync/signer/link", json={
-        "code": code, "key_id": kid,
+    httpx.post(f"{base}/api/v1/sync/signer/link", json={
+        "code": link_code, "key_id": kid,
         "public_key": bytes(sk.verify_key).hex(),
     }, timeout=10)
-
     token = _get_signer_token_httpx(base, sk, kid)
     if token is None:
         raise M2T12dPending("signer token not obtained for pending_link")
 
-    env = _build_genesis_envelope(sk, org_id, user_id=user_id)
+    env = _build_genesis_envelope(sk, org_id, user_id=uid, iss=iss, sub=sub_val)
     r = httpx.post(
         f"{base}/api/v1/sync/signer/genesis",
         json={"genesis_code": genesis_code, "envelope": env},
@@ -713,7 +810,13 @@ _FIELD_OVERRIDES = [
     ("roles_extra", {"override_roles": ["admin", "approver", "superuser"]}),
     ("added_in_not_1", {"override_added_in": 2}),
     ("bundle_signer_missing", {"override_bundle_signer": {}}),
+    ("bundle_signer_wrong_key", {
+        "bundle_signer_pub": bytes(SigningKey.generate().verify_key),
+    }),
     ("expires_at_past", {"override_expires_at": time.time() - 3600}),
+    ("expires_at_exceeds_ceiling", {
+        "override_expires_at": time.time() + 7 * 24 * 3600 + 7200,
+    }),
     ("sig_count_zero", {"override_sig_count": 0}),
     ("sig_count_two", {"override_sig_count": 2}),
     ("signer_wrong_kid", {"override_signer_kid": "wrong-signer-kid"}),
@@ -721,47 +824,24 @@ _FIELD_OVERRIDES = [
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: genesis route not implemented")
 @pytest.mark.parametrize("name,overrides", _FIELD_OVERRIDES,
                          ids=[x[0] for x in _FIELD_OVERRIDES])
 def test_genesis_envelope_field_rejected(genesis_server, name, overrides):
-    """Each wrong envelope field in ADR 0011 2.4 must be refused."""
+    """Each wrong envelope field in ADR 0011 2.4 must be refused.
+    Uses a fresh org per test so no 409 interference."""
     import httpx
     base = genesis_server["base_url"]
-    org_id = genesis_server["org_id"]
     owner_url = genesis_server["owner_url"]
 
-    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
-        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        user_id = _seed_user_row(conn, org_id, f"field-{name}@test.example",
-                                 sub=f"sub-field-{name}")
-        _grant_role(conn, org_id, user_id, "admin")
-        link_code = _create_signer_link(conn, org_id, user_id)
-        genesis_code = _seed_genesis_code(conn, org_id)
+    # Fresh org per parametrized case
+    org_id = _fresh_org(owner_url, f"Field-{name}")
 
-    sk = SigningKey.generate()
-    kid = _kid(sk)
-    httpx.post(f"{base}/api/v1/sync/signer/link", json={
-        "code": link_code, "key_id": kid,
-        "public_key": bytes(sk.verify_key).hex(),
-    }, timeout=10)
-
-    token = _get_signer_token_httpx(base, sk, kid)
-    if token is None:
-        raise M2T12dPending("signer token not obtained")
-
-    row = None
-    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
-        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        row = conn.execute(
-            "SELECT oidc_issuer, oidc_subject FROM users WHERE id = %s",
-            [user_id],
-        ).fetchone()
-    iss, sub = row[0], row[1]
+    uid, iss, sub_val, sk, kid, token, genesis_code = _seed_admin_with_link_and_code(
+        base, owner_url, org_id, f"field-{name}@test.example",
+    )
 
     env = _build_genesis_envelope(
-        sk, org_id, user_id=user_id, iss=iss, sub=sub,
+        sk, org_id, user_id=uid, iss=iss, sub=sub_val,
         **overrides,
     )
 
@@ -779,33 +859,100 @@ def test_genesis_envelope_field_rejected(genesis_server, name, overrides):
 
 
 # ---------------------------------------------------------------------------
+# R1: bundle_signer must match server config; refuse if not configured
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.pg
+def test_genesis_no_bundle_signer_configured_refused(
+    genesis_server, bundle_signer_info,
+):
+    """If AGG_BUNDLE_SIGNER_KEY_FILE is absent, genesis must refuse 400."""
+    import httpx
+    base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, "NoBundleSigner Org")
+    uid, iss, sub, sk, kid, token, gcode = _seed_admin_with_link_and_code(
+        base, owner_url, org_id, "nobundle@test.example",
+    )
+    env = _build_genesis_envelope(sk, org_id, user_id=uid, iss=iss, sub=sub)
+
+    # Temporarily hide the key file so the server can't load it
+    key_file = bundle_signer_info["key_file"]
+    hidden = key_file + ".hidden"
+    os.rename(key_file, hidden)
+    try:
+        r = httpx.post(
+            f"{base}/api/v1/sync/signer/genesis",
+            json={"genesis_code": gcode, "envelope": env},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+    finally:
+        os.rename(hidden, key_file)
+    assert r.status_code == 400, (
+        f"expected 400 when bundle signer not configured, got {r.status_code}"
+    )
+    assert "bundle_signer_not_configured" in r.text
+
+
+# ---------------------------------------------------------------------------
+# R3: store_registry_version failure returns generic body, not str(exc)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.pg
+def test_genesis_verify_chain_error_returns_generic_body(genesis_server):
+    """An envelope that passes the route checks but fails in verify_chain
+    must return a generic error body, not str(exc) (R3)."""
+    import httpx
+    base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, "R3 Org")
+    uid, iss, sub, sk, kid, token, gcode = _seed_admin_with_link_and_code(
+        base, owner_url, org_id, "r3@test.example",
+    )
+    env = _build_genesis_envelope(sk, org_id, user_id=uid, iss=iss, sub=sub)
+    # Sabotage the envelope kind so verify_chain rejects it; the genesis
+    # route does not check envelope.kind, only payload fields.
+    env["kind"] = "wrong/kind"
+
+    r = httpx.post(
+        f"{base}/api/v1/sync/signer/genesis",
+        json={"genesis_code": gcode, "envelope": env},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10,
+    )
+    assert r.status_code == 400
+    body = r.json()
+    assert body.get("error") == "envelope_rejected", (
+        f"expected generic 'envelope_rejected', got {body}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Two concurrent genesis calls give exactly one v1 (pg_advisory_xact_lock)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: genesis route not implemented")
 def test_concurrent_genesis_exactly_one_v1(genesis_server):
     """Two genesis calls racing: exactly one gets v1, the other 409."""
     import httpx
     import concurrent.futures
     base = genesis_server["base_url"]
-    org_id = genesis_server["org_id"]
     owner_url = genesis_server["owner_url"]
 
-    # We need a fresh org for this test to avoid interference
-    fresh_org_id = str(uuid.uuid4())
-    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
-        conn.execute("SELECT set_config('app.org_id', %s, false)", [fresh_org_id])
-        create_org(conn, fresh_org_id, "Concurrent Org")
-
-    results = []
+    fresh_org_id = _fresh_org(owner_url, "Concurrent Org")
 
     def attempt(idx):
         with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
             conn.execute("SELECT set_config('app.org_id', %s, false)", [fresh_org_id])
-            uid = _seed_user_row(conn, fresh_org_id, f"racer{idx}@test.example")
+            uid, iss, sub_val = _seed_user_row(
+                conn, fresh_org_id, f"racer{idx}@test.example",
+            )
             _grant_role(conn, fresh_org_id, uid, "admin")
             link_code = _create_signer_link(conn, fresh_org_id, uid)
             genesis_code = _seed_genesis_code(conn, fresh_org_id)
@@ -816,7 +963,10 @@ def test_concurrent_genesis_exactly_one_v1(genesis_server):
             "public_key": bytes(sk.verify_key).hex(),
         }, timeout=10)
         token = _get_signer_token_httpx(base, sk, kid)
-        env = _build_genesis_envelope(sk, fresh_org_id, user_id=uid)
+        # Pass the seeded iss/sub into the envelope (ADR 2.4 requires equality)
+        env = _build_genesis_envelope(
+            sk, fresh_org_id, user_id=uid, iss=iss, sub=sub_val,
+        )
         r = httpx.post(
             f"{base}/api/v1/sync/signer/genesis",
             json={"genesis_code": genesis_code, "envelope": env},
@@ -843,21 +993,25 @@ def test_concurrent_genesis_exactly_one_v1(genesis_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: genesis route not implemented")
 def test_no_fingerprint_in_genesis_response(genesis_server):
     """The genesis response must not include a fingerprint (S2)."""
     import httpx
     base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, "NoFP Org")
+    uid, iss, sub_val, sk, kid, token, gcode = _seed_admin_with_link_and_code(
+        base, owner_url, org_id, "nofp@test.example",
+    )
+    env = _build_genesis_envelope(sk, org_id, user_id=uid, iss=iss, sub=sub_val)
     r = httpx.post(
         f"{base}/api/v1/sync/signer/genesis",
-        json={"genesis_code": "x", "envelope": {}},
-        headers={"Authorization": "Bearer fake"},
+        json={"genesis_code": gcode, "envelope": env},
+        headers={"Authorization": f"Bearer {token}"},
         timeout=10,
     )
     if r.status_code in (404, 405):
         raise M2T12dPending("genesis route not implemented")
-    # Any response from the genesis route: check body
     try:
         body = r.json()
     except Exception:
@@ -871,50 +1025,23 @@ def test_no_fingerprint_in_genesis_response(genesis_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: genesis route not implemented")
 def test_genesis_writes_admin_audit_row(genesis_server):
-    """A successful genesis writes an admin_audit row with event
+    """A successful genesis writes an admin_audit row with action
     'registry_genesis'."""
     import httpx
     base = genesis_server["base_url"]
-    org_id = genesis_server["org_id"]
     owner_url = genesis_server["owner_url"]
 
-    # We need a fresh org
-    fresh_org_id = str(uuid.uuid4())
-    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
-        conn.execute("SELECT set_config('app.org_id', %s, false)", [fresh_org_id])
-        create_org(conn, fresh_org_id, "Audit Test Org")
-        uid = _seed_user_row(conn, fresh_org_id, "audit-alice@test.example",
-                             sub="sub-audit-alice")
-        _grant_role(conn, fresh_org_id, uid, "admin")
-        link_code = _create_signer_link(conn, fresh_org_id, uid)
-        genesis_code = _seed_genesis_code(conn, fresh_org_id)
+    fresh_org_id = _fresh_org(owner_url, "Audit Test Org")
 
-    sk = SigningKey.generate()
-    kid = _kid(sk)
-    httpx.post(f"{base}/api/v1/sync/signer/link", json={
-        "code": link_code, "key_id": kid,
-        "public_key": bytes(sk.verify_key).hex(),
-    }, timeout=10)
-    token = _get_signer_token_httpx(base, sk, kid)
-    if token is None:
-        raise M2T12dPending("signer token not obtained")
-
-    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
-        conn.execute("SELECT set_config('app.org_id', %s, false)", [fresh_org_id])
-        row = conn.execute(
-            "SELECT oidc_issuer, oidc_subject FROM users WHERE id = %s",
-            [uid],
-        ).fetchone()
-        iss, sub = row[0], row[1]
-
-    env = _build_genesis_envelope(sk, fresh_org_id, user_id=uid, iss=iss, sub=sub)
+    uid, iss, sub_val, sk, kid, token, gcode = _seed_admin_with_link_and_code(
+        base, owner_url, fresh_org_id, "audit-alice@test.example",
+    )
+    env = _build_genesis_envelope(sk, fresh_org_id, user_id=uid, iss=iss, sub=sub_val)
 
     r = httpx.post(
         f"{base}/api/v1/sync/signer/genesis",
-        json={"genesis_code": genesis_code, "envelope": env},
+        json={"genesis_code": gcode, "envelope": env},
         headers={"Authorization": f"Bearer {token}"},
         timeout=10,
     )
@@ -923,7 +1050,7 @@ def test_genesis_writes_admin_audit_row(genesis_server):
     assert r.status_code == 200, f"genesis failed: {r.status_code} {r.text}"
 
     # Check admin_audit row (action='registry_genesis', detail jsonb holds
-    # user_id, key_id and payload sha256)
+    # user_id, key_id and payload_sha256)
     with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [fresh_org_id])
         row = conn.execute(
@@ -949,8 +1076,6 @@ def test_genesis_writes_admin_audit_row(genesis_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: pending_link scope rule not updated")
 def test_pending_link_refused_on_pending_route(genesis_server):
     """A pending_link token must be refused on /pending."""
     import httpx
@@ -960,39 +1085,35 @@ def test_pending_link_refused_on_pending_route(genesis_server):
 
     with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        uid = _seed_user_row(conn, org_id, "pending-test@test.example")
+        uid, _iss, _sub = _seed_user_row(conn, org_id, "pending-test@test.example")
         _grant_role(conn, org_id, uid, "admin")
-        code = _create_signer_link(conn, org_id, uid)
 
-    sk = SigningKey.generate()
-    kid = _kid(sk)
-    httpx.post(f"{base}/api/v1/sync/signer/link", json={
-        "code": code, "key_id": kid,
-        "public_key": bytes(sk.verify_key).hex(),
-    }, timeout=10)
-    token = _get_signer_token_httpx(base, sk, kid)
-    if token is None:
-        raise M2T12dPending("signer token not obtained for pending_link")
+    sk, kid, token = _link_and_token_httpx(base, owner_url, org_id, uid)
 
     r = httpx.get(
         f"{base}/api/v1/sync/signer/pending",
         headers={"Authorization": f"Bearer {token}"},
         timeout=10,
     )
-    # pending_link should be refused on /pending (403 or similar)
-    # Today the scope check only blocks pending_link from non-link routes,
-    # but after D0-5 fix the scope allowlist is used. Check the current
-    # behaviour:
-    if r.status_code == 403:
-        # Already refusing -- check if genesis is also blocked (it shouldn't be)
-        raise M2T12dPending("pending_link scope rule needs genesis exception")
-    # If it currently allows (the D0-5 open finding), the fix should block it
-    raise M2T12dPending("pending_link must be refused on /pending after D0-5 fix")
+    # pending_link must be refused on /pending (403)
+    assert r.status_code == 403, (
+        f"pending_link should be refused on /pending, got {r.status_code}"
+    )
+    # genesis must NOT be blocked for pending_link (the D0-5 allowlist
+    # exception):  a POST to /genesis with a bad body still gets through
+    # the scope check (returns 400 from the route, not 403 from scope).
+    r2 = httpx.post(
+        f"{base}/api/v1/sync/signer/genesis",
+        json={"genesis_code": "", "envelope": {}},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10,
+    )
+    assert r2.status_code != 403, (
+        "pending_link should be allowed to reach /genesis (scope exception)"
+    )
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: pending_link own-key publish not implemented")
 def test_pending_link_allowed_on_signatures_for_own_key(genesis_server):
     """A pending_link token may post to /signatures ONLY when the envelope
     adds the token's own key (onboarding case)."""
@@ -1003,41 +1124,34 @@ def test_pending_link_allowed_on_signatures_for_own_key(genesis_server):
 
     with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        uid = _seed_user_row(conn, org_id, "ownkey@test.example")
+        uid, _iss, _sub = _seed_user_row(conn, org_id, "ownkey@test.example")
         _grant_role(conn, org_id, uid, "admin")
-        code = _create_signer_link(conn, org_id, uid)
 
-    sk = SigningKey.generate()
-    kid = _kid(sk)
-    httpx.post(f"{base}/api/v1/sync/signer/link", json={
-        "code": code, "key_id": kid,
-        "public_key": bytes(sk.verify_key).hex(),
-    }, timeout=10)
-    token = _get_signer_token_httpx(base, sk, kid)
-    if token is None:
-        raise M2T12dPending("signer token not obtained")
+    sk, kid, token = _link_and_token_httpx(base, owner_url, org_id, uid)
 
-    # Post a registry envelope that adds this key -> should be allowed
-    # (requires a v1 to chain from, so this test exercises the own-key rule)
+    # Envelope that adds the token's own key (the onboarding case).
+    # The content is structurally incomplete so store_registry_version
+    # will reject it with 400, but the scope/own-key gate must let it
+    # through (not 403).
+    env = {
+        "kind": "agg/registry/v1", "sig_v": 1,
+        "payload": {"org_id": org_id, "version": 2, "keys": [
+            {"key_id": kid, "public_key": bytes(sk.verify_key).hex()},
+        ]},
+        "signatures": [],
+    }
     r = httpx.post(
         f"{base}/api/v1/sync/signer/signatures",
-        json={"type": "registry", "envelope": {}, "org_id": org_id},
+        json={"type": "registry", "envelope": env, "org_id": org_id},
         headers={"Authorization": f"Bearer {token}"},
         timeout=10,
     )
-    # Today this is 403 (pending_link blocked from signatures). After d2,
-    # pending_link that adds own key should be allowed.
-    if r.status_code == 403:
-        raise M2T12dPending("pending_link own-key publish not implemented")
-    # If allowed, that means the rule changed (d2 done)
     assert r.status_code in (200, 400), (
         f"unexpected status {r.status_code} for own-key publish"
     )
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: pending_link non-own-key publish not blocked")
 def test_pending_link_refused_on_signatures_for_other_key(genesis_server):
     """A pending_link post to /signatures that does NOT add its own key
     must get 403."""
@@ -1048,21 +1162,11 @@ def test_pending_link_refused_on_signatures_for_other_key(genesis_server):
 
     with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        uid = _seed_user_row(conn, org_id, "otherkey@test.example")
+        uid, _iss, _sub = _seed_user_row(conn, org_id, "otherkey@test.example")
         _grant_role(conn, org_id, uid, "admin")
-        code = _create_signer_link(conn, org_id, uid)
 
-    sk = SigningKey.generate()
-    kid = _kid(sk)
-    httpx.post(f"{base}/api/v1/sync/signer/link", json={
-        "code": code, "key_id": kid,
-        "public_key": bytes(sk.verify_key).hex(),
-    }, timeout=10)
-    token = _get_signer_token_httpx(base, sk, kid)
-    if token is None:
-        raise M2T12dPending("signer token not obtained")
+    sk, kid, token = _link_and_token_httpx(base, owner_url, org_id, uid)
 
-    # Post an envelope that does NOT add this key
     other_sk = SigningKey.generate()
     other_kid = _kid(other_sk)
     env = {
@@ -1078,13 +1182,9 @@ def test_pending_link_refused_on_signatures_for_other_key(genesis_server):
         headers={"Authorization": f"Bearer {token}"},
         timeout=10,
     )
-    # Whether currently 403 (all pending_link blocked) or not, the rule
-    # after d2 must refuse this specifically
-    if r.status_code == 403:
-        # Correct: pending_link that doesn't add own key -> 403. But need to
-        # confirm it's a purposeful check, not just the blanket D0-5 denylist
-        raise M2T12dPending("pending_link non-own-key publish check not implemented yet")
-    raise M2T12dPending("expected 403 for pending_link non-own-key publish")
+    assert r.status_code == 403, (
+        f"pending_link non-own-key publish must be 403, got {r.status_code}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1093,88 +1193,129 @@ def test_pending_link_refused_on_signatures_for_other_key(genesis_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: candidates route not implemented")
 def test_candidates_admin_only(genesis_server):
-    """GET /api/v1/sync/signer/candidates requires the admin role."""
+    """GET /api/v1/sync/signer/candidates with a confirmed NON-admin
+    token returns 403."""
     import httpx
     base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    # Create an org with genesis so we can get a confirmed token
+    org_id = _fresh_org(owner_url, "CandAdmin Org")
+    _do_genesis(base, owner_url, org_id, "admin-cand@test.example")
+
+    # Create a non-admin user, link, run through genesis won't work for
+    # non-admin, so instead: seed a viewer user and manually put their
+    # key in approver_keys to get a confirmed token.
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        viewer_id, _iss, _sub = _seed_user_row(
+            conn, org_id, "viewer-cand@test.example",
+        )
+        _grant_role(conn, org_id, viewer_id, "viewer")
+        link_code = _create_signer_link(conn, org_id, viewer_id)
+
+    viewer_sk = SigningKey.generate()
+    viewer_kid = _kid(viewer_sk)
+    httpx.post(f"{base}/api/v1/sync/signer/link", json={
+        "code": link_code, "key_id": viewer_kid,
+        "public_key": bytes(viewer_sk.verify_key).hex(),
+    }, timeout=10)
+
+    # Put the viewer key in approver_keys so cli_key_lookup returns
+    # status=signer and the token scope is "confirmed"
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        conn.execute(
+            "INSERT INTO approver_keys "
+            "(id, org_id, user_id, key_id, public_key, alg, kind, "
+            " roles, registry_version, created_at) "
+            "VALUES (%s::uuid, %s::uuid, %s, %s, %s, 'ed25519', 'cli', "
+            " '[]'::jsonb, 1, now()) "
+            "ON CONFLICT (org_id, key_id) DO NOTHING",
+            [str(uuid.uuid4()), org_id, viewer_id, viewer_kid,
+             bytes(viewer_sk.verify_key).hex()],
+        )
+
+    viewer_token = _get_signer_token_httpx(base, viewer_sk, viewer_kid)
+    if viewer_token is None:
+        raise M2T12dPending("confirmed non-admin signer token not obtained")
+
     r = httpx.get(
         f"{base}/api/v1/sync/signer/candidates",
-        headers={"Authorization": "Bearer fake"},
+        headers={"Authorization": f"Bearer {viewer_token}"},
         timeout=10,
     )
     if r.status_code in (404, 405):
         raise M2T12dPending("candidates route not implemented")
-    assert r.status_code in (401, 403), (
-        f"expected auth error, got {r.status_code}"
+    assert r.status_code == 403, (
+        f"non-admin confirmed token should get 403, got {r.status_code}"
     )
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: candidates route not implemented")
 def test_candidates_org_scoped(genesis_server):
     """Candidates from another org -> 404."""
     import httpx
     base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, "CandScope Org")
+    _uid, _sk, _kid_val, confirmed_token = _do_genesis(
+        base, owner_url, org_id, "scope@test.example",
+    )
+
     r = httpx.get(
         f"{base}/api/v1/sync/signer/candidates",
         params={"org_id": "99999999-9999-9999-9999-999999999999"},
-        headers={"Authorization": "Bearer fake"},
+        headers={"Authorization": f"Bearer {confirmed_token}"},
         timeout=10,
     )
-    if r.status_code in (404, 405):
+    if r.status_code in (405,):
         raise M2T12dPending("candidates route not implemented")
     assert r.status_code == 404
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: candidates route not implemented")
 def test_candidates_lists_pending_keys(genesis_server):
     """Candidates lists key_id, public_key, user_id, iss, sub, kind."""
     import httpx
     base = genesis_server["base_url"]
-    org_id = genesis_server["org_id"]
     owner_url = genesis_server["owner_url"]
 
+    org_id = _fresh_org(owner_url, "CandList Org")
+    _uid, _sk, _kid_val, confirmed_token = _do_genesis(
+        base, owner_url, org_id, "list@test.example",
+    )
+
+    # Add a new pending link (the candidate)
     with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        uid = _seed_user_row(conn, org_id, "cand@test.example")
-        _grant_role(conn, org_id, uid, "admin")
-        link_code = _create_signer_link(conn, org_id, uid)
+        cand_uid, _iss, _sub = _seed_user_row(
+            conn, org_id, "candidate@test.example",
+        )
+        _grant_role(conn, org_id, cand_uid, "admin")
+        cand_link_code = _create_signer_link(conn, org_id, cand_uid)
 
-    sk = SigningKey.generate()
-    kid = _kid(sk)
-    # Link the key (makes it a pending CLI link with public_key set)
+    cand_sk = SigningKey.generate()
+    cand_kid = _kid(cand_sk)
     httpx.post(f"{base}/api/v1/sync/signer/link", json={
-        "code": link_code, "key_id": kid,
-        "public_key": bytes(sk.verify_key).hex(),
+        "code": cand_link_code, "key_id": cand_kid,
+        "public_key": bytes(cand_sk.verify_key).hex(),
     }, timeout=10)
-
-    # Need a confirmed token for candidates (admin)
-    # This requires an already-signer key, so we need a genesis first
-    # or a test setup that gives us a confirmed token.
-    # For now, attempt with a pending_link token:
-    token = _get_signer_token_httpx(base, sk, kid)
-    if token is None:
-        raise M2T12dPending("signer token not obtained")
 
     r = httpx.get(
         f"{base}/api/v1/sync/signer/candidates",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {confirmed_token}"},
         timeout=10,
     )
     if r.status_code in (404, 405):
         raise M2T12dPending("candidates route not implemented")
-    # With a pending_link token, candidates should be 403 (admin-only, confirmed)
     if r.status_code == 403:
-        raise M2T12dPending("need confirmed admin token for candidates")
+        raise M2T12dPending("confirmed admin token refused on candidates")
     assert r.status_code == 200
     body = r.json()
     assert isinstance(body, list)
-    # Check fields present on each candidate
     for item in body:
         for field in ("key_id", "public_key", "user_id", "iss", "sub", "kind"):
             assert field in item, f"missing field {field} in candidate"
@@ -1186,15 +1327,12 @@ def test_candidates_lists_pending_keys(genesis_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: migrate.py genesis code not implemented")
 def test_migrate_emits_genesis_code_once(genesis_server):
     """migrate.py emits a genesis_code JSON line when no version and no live
     code exist, and not after v1."""
     import subprocess
     import sys
 
-    org_id = genesis_server["org_id"]
     pg_url = genesis_server["pg_url"]
 
     env = {
@@ -1224,8 +1362,6 @@ def test_migrate_emits_genesis_code_once(genesis_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: migrate.py genesis code dedup not implemented")
 def test_migrate_no_genesis_code_if_live_code_exists(genesis_server):
     """migrate.py must not emit a second genesis code while a live one exists."""
     import subprocess
@@ -1259,8 +1395,6 @@ def test_migrate_no_genesis_code_if_live_code_exists(genesis_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d1: migrate.py genesis code after v1 not blocked")
 def test_migrate_no_genesis_code_after_v1(genesis_server):
     """migrate.py must not emit genesis_code once v1 exists."""
     import subprocess
@@ -1283,14 +1417,39 @@ def test_migrate_no_genesis_code_after_v1(genesis_server):
         capture_output=True, text=True, env=env, timeout=60,
     )
     genesis_lines = [l for l in result1.stdout.splitlines() if "genesis_code" in l]
-    if not genesis_lines:
-        raise M2T12dPending("migrate.py does not emit genesis_code")
+    assert genesis_lines, "migrate.py must emit genesis_code on first run"
 
-    # Now if a v1 were stored, running again should not emit genesis_code
-    # (the full flow of using the code to create v1 is tested above)
-    # For this test, we check that after v1 exists, no code is emitted
-    # -- this requires the happy path to work first, so xfail is correct
-    raise M2T12dPending("migrate.py genesis_code after v1 check needs genesis route")
+    # Look up the org and insert a dummy v1 into key_registry_versions
+    # so that migrate.py sees an existing registry version.
+    conninfo = pg_url.replace("+psycopg", "").replace("postgresql+psycopg", "postgresql")
+    if not conninfo.startswith("postgresql"):
+        conninfo = pg_url.replace("+psycopg", "")
+    with psycopg.connect(conninfo, autocommit=True) as conn:
+        row = conn.execute(
+            "SELECT id FROM orgs WHERE slug = %s", ["genesisdonev1"]
+        ).fetchone()
+        assert row is not None, "org genesisdonev1 must exist after first migrate"
+        v1_org_id = str(row[0])
+        conn.execute(
+            "SELECT set_config('app.org_id', %s, false)", [v1_org_id]
+        )
+        conn.execute(
+            "INSERT INTO key_registry_versions "
+            "(id, org_id, version, registry_blob, signatures, created_at) "
+            "VALUES (%s::uuid, %s::uuid, 1, %s, '[]'::jsonb, now())",
+            [str(uuid.uuid4()), v1_org_id, b'{"payload":{"version":1}}'],
+        )
+
+    # Second run: must NOT emit genesis_code because v1 exists
+    result2 = subprocess.run(
+        [sys.executable, "-m", "agg_cp.migrate"],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+    genesis_lines2 = [l for l in result2.stdout.splitlines() if "genesis_code" in l]
+    assert not genesis_lines2, (
+        f"migrate.py must not emit genesis_code after v1 exists, "
+        f"got: {genesis_lines2}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1312,7 +1471,6 @@ def test_e2e_does_not_call_store_registry_version():
         raise M2T12dPending("test_m2_t12b_e2e.py not found")
 
     source = e2e_file.read_text(encoding="utf-8")
-    # Look for calls to store_registry_version (not just imports)
     calls = re.findall(r'\bstore_registry_version\s*\(', source)
     if calls:
         raise M2T12dPending(

@@ -472,8 +472,11 @@ def test_pending_link_token_only_completes_link():
     _need("agg_cp.sync.signer", "check_signer_token_scope")
     from agg_cp.sync.signer import check_signer_token_scope, SignerScopeError
     token_scope = {"status": "pending_link", "key_id": "a" * 64}
-    check_signer_token_scope(token_scope, route="link")
-    for route in ("pending", "signatures", "approve", "deny"):
+    # T12d: pending_link can access link, genesis and signatures
+    # (own-key check for signatures is in the route handler)
+    for allowed in ("link", "genesis", "signatures"):
+        check_signer_token_scope(token_scope, route=allowed)
+    for route in ("pending", "approve", "deny"):
         with pytest.raises(SignerScopeError):
             check_signer_token_scope(token_scope, route=route)
 

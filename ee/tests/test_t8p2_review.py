@@ -818,7 +818,8 @@ def test_l1_concurrent_wrong_guesses_cap_at_5(pg_url, app_url, owner_url, pg_rol
     conninfo = _conninfo(pg_url)
     with psycopg.connect(conninfo) as conn:
         row = conn.execute(
-            "SELECT failed_attempts FROM setup_codes WHERE org_id = %s",
+            "SELECT failed_attempts FROM setup_codes WHERE org_id = %s"
+            " AND purpose = 'admin_bootstrap'",
             [org_id2],
         ).fetchone()
     assert row is not None, "setup_codes row not found"

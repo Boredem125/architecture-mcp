@@ -217,8 +217,6 @@ def test_d0_4_registry_envelope_kind_is_checked():
 # D0-5: scope check is a denylist
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, raises=T12dD0Finding,
-                   reason="D0-5 open: unknown signer scope reaches every route")
 @pytest.mark.parametrize("scope", ["", "revoked", "link", "CONFIRMED"])
 def test_d0_5_unknown_scope_fails_closed(scope):
     from agg_cp.sync.signer import SignerScopeError, check_signer_token_scope

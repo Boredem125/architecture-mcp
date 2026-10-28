@@ -345,7 +345,6 @@ def test_guard_escalation_upload_still_works(t12c_server):
 # 9a: mismatched script_rel/script_sha256/preview_sha256 gives 400
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
 def test_mismatched_script_rel_gives_400(t12c_server):
     """An approval whose script_rel does not match the stored escalation
     gets 400."""
@@ -409,7 +408,6 @@ def test_mismatched_script_rel_gives_400(t12c_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
 def test_mismatched_script_sha256_gives_400(t12c_server):
     """An approval whose script_sha256 does not match gives 400."""
     _need_t12c_server(t12c_server)
@@ -470,7 +468,6 @@ def test_mismatched_script_sha256_gives_400(t12c_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
 def test_mismatched_preview_sha256_gives_400(t12c_server):
     """An approval whose preview_sha256 does not match gives 400."""
     _need_t12c_server(t12c_server)
@@ -533,7 +530,28 @@ def test_mismatched_preview_sha256_gives_400(t12c_server):
 # 9b: 64 KiB + 1 preview rejected, not truncated
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
+def test_non_string_preview_text_rejected(t12c_server):
+    """c4 security R1: a script_preview whose text is not a string (a JSON
+    array here, large enough to exceed 64 KiB when serialised) is rejected
+    with 400 and never stored; the size check must not be skippable by type."""
+    _need_t12c_server(t12c_server)
+
+    srv = t12c_server
+    device_id, token = _seed_test_connector(srv)
+
+    bad_text = ["x" * 1024] * 70  # ~70 KiB once serialised, not a str
+    status, esc_id = _upload_escalation(
+        srv["base_url"], device_id, token,
+        f"req-badtype-{uuid.uuid4().hex[:8]}",
+        command="python big.py",
+        record_extra={
+            "script": {"rel": "big.py", "sha256": "0" * 64, "size": 70 * 1024},
+            "script_preview": {"text": bad_text, "sha256": "0" * 64},
+        },
+    )
+    assert status == 400, f"non-string preview text must be 400, got {status}"
+    assert esc_id is None or esc_id == "", "a rejected upload must not create an escalation"
+
 def test_oversized_preview_rejected_not_truncated(t12c_server):
     """A preview text over 64 KiB is rejected (400 or 413), never truncated
     (C-c0-7)."""
@@ -564,7 +582,6 @@ def test_oversized_preview_rejected_not_truncated(t12c_server):
 # 9c: script and script_preview stored as separate jsonb
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
 def test_script_fields_stored_separately(t12c_server):
     """The server stores ``script`` and ``script_preview`` as separate jsonb
     fields, not merged."""
@@ -622,7 +639,6 @@ def test_script_fields_stored_separately(t12c_server):
 # 9d: GET list and GET-by-id carry the fields
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
 def test_get_list_carries_script_fields(t12c_server):
     """GET /api/v1/sync/escalations list carries script and script_preview."""
     _need_t12c_server(t12c_server)
@@ -669,7 +685,6 @@ def test_get_list_carries_script_fields(t12c_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12cPending)
 def test_get_detail_carries_script_fields(t12c_server):
     """GET /api/v1/sync/escalations/{id} carries script and script_preview."""
     _need_t12c_server(t12c_server)
