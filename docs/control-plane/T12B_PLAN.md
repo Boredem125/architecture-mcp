@@ -82,6 +82,7 @@ Reviewer: security-engineer (claude-opus-5-5, leader ruling), 24 Oct 2026. Verdi
 
 ## T12c: script content binding and broker shell parity (founder rulings 25 Oct 2026; design in ADR 0010 section 9)
 Owner: lead-architect. c0 is complete:
+- Status 28 Oct (evening): c2 DONE (`dca1873`), c3 and c4 DONE (`c786c5f`), each with a security review file and APPROVE after fixes; c5 built in the uncommitted tree (review fixes done, re-review pending); c6 open. CI green on `c786c5f`.
 - The security leader accepted D1-D5, with conditions C-c0-1 to C-c0-7 (written into ADR s9).
 - The founder ruled that NF-1 is fixed here.
 - The PM cuts are accepted.
@@ -147,7 +148,7 @@ Amended 28 Oct 2026 (founder ruling, section "Founder rulings (28 Oct 2026)"; so
 - Existing workspaces must run `sandbox init` again before the broker will run anything (fail closed, with a clear message).
 
 ## T12d: registry genesis bootstrap (design in ADR 0011; blocks T16)
-Owner: lead-architect. Status: d0 and d1 DONE; d2 built in the uncommitted tree (28 Oct). Founder ruling 28 Oct: d2-d5 are finished in M2, not paused (a genesis-only registry holds one key, so no dual control and no revocation; frozen demo steps 2 and 5 need v2 and v3). It started after T12b-2 was committed. The server work (d2) can run in parallel with T12c c2. `cli/sync_cmds.py` is shared with T12c c3, so d3 and c3 run one after the other.
+Owner: lead-architect. Status 28 Oct (evening): d0, d1 and d2 DONE (`c786c5f`, `T12D_D2_SECURITY_REVIEW.md` APPROVE after R1-R3); d3 built in the uncommitted tree (16 CLI tests flipped; two server routes `/config` and `/registry/latest` it calls do not exist yet, ruling due in the d3 review); d4 and d5 open. Founder ruling 28 Oct: d2-d5 are finished in M2, not paused (a genesis-only registry holds one key, so no dual control and no revocation; frozen demo steps 2 and 5 need v2 and v3). It started after T12b-2 was committed. The server work (d2) can run in parallel with T12c c2. `cli/sync_cmds.py` is shared with T12c c3, so d3 and c3 run one after the other.
 
 **Exit check.**
 - `demo.py` step 2 passes on the compose stack through routes only: genesis, then v2 signed by alice and carol, then v3 signed by both admins.
