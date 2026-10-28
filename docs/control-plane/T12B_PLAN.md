@@ -94,15 +94,17 @@ QA reviews this table before c1 is committed. T12c is a separate task. It starts
 - No approved command runs through cmd.exe. The NF-1 proof tests pass with their markers removed.
 - The suites are green on Windows and Linux CI.
 
-| ID | Task | Owner (tier) | After | Done when |
-|---|---|---|---|---|
-| c0 | Plan, ADR 0010 s9, the NF-1 ruling, the PM scope check | lead (L), security (L), qa (W), PM | - | DONE 25 Oct: security accepted D1-D5 with C-c0-1 to C-c0-7; founder: NF-1 in T12c; PM cuts accepted. QA review of this table pending |
-| c1 | Tests first: `tests/security/test_m2_script_binding.py` (qa); the extras below; `ee/tests/test_m2_t12c_script.py`; `ee/web/tests/script-preview.test.ts`. Strict xfail `raises=M2T12cPending`. `tests/security/test_m2_t12c_nf1.py` already exists (security) | qa (W) | c0 | Committed; the new tests xfail for the stated reason; suites green |
-| c2 | Connector core: new `connector/script_pin.py` (resolver and pin); `hook_eval.py` (stamping and the floor deny); `approval.py` (fingerprint v2, payload fields, refuse unbound); `broker.py` and `privilege_broker.py` (shell family from `tool_name`, the recorded shell, the argv exec under the pin, no `shell=True`, refusal records and alerts); `install.py` (record `shells` in `session.json`) | backend (W) | c1; T12b-2 committed | c1 connector tests and the NF-1 tests pass with markers removed; full connector suite green on Win and Linux; security diff review at L (TCB) APPROVE |
-| c3 | Upload and display: `sync/process.py` (upload fields), `cli/sync_cmds.py` (signer display, body-hash check, payload fields), local `sandbox approve` display | backend (W) | c2 | Tests pass; security review |
-| c4 | Server: migration 0012 (`escalations.script` and `script_preview` as separate jsonb fields); upload validation that rejects preview text over 64 KiB, never truncating; a raised request cap; GET list and GET-by-id fields; M4 equality on the three payload fields | backend (W) | c1 (in parallel with c2 if the files don't overlap) | ee tests pass (pg) |
-| c5 | Web: script panel in `InboxSection.tsx` (rel, sha256, size, `<pre>` body rendered as text with line numbers); a WebCrypto hash check that gates Approve; payload fields. If this slips, ship Approve disabled for script escalations ("approve in the CLI"), never a hash-only approve | frontend (W) | c1; the c4 contract | vitest, lint and build pass; strict CSP unchanged |
-| c6 | E2E: extend `ee/tests/test_m2_t12b_e2e.py` to swap the script after the web and CLI approvals: refused, signed done-record, evidence verifies offline. Semgrep, gitleaks; HANDOFF update | qa (W), security (W), git-ops | c2-c5 | Exit check holds; CI green; git-ops commits each task from the owner's file list |
+Amended 28 Oct 2026 (founder ruling, section "Founder rulings (28 Oct 2026)"; source `docs/ARCH_REVIEW_PM_DISTRIBUTION.md` section 3). Order is the M2 critical-path slot (1' and 1'' run in parallel with 1). Sizes are agent-team working days incl. reviews. T12c's migration is **0015**: the in-tree T12d d2 file already holds 0014.
+
+| Order | ID | Task | Owner (tier) | After | Size (d) | Done when |
+|---|---|---|---|---|---|---|
+| - | c0 | Plan, ADR 0010 s9, the NF-1 ruling, the PM scope check | lead (L), security (L), qa (W), PM | - | - | DONE 25 Oct: security accepted D1-D5 with C-c0-1 to C-c0-7; founder: NF-1 in T12c; PM cuts accepted; QA review 26 Oct (below) |
+| - | c1 | Tests first: `tests/security/test_m2_script_binding.py` (qa); the extras below; `ee/tests/test_m2_t12c_script.py`; `ee/web/tests/script-preview.test.ts`. Strict xfail `raises=M2T12cPending`. `tests/security/test_m2_t12c_nf1.py` already exists (security) | qa (W) | c0 | - | DONE: `d2e758e`, lint fix `1e55f11` |
+| 1 | c2 | Connector core: new `connector/script_pin.py` (resolver and pin); `hook_eval.py` (stamping and the floor deny); `approval.py` (fingerprint v2, payload fields, refuse unbound); `broker.py` and `privilege_broker.py` (shell family from `tool_name`, the recorded shell, the argv exec under the pin, no `shell=True`, refusal records and alerts); `install.py` (record `shells` in `session.json`). State 28 Oct: built in the uncommitted tree; locally 505 passed, 2 skipped, 1 failed (`test_extra13_init_refuses_system32_and_windowsapps`, a test-fixture path assertion). Fix it in product code or by a named test edit approved by security, never by weakening it | backend (W), security (L) | c1; T12b-2 committed | 1.5 | c1 connector tests and the NF-1 tests pass with markers removed; full connector suite green on Win and Linux CI; security diff review at L (TCB) APPROVE |
+| 2 | c3 | Upload and display: `sync/process.py` (upload fields), `cli/sync_cmds.py` (signer display, body-hash check, payload fields), local `sandbox approve` display | backend (W) | c2 | 1 | Tests pass; security W review |
+| 1' | c4 | Server: migration 0015 (`escalations.script` and `script_preview` as separate jsonb fields); upload validation that rejects preview text over 64 KiB, never truncating; a raised request cap; GET list and GET-by-id fields; M4 equality on the three payload fields in the approvals route | backend (W), security (L for the approvals-route equality check, founder 28 Oct) | c1 (in parallel with c2; the files don't overlap) | 1 | ee c1 tests pass (pg); security L APPROVE on the approvals-route check |
+| 3' | c5 | Web: script panel in `InboxSection.tsx` (rel, sha256, size, `<pre>` body rendered as text with line numbers); a WebCrypto hash check that gates Approve; payload fields. **Kept (founder 28 Oct; the PM withdrew the pause).** About 80% built in the uncommitted tree. Fallback only if it slips: Approve disabled for script escalations ("approve in the CLI"), never a hash-only approve | frontend (W) | c4 contract | 0.5 | The 6 vitest `it.fails` flip to pass; lint and build pass; strict CSP unchanged; worker-tier review |
+| 4 | c6 | E2E: extend `ee/tests/test_m2_t12b_e2e.py` to swap the script after the web and CLI approvals: refused, signed done-record, evidence verifies offline. Semgrep, gitleaks; HANDOFF update with both OS results | qa (W), security (W), git-ops | c2-c5 | 1.5 | Exit check holds; the NF-1 tests in `tests/security/test_m2_t12c_nf1.py` pass with markers removed; CI green on Windows and Linux |
 
 **Extra tests (beyond qa's behavioural set):**
 1. Fingerprint v2: one changed script byte changes the fingerprint, and so does each of the new fields. A record without `fp_v` is refused by `apply_external`, with no file touched.
@@ -144,21 +146,36 @@ QA reviews this table before c1 is committed. T12c is a separate task. It starts
 - Existing workspaces must run `sandbox init` again before the broker will run anything (fail closed, with a clear message).
 
 ## T12d: registry genesis bootstrap (design in ADR 0011; blocks T16)
-Owner: lead-architect. Status: DRAFT. It needs a security leader ruling (identity and keys), a QA review and a PM check before any code. It starts after T12b-2 is committed. The server work (d2) can run in parallel with T12c c2. `cli/sync_cmds.py` is shared with T12c c3, so d3 and c3 run one after the other.
+Owner: lead-architect. Status: d0 and d1 DONE; d2 built in the uncommitted tree (28 Oct). Founder ruling 28 Oct: d2-d5 are finished in M2, not paused (a genesis-only registry holds one key, so no dual control and no revocation; frozen demo steps 2 and 5 need v2 and v3). It started after T12b-2 was committed. The server work (d2) can run in parallel with T12c c2. `cli/sync_cmds.py` is shared with T12c c3, so d3 and c3 run one after the other.
 
 **Exit check.**
 - `demo.py` step 2 passes on the compose stack through routes only: genesis, then v2 signed by alice and carol, then v3 signed by both admins.
 - It also passes the step 2 negative checks plus the new ones (second genesis, code reuse, a `pending_link` post that does not add its own key).
 - The T12b e2e test makes no direct call to `store_registry_version`.
 
-| ID | Task | Owner (tier) | After | Done when |
-|---|---|---|---|---|
-| d0 | ADR 0011; security ruling (the B gate, the `pending_link` scope widening, the genesis field checks); QA review; PM check | lead (L), security (L), qa (W), PM | - | APPROVE recorded here |
-| d1 | Tests first (strict xfail `raises=M2T12dPending`; M2_BASELINE row). `ee/tests/test_m2_t12d_genesis.py`: happy path and its projection to `signer` status; 409 once any version exists, with the `second_genesis` alert and the code untouched; code single use, expiry, 5 failures, constant-time compare; non-admin user refused; each envelope field in ADR 0011 2.4 refused one by one; two concurrent genesis calls give exactly one v1; no fingerprint in any response; audit row written; `pending_link` refused on every route except link, genesis and the own-key publish; the candidates route is admin-only, org-scoped, and gives 404 for another org; `migrate.py` emits `genesis_code` once, not while a live code exists, and never after v1. `tests/security/test_m2_t12d_signer_cli.py` (CliRunner): link; genesis prints the fingerprint = sha256(org:canonical payload); `user_id` is the server id, not `sub`; default roles `[admin]`, `--approver` adds approver; `sign-registry --in/--out` checks the chain and the existing signatures, shows the diff from the bytes, needs the typed key_id, leaves an unconfirmed key unsigned (N1), and `--publish` works | qa (W) | d0 | Committed; xfail for the stated reason; suites green |
-| d2 | Server: migration (`setup_codes.purpose`), `migrate.py` genesis code, `POST /api/v1/sync/signer/genesis`, scope rule, `GET /api/v1/sync/signer/candidates`, own-key publish rule in `/signatures` (`ee/src/agg_cp/sync/signer.py`, `registry.py`, `migrate.py`, a migrations file) | backend (W) | d1 | ee d1 tests pass (pg); security review at L |
-| d3 | CLI: `sandbox signer link`, `genesis` and `sign-registry` in `cli/sync_cmds.py` over `connector/sync/signer.py`; fix the `build_genesis` user_id and roles; value-naming confirmation flags | backend (W) | d1; after T12c c3 or before it, not at the same time | Connector d1 tests pass; full suite green; security review |
-| d4 | `ee/deploy/demo.py` step 2 headless through routes; move the T12b e2e test to the routes and add a grep test that it never calls `store_registry_version` | qa (W), backend (W) | d2, d3 | Exit check holds on the compose stack; result recorded in HANDOFF |
-| d5 | Security diff review, Semgrep, gitleaks, commit per task | security (W), git-ops | d2-d4 | CI green |
+Amended 28 Oct 2026 (same source and conventions as the T12c table).
+
+| Order | ID | Task | Owner (tier) | After | Size (d) | Done when |
+|---|---|---|---|---|---|---|
+| - | d0 | ADR 0011; security ruling (the B gate, the `pending_link` scope widening, the genesis field checks); QA review; PM check | lead (L), security (L), qa (W), PM | - | - | DONE: security ACCEPT WITH CONDITIONS C-d0-1..13; D0-1, D0-2, D0-4 fixed in `4ef16b6` |
+| - | d1 | Tests first (strict xfail `raises=M2T12dPending`; M2_BASELINE row). `ee/tests/test_m2_t12d_genesis.py` (44 tests, pg) and `tests/security/test_m2_t12d_signer_cli.py` (19 tests, CliRunner, mocked HTTP), as listed in the M2_BASELINE section 4 rows | qa (W) | d0 | - | DONE: `a6f09c7` |
+| 1'' | d2 | Server: migration 0014 (`setup_codes.purpose`), `migrate.py` genesis code, `POST /api/v1/sync/signer/genesis`, scope rule, `GET /api/v1/sync/signer/candidates`, own-key publish rule in `/signatures` (`ee/src/agg_cp/sync/signer.py`, `registry.py`, `migrate.py`, the migrations file). Built in the uncommitted tree; not yet run on pg | backend (W), security (L, founder 28 Oct) | d1 | 1.5 | The 42 ee genesis tests pass (pg); security L APPROVE |
+| 3 | d3 | CLI: `sandbox signer link`, `genesis` and `sign-registry` in `cli/sync_cmds.py` over `connector/sync/signer.py` (byte diff D0-3, typed key_id, N1); fix the `build_genesis` user_id and roles; value-naming confirmation flags | backend (W), security (L) | c3 (shared `cli/sync_cmds.py`), d1 | 2 | The 16 CLI tests pass; full suite green; security APPROVE |
+| 5 | d4 | `ee/deploy/demo.py` step 2 headless through routes; move `ee/tests/test_m2_t12b_e2e.py` to the routes and add the grep test that it never calls `store_registry_version` | qa (W), backend (W) | d2, d3 | 1.5 | Exit check holds on the compose stack incl. the step 2 negatives; result recorded in HANDOFF |
+| 6 | d5 | Security diff review, Semgrep, gitleaks, commit per task | security (W), git-ops | d2-d4 | 0.5 | CI green |
+
+## M2 critical path after T12c and T12d (amended 28 Oct 2026)
+
+| Order | ID | Task | Owner (tier) | After | Size (d) | Done when |
+|---|---|---|---|---|---|---|
+| 7 | T15b | Adversarial review of the T12c and T12d diff (T15 predates both) | security (L) | c6, d5 | 1 | Findings fixed or recorded as named limits |
+| 8 | N1 | NF-1 write-up draft (measured, the fix commit linked). Publishing is the founder's outward action | lead (L) | c2 merged, CI green | 0.5 | Draft in docs; founder yes before any post |
+| 9 | T16 | Gate run: demo steps 1-11, scene 5(d), the SCRIPT_UNPINNABLE retry measure, `M2_DEMO.md` | qa (W) | T15b | 2.5 | All frozen steps PASS with measured numbers |
+| 10 | T17 | One-page quickstart (incl. the genesis code hand-off) and `M2_DONE.md` | lead (L), support (S) | T16 | 1 | Quickstart followed once on a clean checkout; founder approval |
+
+**Critical path:** c2, c3, d3, d4, d5, T15b, T16, T17 = **11 days**, so the M2 gate lands about 12-13 Nov 2026 if nothing slips. c4, d2, c5 and c6 run beside it. Lane X (below) runs in parallel and never gates T16 or T17.
+
+**Paused (founder positioning ruling 28 Oct: AI security is the moat, not AI governance):** the JSONL/OCSF export stays M4 (SENTRY_IDEAS #4); SENTRY_IDEAS #1 (policy advisor) and new AIUC-1 / COMPLIANCE_MAP work are paused. The existing AIUC tests (`tests/unit/test_aiuc_gaps.py` and the pack's AIUC-1 index) stay green; nothing is deleted.
 
 ## QA review (c0/d0, 26 Oct 2026)
 
@@ -191,3 +208,48 @@ Reviewer: qa-engineer (W).
 - (h) d3 and c3 share `cli/sync_cmds.py`: whichever is ready first lands first; the other rebases on it. Never both at once.
 - (i) d1 CLI tests use CliRunner with a mocked HTTP layer (`respx` or `monkeypatch` on the client), never a live server.
 - (j) d0 is DONE: the security ruling is recorded in HANDOFF ("Security d0: ACCEPT WITH CONDITIONS C-d0-1..13") and PM agreed. D0-1, D0-2 and D0-4 are fixed in `src/sandbox/protocol/registry.py` before d2; D0-3 in d3 (diff from the bytes); D0-5 in d2 (allowlist scope rule).
+
+## Lane X: cross-tool bypass suite (founder ruling 28 Oct 2026; design in `docs/ARCH_REVIEW_PM_DISTRIBUTION.md` section 4)
+Owner: lead-architect. It runs in parallel with the M2 critical path and **never gates T16 or T17**. Security and QA review this section before any lane-X code (TEAM.md step 1).
+
+**Why the existing corpus is not enough.** `tests/security/bypass_corpus.jsonl` (v1, 427 cases) was built with our classifier. 205 of its 427 cases (48%) attack our own CLI or state, and 136 encode our git allowlist. "0 RED" holds by construction. v1 stays frozen as our regression gate and is reported separately with that label, never as a cross-tool number.
+
+| ID | Task | Owner (tier) | Size (d) | Done when |
+|---|---|---|---|---|
+| X0 | Frozen rule, pre-registered before any run. Contents: a neutral policy spec (denied target actions plus the allowed benign set, translated per tool); scoring (an auto-run of a denied action = bypass; ask or escalate = held; a held benign case = friction; a model refusal or rewrite = excluded and reported, never a win); pinned tool and model versions; OS; N=3 runs per native case; the publication and disclosure rule | lead (L), security (L), qa (W) | 1 | Rule committed with its hash before X8; security and QA sign |
+| X1 | Corpus v2 (neutral): re-target cases at canary actions (a canary deploy binary, curl to a local canary server, writes to a canary protected file); map the 205 self-referential cases to each tool's own approval and config surface, or drop them with a reason; grow the pwsh cases | qa (W), security (W) | 2 | v2 schema plus mapping table; v1 untouched |
+| X2 | 2026 CVE scenarios as repo fixtures (about 10-15): committed settings with `bypassPermissions` or `disableAllHooks`; workspace-defined hooks; an embedded bare repo with a pre-commit hook under an approved `git commit`; a plugin hook returning allow or rewriting permission files; a symlink escape | security (W) | 2 | Each scenario has a canary oracle |
+| X3 | Execution oracle plus per-case workspace reset, on a Linux container and on Windows with Git bash | qa (W) | 1.5 | The oracle detects every canary on a known-bad control |
+| X4 | Adapter: our connector (direct hook, deterministic), plus a 20-case sample through real Claude Code | qa (W) | 0.5 | The sample agrees with the hook verdicts |
+| X5 | Adapter: Claude Code native permission rules via `claude -p` headless. A 0.5 d spike first: a log-only PreToolUse hook must not change the permission flow and must capture `tool_input` byte for byte | qa (W) | 2.5 | Byte-equality check on every executed case |
+| X6 | Adapter: Cursor native command allow/deny list via `cursor-agent` headless. A 0.5 d spike first: headless mode, the permission config, and whether a hook "allow" overrides the list | qa (W) | 2.5 | Same as X5 |
+| X7 | Write the lasso exclusion line (below) into the method | lead (S) | 0.25 | In the method section |
+| X8 | One run under the frozen rule, Linux and Windows; flakiness and cost recorded | qa (W) | 1.5 | Raw results committed |
+| X9 | Results in `docs/BYPASS_SUITE.md`; adversarial fairness review ("would the vendor call this rigged?"); disclosure notes | security (L), lead (L) | 1.5 | Founder yes before publishing |
+| | **Total** | | **about 15.25** | |
+
+**Dates (founder ruling 28 Oct).**
+- **15 Nov 2026:** X0 frozen rule with its hash; the NF-1 post (N1, founder yes first); corpus v2 plus the X2 CVE scenarios run against the connector only, on Linux and Windows, with our misses listed and each tied to ADR 0012 or a managed-settings install mode; v1 reported separately as the regression gate. This is X0-X4 plus X2, about 7 days of lane X.
+- **30 Nov 2026:** X5 and X6 native adapters, the X8 cross-tool run, the X9 fairness review; the 5 discovery calls done.
+- **If lane X and the 11-day M2 critical path cannot share the weekly usage limit:** M2 goes first, and 15 Nov keeps only the X0 rule and the NF-1 post.
+
+**Scope rules.**
+- **lasso mcp-gateway is excluded** from the shell suite: it proxies MCP traffic and never sees the agent's built-in Bash or PowerShell tool, and it is our M4 upstream (ADR 0006 s7). An MCP sub-suite goes to M4.
+- **Vendor disclosure:** any real bypass of Claude Code or Cursor native rules is disclosed to the vendor first. The table is published on time with those rows marked "withheld, disclosed to the vendor on <date>".
+- **Approved spend:** $50-150 of API usage plus one Cursor seat. Anything beyond needs the founder's yes.
+- **Wording:** competitor cells read "not found in public material", never "No". Our misses are published.
+
+## M3 exit item 1 candidate: ADR 0012 (not written yet)
+Separate broker OS identity that holds prod, payment and cluster credentials and re-verifies every signed approval itself; Windows first; about 20 days (ADR and threat model 3, Windows service and custody 9, Linux 4, tests and leader reviews 4). It also moves the device key, pinned root, `high_water.json` and the enrollment markers into broker custody. It needs a security leader ruling before the ADR is accepted. **Precondition:** at least 2 of the 5 discovery calls confirm that credentials sit on developer laptops. The calls also ask the MDM question: "Can your endpoint team push a service to developer laptops, Windows included?" No material claims prevention of a same-user bypass until it ships (M2 limit 4).
+
+## Founder rulings (28 Oct 2026)
+Source: the "PM response to architect review, 28 Oct 2026" section in `docs/PM_DISTRIBUTION_ASSESSMENT.md`, and `docs/ARCH_REVIEW_PM_DISTRIBUTION.md`. Founder, verbatim: "approve all six, update T12B_PLAN and RESUME". Standing positioning ruling, same day: AI security is the moat, not AI governance.
+
+| # | Ruling | Where it lands |
+|---|---|---|
+| 1 | c5 web script panel: keep | T12c table, c5 |
+| 2 | Bypass-suite spend approved: $50-150 plus one Cursor seat. Disclose any real native bypass to the vendor first; publish on time with those rows withheld | Lane X scope rules |
+| 3 | Kill dates split: 15 Nov = X0 rule with hash, NF-1 post, corpus v2 plus X2 against the connector only with our misses listed, v1 reported separately; 30 Nov = X5/X6, the cross-tool run, the fairness review and the 5 discovery calls. If lane X and the M2 critical path cannot share the weekly limit, M2 first and 15 Nov keeps only the rule and the NF-1 post | Lane X dates |
+| 4 | ADR 0012 is M3 exit item 1, if at least 2 of 5 discovery calls confirm credentials on dev laptops; the MDM question is added to the calls | M3 exit item 1 candidate |
+| 5 | lasso mcp-gateway excluded from the shell suite; MCP sub-suite in M4 | Lane X scope rules |
+| 6 | Leader-tier security review also for T12d d2 (genesis route) and the T12c c4 approvals-route check | T12c c4 and T12d d2 rows |
