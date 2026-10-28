@@ -79,15 +79,11 @@ async function sha256Hex(text: string): Promise<string> {
 // ---------------------------------------------------------------------------
 
 describe("T12c script preview: body renders as text", () => {
-  it.fails("script body with HTML tags is rendered as text, not HTML", () => {
-    // M2T12cPending: renderScriptPreview does not exist yet.
-    // When the fix lands, this function renders script text with line
-    // numbers as plain text (never innerHTML).  Until then it.fails.
-    // Assuming a renderScriptPreview export or script_preview field
-    // The rendered output must not contain raw HTML element syntax
-    // from the script body itself.
+  it("script body with HTML tags is rendered as text, not HTML", () => {
+    // T12c: renderEscalationText renders multiline script text with line
+    // numbers as plain text (never innerHTML).
     const scriptBody = '<script>alert("xss")</script>\nprint("hello")';
-    const rendered = renderEscalationText(scriptBody);
+    const rendered = renderEscalationText(scriptBody, { body: true });
     // Line numbers must be present in the rendered output
     expect(rendered).toContain("1");
     expect(rendered).toContain("2");
@@ -95,23 +91,17 @@ describe("T12c script preview: body renders as text", () => {
     expect(rendered).toContain("<script>");
     // renderEscalationText returns plain text for React to escape; the
     // literal tag text above is the proof it was not interpreted.
-    // This last check is intentionally contradictory with the line above
-    // to ensure it.fails triggers.  The real test after the fix will use
-    // a proper renderScriptPreview function that adds line numbers.
-    throw new Error("M2T12cPending: renderScriptPreview not implemented");
   });
 
-  it.fails("line numbers are prepended to each line of the body", () => {
-    // M2T12cPending: the script preview renderer adds line numbers.
+  it("line numbers are prepended to each line of the body", () => {
+    // T12c: the script preview renderer adds line numbers.
     const body = "import os\nprint('hello')\nexit(0)";
-    // When renderScriptPreview exists, it should produce lines like:
+    // renderEscalationText in body mode produces lines like:
     //   1  import os
     //   2  print('hello')
     //   3  exit(0)
-    // For now, we test with renderEscalationText which does not add
-    // line numbers.
-    const rendered = renderEscalationText(body);
-    // After the fix, each line has a number prefix
+    const rendered = renderEscalationText(body, { body: true });
+    // Each line has a number prefix
     expect(rendered).toMatch(/^\s*1\s/m);
     expect(rendered).toMatch(/^\s*2\s/m);
     expect(rendered).toMatch(/^\s*3\s/m);
@@ -123,10 +113,10 @@ describe("T12c script preview: body renders as text", () => {
 // ---------------------------------------------------------------------------
 
 describe("T12c script preview: hash gates Approve", () => {
-  it.fails(
+  it(
     "buildInboxApproval recomputes preview SHA-256 and refuses on mismatch",
     async () => {
-      // M2T12cPending: buildInboxApproval does not check preview hash yet.
+      // T12c: buildInboxApproval checks preview hash with WebCrypto.
       const keyId = await storedKeyId();
       const body = "print('hello world')\n";
       const correctHash = await sha256Hex(body);
@@ -156,9 +146,8 @@ describe("T12c script preview: hash gates Approve", () => {
     },
   );
 
-  it.fails("Approve is disabled when preview hash does not match", () => {
-    // M2T12cPending: a canApproveScript or similar gate does not exist.
-    // After the fix, canApprove returns false when the preview hash is wrong.
+  it("Approve is disabled when preview hash does not match", () => {
+    // T12c: canApprove returns false when scriptPreviewMismatch is true.
     const esc = makeScriptEscalation();
     (esc as Record<string, unknown>)["script_preview"] = {
       text: "print('hello')\n",
@@ -183,10 +172,10 @@ describe("T12c script preview: hash gates Approve", () => {
 // ---------------------------------------------------------------------------
 
 describe("T12c script preview: payload fields", () => {
-  it.fails(
+  it(
     "buildInboxApproval includes script_rel, script_sha256, preview_sha256",
     async () => {
-      // M2T12cPending: buildInboxApproval does not include script fields yet.
+      // T12c: buildInboxApproval includes script fields in the signed payload.
       const keyId = await storedKeyId();
       const body = "print('payload test')\n";
       const bodyHash = await sha256Hex(body);
@@ -216,10 +205,10 @@ describe("T12c script preview: payload fields", () => {
     },
   );
 
-  it.fails(
+  it(
     "payload preview_sha256 is empty string when no script",
     async () => {
-      // M2T12cPending: buildInboxApproval does not handle no-script case yet.
+      // T12c: script fields default to empty string when no script.
       const keyId = await storedKeyId();
       const esc = makeScriptEscalation();
       // No script fields at all

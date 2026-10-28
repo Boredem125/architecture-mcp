@@ -26,6 +26,8 @@ const D56_FIELDS = [
   "request_id", "command", "fingerprint", "reviewer_id", "decision",
   "approved_at", "org_id", "project_id", "device_id", "registry_version",
   "policy_sequence", "user_id", "key_id", "nonce", "not_after",
+  // T12c additions (ADR 0010 s9.5): always present, "" when no script.
+  "script_rel", "script_sha256", "preview_sha256",
 ];
 
 function esc(): InboxEscalation {

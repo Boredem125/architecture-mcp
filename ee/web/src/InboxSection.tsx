@@ -1,5 +1,5 @@
 /**
- * Approval inbox section (T12b-2).
+ * Approval inbox section (T12b-2; T12c c5 review fixes).
  *
  * Renders: browser key status, pending escalations list (text-only via
  * renderEscalationText), Approve/Deny buttons.  Approve hidden on prod
@@ -7,18 +7,33 @@
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { fetchEscalations, postDecision } from "./api/client";
 import {
   renderEscalationText,
   buildInboxApproval,
   buildInboxDeny,
-  escalationHasUnsafeField,
+  approveEnabled,
 } from "./inbox";
-import type { InboxEscalation } from "./inbox";
-import { canApprove, canDeny } from "./escalation-rules";
+import type { InboxEscalation, HashState } from "./inbox";
+import { canDeny } from "./escalation-rules";
 import { loadKey } from "./key-store";
 import { buildKeyLinkRequest } from "./browser-key";
+
+// ---------------------------------------------------------------------------
+// Script preview hash helper (T12c, ADR 0010 s9.5)
+// ---------------------------------------------------------------------------
+
+/** Compute SHA-256 hex of a string via WebCrypto (UTF-8 encoded). */
+async function sha256Hex(text: string): Promise<string> {
+  const buf = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(text),
+  );
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
 
 // ---------------------------------------------------------------------------
 // Browser key status
@@ -114,14 +129,44 @@ function EscalationRow({
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // F3 fix: one helper in inbox.ts checks every displayed-or-signed
-  // string field (including request_id, org_id, escalation_id, kind,
-  // tool_name).  Approve disabled on any unsafe field; Deny stays allowed.
-  const fieldHasUnsafe = escalationHasUnsafeField(esc);
+  // T12c c5 review: hash state starts "pending" (Approve disabled)
+  // until the WebCrypto result resolves.  A cancel flag prevents a
+  // stale promise from clearing a mismatch (item 3).
+  const previewText = esc.script_preview?.text ?? null;
+  const previewSha = esc.script_preview?.sha256 ?? null;
 
-  const showApprove =
-    canApprove({ environment: esc.environment, status: esc.status }) &&
-    !fieldHasUnsafe;
+  const [hashState, setHashState] = useState<HashState>(
+    previewText != null && previewSha ? "pending" : "na",
+  );
+
+  useEffect(() => {
+    if (previewText != null && previewSha) {
+      setHashState("pending");
+      let cancelled = false;
+      sha256Hex(previewText).then((computed) => {
+        if (!cancelled) {
+          setHashState(computed === previewSha ? "match" : "mismatch");
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    setHashState("na");
+    return undefined;
+  }, [previewText, previewSha]);
+
+  // useMemo: rendered body text depends only on previewText (item 7).
+  const renderedBody = useMemo(
+    () =>
+      previewText != null
+        ? renderEscalationText(previewText, { body: true })
+        : null,
+    [previewText],
+  );
+
+  // T12c c5 review: one pure helper gates Approve.
+  const showApprove = approveEnabled(esc, hashState);
   const showDeny = canDeny({
     environment: esc.environment,
     status: esc.status,
@@ -204,6 +249,37 @@ function EscalationRow({
           </dl>
         </details>
       </td>
+      {/* T12c: script panel (ADR 0010 s9.5) */}
+      <td data-testid="script-panel">
+        {esc.script != null && (
+          <details>
+            <summary>script: {renderEscalationText(esc.script.rel)}</summary>
+            <dl>
+              <dt>rel</dt>
+              <dd>{renderEscalationText(esc.script.rel)}</dd>
+              <dt>sha256</dt>
+              <dd>{esc.script.sha256}</dd>
+              <dt>size</dt>
+              <dd>{String(esc.script.size)}</dd>
+              {esc.script.family != null && (
+                <>
+                  <dt>family</dt>
+                  <dd>{esc.script.family}</dd>
+                </>
+              )}
+            </dl>
+            <p>Only {renderEscalationText(esc.script.rel)} is bound. Files it loads are not.</p>
+            {renderedBody != null ? (
+              <pre data-testid="script-body">{renderedBody}</pre>
+            ) : (
+              <p>approve in the CLI</p>
+            )}
+            {hashState === "mismatch" && (
+              <p data-testid="hash-mismatch">approve in the CLI</p>
+            )}
+          </details>
+        )}
+      </td>
       <td>
         {showApprove && (
           <button
@@ -214,6 +290,9 @@ function EscalationRow({
           >
             Approve
           </button>
+        )}
+        {!showApprove && esc.script != null && hashState === "mismatch" && (
+          <span data-testid="cli-fallback">approve in the CLI</span>
         )}
         {showDeny && (
           <button
@@ -277,6 +356,7 @@ export default function InboxSection({
               <th>Root</th>
               <th>Control</th>
               <th>Details</th>
+              <th>Script</th>
               <th>Actions</th>
               <th>Status</th>
             </tr>

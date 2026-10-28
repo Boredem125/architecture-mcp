@@ -21,17 +21,23 @@ export function isProdEnvironment(
 interface EscalationContext {
   environment?: string | null;
   status: string;
+  /** T12c: true when the browser-computed preview hash does not match
+   *  the server-supplied ``script_preview.sha256``. */
+  scriptPreviewMismatch?: boolean;
 }
 
 /**
  * Whether the UI may offer "Approve" for this escalation.
  *
- * Returns ``false`` for prod (D5.5 / N9) and for already-decided
- * escalations.  Returns ``true`` only for pending non-prod escalations.
+ * Returns ``false`` for prod (D5.5 / N9), for already-decided
+ * escalations, and when the script preview hash mismatches (T12c,
+ * ADR 0010 s9.5).  Returns ``true`` only for pending non-prod
+ * escalations with valid preview integrity.
  */
 export function canApprove(escalation: EscalationContext): boolean {
   if (isProdEnvironment(escalation.environment)) return false;
   if (escalation.status !== "pending") return false;
+  if (escalation.scriptPreviewMismatch === true) return false;
   return true;
 }
 
