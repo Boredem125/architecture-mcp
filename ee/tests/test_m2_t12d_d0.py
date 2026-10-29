@@ -168,8 +168,6 @@ def test_d0_2_one_user_two_admin_keys_is_not_two_admins():
 # D0-3: compute_diff omits changes the admin is signing
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, raises=T12dD0Finding,
-                   reason="D0-3 open: compute_diff hides bundle_signer/key edits")
 def test_d0_3_diff_shows_bundle_signer_and_key_field_changes():
     from sandbox.connector.sync.signer import compute_diff
 
