@@ -36,14 +36,26 @@ def build_genesis(
     iss: str,
     sub: str,
     bundle_signer_pub: bytes,
+    *,
+    user_id: str | None = None,
+    approver: bool = False,
 ) -> tuple[dict[str, Any], str]:
     """Build registry v1 locally and return (envelope, fingerprint).
 
     The fingerprint is SHA-256 of ``org_id + ":" + canonical_json(payload)``.
+
+    *user_id* is the **server** user id (ADR 0011 s4).  When ``None``
+    the legacy behaviour (``sub``) is used, but callers should always
+    pass it.  *approver* adds the ``approver`` role; the default is
+    ``["admin"]`` only (least privilege, ADR 0011 s3).
     """
     admin_pub = bytes(admin_sk.verify_key)
     admin_kid = compute_key_id(admin_pub)
     bundle_kid = compute_key_id(bundle_signer_pub)
+
+    roles = ["admin"]
+    if approver:
+        roles.append("approver")
 
     payload: dict[str, Any] = {
         "org_id": org_id,
@@ -55,12 +67,12 @@ def build_genesis(
             {
                 "key_id": admin_kid,
                 "public_key": admin_pub.hex(),
-                "user_id": sub,
+                "user_id": user_id if user_id is not None else sub,
                 "iss": iss,
                 "sub": sub,
                 "alg": "ed25519",
                 "kind": "cli",
-                "roles": ["admin", "approver"],
+                "roles": roles,
                 "added_in": 1,
             },
         ],
@@ -89,18 +101,34 @@ def compute_diff(
     Always works from the bytes themselves, never from a server-sent
     summary (D5.2, threat 33).  *prev_payload_bytes* is ``None`` for
     genesis (all keys shown as added).
+
+    F5: every top-level field and every key-entry field that differs is
+    shown old -> new.  Added keys print every field.  bundle_signer
+    shows public_key.
     """
     new = json.loads(new_payload_bytes)
+
+    # F5: fields to show for each key entry
+    _KEY_DIFF_FIELDS = [
+        "user_id", "iss", "sub", "kind", "alg", "roles", "public_key", "added_in",
+    ]
 
     if prev_payload_bytes is None:
         lines = [f"Genesis registry v{new.get('version', '?')}"]
         lines.append(f"org_id: {new.get('org_id', '?')}")
         lines.append(f"threshold: {new.get('threshold', '?')}")
         for key in new.get("keys", []):
+            parts = [f"key_id={key.get('key_id', '?')}"]
+            for field in _KEY_DIFF_FIELDS:
+                if field in key:
+                    parts.append(f"{field}={key[field]}")
+            lines.append("+ " + " ".join(parts))
+        # F5: show bundle_signer with public_key
+        bs = new.get("bundle_signer")
+        if bs:
             lines.append(
-                f"+ key_id={key.get('key_id', '?')} "
-                f"user_id={key.get('user_id', '?')} "
-                f"kind={key.get('kind', '?')}"
+                f"bundle_signer: key_id={bs.get('key_id', '?')} "
+                f"public_key={bs.get('public_key', '?')}"
             )
         return "\n".join(lines)
 
@@ -109,21 +137,48 @@ def compute_diff(
         f"Registry v{prev.get('version', '?')} -> v{new.get('version', '?')}"
     ]
 
-    old_t = prev.get("threshold")
-    new_t = new.get("threshold")
-    if old_t != new_t:
-        lines.append(f"threshold: {old_t} -> {new_t}")
+    # F5: generic top-level field diff (excludes keys which are handled separately)
+    _TOP_LEVEL_SKIP = {"keys", "admins", "version", "prev_hash"}
+    all_top_keys = set(prev.keys()) | set(new.keys())
+    for field in sorted(all_top_keys - _TOP_LEVEL_SKIP):
+        old_val = prev.get(field)
+        new_val = new.get(field)
+        if field == "bundle_signer":
+            # Special handling: show public_key changes
+            old_bs = old_val or {}
+            new_bs = new_val or {}
+            if old_bs != new_bs:
+                lines.append(
+                    f"bundle_signer: key_id={old_bs.get('key_id', '?')} "
+                    f"public_key={old_bs.get('public_key', '?')} -> "
+                    f"key_id={new_bs.get('key_id', '?')} "
+                    f"public_key={new_bs.get('public_key', '?')}"
+                )
+        elif old_val != new_val:
+            lines.append(f"{field}: {old_val} -> {new_val}")
 
     old_keys = {k["key_id"]: k for k in prev.get("keys", [])}
     new_keys = {k["key_id"]: k for k in new.get("keys", [])}
 
     for kid, key in new_keys.items():
         if kid not in old_keys:
-            lines.append(
-                f"+ key_id={kid} "
-                f"user_id={key.get('user_id', '?')} "
-                f"kind={key.get('kind', '?')}"
-            )
+            # F5: added keys print every field
+            parts = [f"key_id={kid}"]
+            for field in _KEY_DIFF_FIELDS:
+                if field in key:
+                    parts.append(f"{field}={key[field]}")
+            lines.append("+ " + " ".join(parts))
+        else:
+            # F5: field-by-field diff for every key field
+            old_key = old_keys[kid]
+            for field in _KEY_DIFF_FIELDS:
+                old_fv = old_key.get(field)
+                new_fv = key.get(field)
+                if old_fv != new_fv:
+                    lines.append(
+                        f"~ key_id={kid} {field}: {old_fv} -> {new_fv}"
+                    )
+
     for kid, key in old_keys.items():
         if kid not in new_keys:
             lines.append(
