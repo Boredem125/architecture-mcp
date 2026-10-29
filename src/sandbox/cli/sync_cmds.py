@@ -776,6 +776,867 @@ def signer_deny(escalation_id: str, server: str | None, yes: bool) -> None:
     click.echo(f"Deny posted for {escalation_id}")
 
 
+# ---------------------------------------------------------------------------
+# F7: shared HTTP helper -- HTTPS only (except loopback), no redirects
+# ---------------------------------------------------------------------------
+
+import os as _os
+from urllib.parse import urlparse as _urlparse
+
+
+def _check_transport_safety(url: str) -> None:
+    """F7: refuse http:// to non-loopback hosts.  Raises ClickException."""
+    parsed = _urlparse(url)
+    if parsed.scheme == "https":
+        return
+    if parsed.scheme == "http":
+        host = (parsed.hostname or "").lower()
+        if host in ("localhost", "127.0.0.1", "::1", "[::1]"):
+            return
+        raise click.ClickException(
+            f"refusing http:// to non-loopback host {host}; use https"
+        )
+    raise click.ClickException(f"unsupported scheme: {parsed.scheme}")
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Redirect handler that refuses every 3xx (R2-3 / F7).
+
+    Installed as the global default opener so that urllib.request.urlopen
+    never silently follows a redirect and forwards credentials to
+    another host.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        raise urllib.error.HTTPError(
+            req.full_url, code, f"redirect to {newurl} refused",
+            headers, fp,
+        )
+
+    # The base class routes 301, 302, 303, 307 and 308 through
+    # http_error_302, which computes newurl and calls redirect_request
+    # above; do not alias http_error_30x to redirect_request (different
+    # signature: urllib calls them with 5 arguments, not 6).
+
+
+# Install the no-redirect opener globally so that every call through
+# urllib.request.urlopen (including _safe_urlopen and test mocks that
+# patch urlopen) refuses 3xx redirects.
+urllib.request.install_opener(
+    urllib.request.build_opener(_NoRedirectHandler)
+)
+
+
+def _safe_urlopen(req, *, timeout: int = 30):
+    """urlopen that refuses redirects (F7 / R2-3).
+
+    The module installs a global opener whose redirect handler raises
+    on every 3xx, so credentials never leave the original host.
+    """
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        # Belt-and-suspenders: check nothing slipped through.
+        code = getattr(resp, "status", None) or getattr(resp, "code", 200)
+        if 300 <= code < 400:
+            raise click.ClickException(
+                f"redirect ({code}) refused; Bearer must not leave the host"
+            )
+        # A followed redirect (e.g. another module replaced the global
+        # opener) shows as a changed final URL: refuse it too.
+        geturl = getattr(resp, "geturl", None)
+        final_url = geturl() if callable(geturl) else None
+        if isinstance(final_url, str) and final_url != req.full_url:
+            raise click.ClickException(
+                "redirect refused; Bearer must not leave the host"
+            )
+        return resp
+    except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            raise click.ClickException(
+                f"redirect ({exc.code}) refused; Bearer must not leave the host"
+            ) from exc
+        raise
+
+
+def _signer_safe_get(url: str, token: str | None):
+    """GET JSON with transport safety.  Returns parsed JSON or raises."""
+    _check_transport_safety(url)
+    headers: dict[str, str] = {"Accept": "application/json"}
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    if token:
+        req.add_unredirected_header("Authorization", f"Bearer {token}")
+    try:
+        resp = _safe_urlopen(req)
+        return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            raise click.ClickException(
+                f"redirect ({exc.code}) refused; Bearer must not leave the host"
+            ) from exc
+        raise click.ClickException(
+            f"server returned {exc.code}: "
+            f"{exc.read().decode('utf-8', 'replace')[:200]}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise click.ClickException(
+            f"cannot reach server: {exc.reason}"
+        ) from exc
+
+
+def _signer_safe_post(url: str, body: dict, token: str | None) -> dict:
+    """POST JSON with transport safety.  Returns parsed response."""
+    _check_transport_safety(url)
+    data = json.dumps(body).encode()
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    if token:
+        req.add_unredirected_header("Authorization", f"Bearer {token}")
+    try:
+        resp = _safe_urlopen(req)
+        return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            raise click.ClickException(
+                f"redirect ({exc.code}) refused; Bearer must not leave the host"
+            ) from exc
+        raise click.ClickException(
+            f"server returned {exc.code}: "
+            f"{exc.read().decode('utf-8', 'replace')[:200]}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise click.ClickException(
+            f"cannot reach server: {exc.reason}"
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# F4: secure seed file creation and loading
+# ---------------------------------------------------------------------------
+
+def _ensure_signer_dir(kh_root):
+    """Create <key_home>/signer with 0o700 and Windows ACL hardening (F4)."""
+    from sandbox.connector.keyhome import root_exposure, _secure_new_root
+
+    link_dir = kh_root / "signer"
+    fresh = not link_dir.exists()
+    if not _is_windows_platform():
+        saved = _os.umask(0o077)
+        try:
+            link_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        finally:
+            _os.umask(saved)
+    else:
+        link_dir.mkdir(parents=True, exist_ok=True)
+    if fresh:
+        _secure_new_root(link_dir)
+    return link_dir
+
+
+def _is_windows_platform() -> bool:
+    import platform as _plat
+    return _plat.system() == "Windows"
+
+
+def _write_seed_excl(path, seed_bytes: bytes) -> None:
+    """Write a seed file with O_EXCL and mode 0o600 (F4 / R2-1).
+
+    Uses O_BINARY where available (Windows) so 0x0A bytes are not
+    converted to CRLF.  A 32-byte seed must round-trip at exactly
+    32 bytes.
+    """
+    flags = _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL
+    # R2-1: prevent text-mode CRLF conversion on Windows.
+    flags |= getattr(_os, "O_BINARY", 0)
+    if not _is_windows_platform():
+        fd = _os.open(str(path), flags, 0o600)
+    else:
+        fd = _os.open(str(path), flags)
+    try:
+        _os.write(fd, seed_bytes)
+    finally:
+        _os.close(fd)
+
+
+def _load_seed_checked(seed_path, signer_dir):
+    """Load a seed file with exposure and length checks (F4).
+
+    Returns a SigningKey.  Raises ClickException on any problem.
+    """
+    from nacl.signing import SigningKey
+    from sandbox.connector.keyhome import root_exposure
+
+    exposure = root_exposure(signer_dir)
+    if exposure:
+        raise click.ClickException(
+            f"key home exposure: {exposure}; refusing to load seed"
+        )
+    raw = seed_path.read_bytes()
+    if len(raw) != 32:
+        raise click.ClickException(
+            f"seed length {len(raw)}, expected 32 bytes; "
+            "the seed file may be corrupted"
+        )
+    return SigningKey(raw)
+
+
+# ---------------------------------------------------------------------------
+# signer link (F4 hardened)
+# ---------------------------------------------------------------------------
+
+@click.command("link")
+@click.option("--code", required=True, help="Signer link code from the web UI")
+@click.option("--server", required=True, help="Control plane URL")
+def signer_link(code: str, server: str) -> None:
+    """Link this CLI key to the control plane.
+
+    Consumes a link code created in the web UI and binds the local CLI
+    signing key to the server.  The key home must be available.
+    F4: seed written with O_EXCL 0o600 in a 0o700 directory.
+    R2-1: root_exposure check before writing a new seed.
+    R2-3: routed through _signer_safe_post (https-except-loopback, no
+    redirects).
+    """
+    from nacl.signing import SigningKey
+    from sandbox.connector.keyhome import key_home_root, root_exposure
+
+    kh = key_home_root()
+    if kh is None:
+        raise click.ClickException("key home not available; set SANDBOX_KEY_HOME")
+
+    link_dir = _ensure_signer_dir(kh)
+    seed_path = link_dir / "signer.seed"
+    if seed_path.exists():
+        sk = _load_seed_checked(seed_path, link_dir)
+    else:
+        # R2-1: check exposure before writing -- a pre-existing signer/
+        # directory with a broad ACL must not receive a new seed.
+        exposure = root_exposure(link_dir)
+        if exposure:
+            raise click.ClickException(
+                f"key home exposure: {exposure}; refusing to write seed"
+            )
+        sk = SigningKey.generate()
+        _write_seed_excl(seed_path, bytes(sk))
+
+    pub = bytes(sk.verify_key)
+    kid = hashlib.sha256(pub).hexdigest()
+
+    # R2-3: route through _signer_safe_post for transport safety
+    # (https-except-loopback and no-redirect).  No Bearer token for
+    # link -- only the one-time code is sent.
+    url = server.rstrip("/") + "/api/v1/sync/signer/link"
+    try:
+        resp_data = _signer_safe_post(url, {
+            "code": code,
+            "key_id": kid,
+            "public_key": pub.hex(),
+        }, token=None)
+    except click.ClickException as exc:
+        raise click.ClickException(f"link failed: {exc.message}") from exc
+
+    click.echo(f"Linked: key_id={kid[:16]}...")
+    click.echo(f"Org: {resp_data.get('org_id', '?')}")
+    click.echo(f"User: {resp_data.get('user_id', '?')}")
+    # Save link metadata -- include iss/sub from the server response
+    meta_path = link_dir / "link.json"
+    meta_path.write_text(json.dumps({
+        "server": server,
+        "key_id": kid,
+        "org_id": resp_data.get("org_id", ""),
+        "user_id": resp_data.get("user_id", ""),
+        "iss": resp_data.get("iss", ""),
+        "sub": resp_data.get("sub", ""),
+    }, indent=2), encoding="utf-8")
+
+
+def _load_signer_link_key():
+    """Load the signer key and link metadata from the key home (F4 checked).
+
+    Returns (sk, kid, link_meta) where link_meta has server, org_id, user_id.
+    """
+    from sandbox.connector.keyhome import key_home_root
+
+    kh = key_home_root()
+    if kh is None:
+        raise click.ClickException("key home not available; set SANDBOX_KEY_HOME")
+
+    link_dir = kh / "signer"
+    seed_path = link_dir / "signer.seed"
+    if not seed_path.exists():
+        raise click.ClickException("no signer key found; run 'signer link' first")
+
+    sk = _load_seed_checked(seed_path, link_dir)
+    kid = hashlib.sha256(bytes(sk.verify_key)).hexdigest()
+
+    meta_path = link_dir / "link.json"
+    if not meta_path.exists():
+        raise click.ClickException("no link metadata; run 'signer link' first")
+
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    return sk, kid, meta
+
+
+# Keep the old non-safe helpers for the approve/deny paths (pre-d3 code)
+def _signer_http_get(url: str, token: str | None) -> dict | list | None:
+    """GET a JSON resource with optional Bearer auth (legacy, pre-F7)."""
+    headers: dict[str, str] = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        resp = urllib.request.urlopen(req, timeout=30)
+        return json.loads(resp.read())
+    except Exception:
+        return None
+
+
+def _signer_http_post(url: str, body: dict, token: str | None) -> dict:
+    """POST JSON with optional Bearer auth (legacy, pre-F7)."""
+    data = json.dumps(body).encode()
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        resp = urllib.request.urlopen(req, timeout=30)
+        return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        raise click.ClickException(
+            f"server returned {exc.code}: "
+            f"{exc.read().decode('utf-8', 'replace')[:200]}"
+        )
+
+
+def _get_link_signer_token(server: str, sk, kid: str) -> str | None:
+    """Obtain a signer token using the linked key (F7 safe)."""
+    _check_transport_safety(server)
+    nonce = secrets.token_hex(16)
+    aud = server.rstrip("/")
+    payload = {"key_id": kid, "nonce": nonce, "aud": aud, "iat": time.time()}
+    tag = b"agg/signer-assert/v1"
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    msg = tag + b"\x00" + canonical
+    sig = sk.sign(msg).signature.hex()
+    assertion = {
+        "kind": "agg/signer-assert/v1",
+        "sig_v": 1,
+        "payload": payload,
+        "signatures": [{"key_id": kid, "alg": "ed25519", "sig": sig}],
+    }
+    url = server.rstrip("/") + "/api/v1/sync/signer/token"
+    try:
+        data = _signer_safe_post(url, assertion, None)
+        return data.get("token")
+    except Exception:
+        return None
+
+
+@click.command("genesis")
+@click.option("--genesis-code", required=True, help="Genesis code from the migrations output")
+@click.option("--server", default=None, help="Control plane URL (from link metadata if omitted)")
+@click.option("--approver", is_flag=True, help="Add the approver role (default: admin only)")
+@click.option("--confirm-identity", nargs=2, default=None, type=str,
+              help="Confirm identity: <iss> <sub> (must match server-reported)")
+@click.option("--bundle-signer-key", default=None, type=str,
+              help="Bundle signer public key (64 hex chars, required)")
+@click.option("--yes", is_flag=True, help="Skip interactive confirmation")
+def signer_genesis(genesis_code: str, server: str | None, approver: bool,
+                   confirm_identity: tuple[str, str] | None,
+                   bundle_signer_key: str | None, yes: bool) -> None:
+    """Build and publish registry v1 (genesis).
+
+    Builds the genesis envelope using the linked CLI key, signs it,
+    and posts it to POST /api/v1/sync/signer/genesis.  Prints the
+    registry fingerprint.
+
+    The user_id is the server's user id (ADR 0011 s4), never the IdP
+    subject.  Default roles: [admin].  --approver adds the approver role.
+    --confirm-identity <iss> <sub> must match the server-reported identity;
+    exits non-zero on mismatch.
+
+    Stub ruling 1: --bundle-signer-key <64 hex> is required; no /config
+    call is ever made.  F9/stub ruling 3: iss/sub must come from link.json;
+    refuse if missing.  F12: refuse empty org_id or user_id.
+    """
+    from sandbox.connector.sync.signer import build_genesis
+
+    sk, kid, meta = _load_signer_link_key()
+    effective_server = server or meta.get("server", "")
+    if not effective_server:
+        raise click.ClickException("no server URL; pass --server or link first")
+
+    # F7: transport safety on the effective server URL
+    _check_transport_safety(effective_server)
+
+    # F3/stub ruling 1: --bundle-signer-key is required; never call /config
+    if not bundle_signer_key:
+        raise click.ClickException(
+            "missing --bundle-signer-key; genesis requires the bundle "
+            "signer public key (64 hex chars)"
+        )
+    try:
+        bundle_pub = bytes.fromhex(bundle_signer_key)
+    except ValueError as exc:
+        raise click.ClickException(
+            f"invalid --bundle-signer-key: {exc}"
+        ) from exc
+    if len(bundle_pub) != 32:
+        raise click.ClickException(
+            f"--bundle-signer-key must be 32 bytes (64 hex chars), "
+            f"got {len(bundle_pub)}"
+        )
+
+    # Get a signer token (F7 safe)
+    token = _get_link_signer_token(effective_server, sk, kid)
+    if token is None:
+        raise click.ClickException("failed to obtain signer token")
+
+    user_id = meta.get("user_id", "")
+    org_id = meta.get("org_id", "")
+
+    # F12: refuse empty org_id or user_id
+    if not org_id:
+        raise click.ClickException(
+            "org_id is empty in link metadata; cannot create genesis"
+        )
+    if not user_id:
+        raise click.ClickException(
+            "user_id is empty in link metadata; cannot create genesis"
+        )
+
+    # F9/stub ruling 3: iss/sub must come from link.json, not from
+    # --confirm-identity.  If link.json lacks them, refuse.
+    iss = meta.get("iss", "")
+    sub_val = meta.get("sub", "")
+    if not iss or not sub_val:
+        raise click.ClickException(
+            "link.json lacks iss/sub identity fields; "
+            "re-link with a server that returns them"
+        )
+
+    # F9: --confirm-identity must match stored values
+    if confirm_identity is not None:
+        ci_iss, ci_sub = confirm_identity
+        if ci_iss != iss or ci_sub != sub_val:
+            raise click.ClickException(
+                f"identity mismatch: --confirm-identity gave "
+                f"({ci_iss}, {ci_sub}) but link.json has ({iss}, {sub_val})"
+            )
+
+    bundle_kid = hashlib.sha256(bundle_pub).hexdigest()
+
+    if not yes:
+        click.echo(f"Org ID:    {org_id}")
+        click.echo(f"User ID:   {user_id}")
+        click.echo(f"ISS:       {iss}")
+        click.echo(f"SUB:       {sub_val}")
+        click.echo(f"Key ID:    {kid[:16]}...")
+        click.echo(f"Bundle signer key_id: {bundle_kid[:16]}...")
+        click.echo(f"Roles:     {['admin', 'approver'] if approver else ['admin']}")
+        click.confirm("Create genesis registry?", abort=True)
+
+    env, fp = build_genesis(
+        sk, org_id, iss, sub_val, bundle_pub,
+        user_id=user_id, approver=approver,
+    )
+
+    # Post to genesis route (F7 safe)
+    result = _signer_safe_post(
+        effective_server.rstrip("/") + "/api/v1/sync/signer/genesis",
+        {"genesis_code": genesis_code, "envelope": env},
+        token,
+    )
+
+    click.echo(f"Genesis published: version={result.get('version', '?')}")
+    click.echo(f"Fingerprint: {fp}")
+
+
+@click.command("sign-registry")
+@click.option("--in", "in_file", default=None, type=click.Path(exists=True),
+              help="Read a partial envelope from FILE")
+@click.option("--out", "out_file", default=None, type=click.Path(),
+              help="Write the (possibly partial) envelope to FILE")
+@click.option("--publish", is_flag=True, help="Post the complete envelope to /signatures")
+@click.option("--add", "add_key_ids", multiple=True, help="Key IDs to add (repeatable)")
+@click.option("--admin", is_flag=True, help="Grant admin role to added keys")
+@click.option("--confirm-key-id", "confirm_key_ids_opt", multiple=True,
+              help="Typed key_id confirmation (repeatable)")
+@click.option("--confirm-identity", nargs=2, default=None, type=str,
+              help="Confirm identity: <iss> <sub>")
+@click.option("--expect-fingerprint", default=None, type=str,
+              help="Expected registry fingerprint for chain verification")
+@click.option("--threshold", "threshold_opt", default=None, type=int,
+              help="Set the threshold in build mode (F10)")
+@click.option("--server", default=None, help="Control plane URL")
+@click.option("--yes", is_flag=True, help="Skip interactive confirmation")
+def signer_sign_registry(in_file: str | None, out_file: str | None,
+                         publish: bool, add_key_ids: tuple[str, ...],
+                         admin: bool, confirm_key_ids_opt: tuple[str, ...],
+                         confirm_identity: tuple[str, str] | None,
+                         expect_fingerprint: str | None,
+                         threshold_opt: int | None,
+                         server: str | None, yes: bool) -> None:
+    """Build or co-sign a registry version.
+
+    Without --in, builds the next version from the latest server version
+    plus the chosen candidates.  With --in FILE, co-signs an existing
+    partial envelope.
+
+    Stub ruling 2: fetches GET /api/v1/sync/signer/registry (full chain,
+    org-scoped) and runs verify_chain against --expect-fingerprint or
+    stored root fingerprint.
+
+    F1: --confirm-key-id must exactly equal the added key set.
+    F2: verify the chain, check prev_hash/version/org/signatures/kind.
+    F8: prev_hash = sha256(org_id + ':' + canonical(prev)).
+    F10: --threshold N in build mode.
+    """
+    from pathlib import Path
+    from sandbox.connector.sync.signer import (
+        compute_diff,
+        confirm_key_ids as _confirm_key_ids,
+    )
+    from sandbox.protocol.envelope import (
+        canonical_bytes,
+        key_id as compute_key_id,
+    )
+    from sandbox.protocol.domains import REGISTRY
+    from sandbox.protocol.registry import verify_chain, RegistryError, _payload_hash
+
+    sk, kid, meta = _load_signer_link_key()
+    effective_server = server or meta.get("server", "")
+    if not effective_server:
+        raise click.ClickException("no server URL; pass --server or link first")
+
+    # F7: transport safety
+    _check_transport_safety(effective_server)
+
+    token = _get_link_signer_token(effective_server, sk, kid)
+    if token is None:
+        raise click.ClickException("failed to obtain signer token")
+
+    confirmed_set = set(confirm_key_ids_opt)
+
+    # Stub ruling 2: fetch the full chain from /api/v1/sync/signer/registry
+    registry_url = (
+        effective_server.rstrip("/")
+        + "/api/v1/sync/signer/registry"
+    )
+    try:
+        chain_data = _signer_safe_get(registry_url, token)
+    except click.ClickException:
+        raise click.ClickException(
+            "failed to fetch registry chain from server"
+        )
+    if not isinstance(chain_data, list) or not chain_data:
+        raise click.ClickException(
+            "registry chain is empty or malformed"
+        )
+
+    # Determine the fingerprint to verify against
+    fp = expect_fingerprint
+    if not fp:
+        # Try stored fingerprint from signer dir
+        from sandbox.connector.keyhome import key_home_root
+        kh = key_home_root()
+        if kh:
+            fp_path = kh / "signer" / "root_fingerprint"
+            if fp_path.exists():
+                fp = fp_path.read_text(encoding="utf-8").strip()
+    if not fp:
+        raise click.ClickException(
+            "no --expect-fingerprint and no stored root fingerprint; "
+            "cannot verify registry chain"
+        )
+
+    # Verify the chain
+    try:
+        verified_registry = verify_chain(chain_data, fp)
+    except RegistryError as exc:
+        raise click.ClickException(
+            f"registry chain verification failed: {exc.reason}"
+        )
+
+    # The verified latest is the last envelope in the chain
+    latest_env = chain_data[-1]
+    latest_payload = latest_env.get("payload", {})
+    latest_version = latest_payload.get("version", 0)
+    latest_org = latest_payload.get("org_id", "")
+
+    # Canonical JSON helper
+    _cj = lambda p: json.dumps(p, sort_keys=True, separators=(",", ":")).encode()
+
+    if in_file is not None:
+        # ---------------------------------------------------------------
+        # Co-sign mode
+        # ---------------------------------------------------------------
+        partial = json.loads(Path(in_file).read_text(encoding="utf-8"))
+        payload = partial.get("payload", {})
+        existing_sigs = partial.get("signatures", [])
+
+        # F2: check kind
+        if partial.get("kind") != REGISTRY:
+            raise click.ClickException(
+                f"envelope kind {partial.get('kind')!r} is not {REGISTRY!r}"
+            )
+        # F2: check sig_v
+        if partial.get("sig_v") != 1:
+            raise click.ClickException(
+                f"envelope sig_v {partial.get('sig_v')!r} is not 1"
+            )
+
+        # F2: check version == latest + 1
+        new_ver = payload.get("version")
+        if new_ver != latest_version + 1:
+            raise click.ClickException(
+                f"version mismatch: partial has {new_ver}, "
+                f"expected {latest_version + 1}"
+            )
+
+        # F2: check org_id
+        if payload.get("org_id") != latest_org:
+            raise click.ClickException(
+                f"org_id mismatch: partial has {payload.get('org_id')!r}, "
+                f"expected {latest_org!r}"
+            )
+
+        # F2: check prev_hash
+        expected_prev = _payload_hash(latest_payload)
+        if payload.get("prev_hash") != expected_prev:
+            raise click.ClickException(
+                f"prev_hash mismatch: partial has {payload.get('prev_hash')!r}, "
+                f"expected {expected_prev[:16]}..."
+            )
+
+        # F2: verify every existing signature
+        msg = canonical_bytes(REGISTRY, payload)
+        # Build a trusted key map from the latest version's keys
+        trusted_keys: dict[str, bytes] = {}
+        for k in latest_payload.get("keys", []):
+            try:
+                trusted_keys[k["key_id"]] = bytes.fromhex(k["public_key"])
+            except (ValueError, KeyError):
+                pass
+        # Also include keys from the new payload (for new signers)
+        for k in payload.get("keys", []):
+            try:
+                trusted_keys[k["key_id"]] = bytes.fromhex(k["public_key"])
+            except (ValueError, KeyError):
+                pass
+
+        for sig_entry in existing_sigs:
+            sig_kid = sig_entry.get("key_id", "")
+            sig_hex = sig_entry.get("sig", "")
+            pub_bytes = trusted_keys.get(sig_kid)
+            if pub_bytes is None:
+                raise click.ClickException(
+                    f"existing signature by unknown key {sig_kid[:16]}..."
+                )
+            try:
+                from nacl.signing import VerifyKey
+                vk = VerifyKey(pub_bytes)
+                vk.verify(msg, bytes.fromhex(sig_hex))
+            except Exception as exc:
+                raise click.ClickException(
+                    f"existing signature by {sig_kid[:16]}... is invalid: {exc}"
+                )
+
+        # F2: refuse if own key_id is already in signatures (duplicate)
+        own_sigs = [s for s in existing_sigs if s.get("key_id") == kid]
+        if own_sigs:
+            raise click.ClickException(
+                f"own key_id already in signatures (duplicate); "
+                f"refusing to co-sign twice"
+            )
+
+        # Compute diff for display
+        prev_bytes = _cj(latest_payload)
+        new_bytes = _cj(payload)
+        diff_text = compute_diff(prev_bytes, new_bytes)
+        click.echo("Registry version diff:")
+        click.echo(diff_text)
+
+        # F1: determine added keys (in new but not in latest)
+        latest_kids = {k["key_id"] for k in latest_payload.get("keys", [])}
+        added_kids = [
+            k["key_id"] for k in payload.get("keys", [])
+            if k["key_id"] not in latest_kids
+        ]
+        # F1: check confirm-key-id matches added set exactly
+        if added_kids:
+            if confirmed_set != set(added_kids):
+                raise click.ClickException(
+                    f"--confirm-key-id set {confirmed_set} does not match "
+                    f"added key set {set(added_kids)}; refusing to sign"
+                )
+            # F1: verify sha256(public_key) == key_id for each added key
+            new_key_map = {k["key_id"]: k for k in payload.get("keys", [])}
+            for akid in added_kids:
+                entry = new_key_map.get(akid, {})
+                try:
+                    pub_hex = entry.get("public_key", "")
+                    computed = hashlib.sha256(bytes.fromhex(pub_hex)).hexdigest()
+                    if computed != akid:
+                        raise click.ClickException(
+                            f"key_id {akid[:16]}... != sha256(public_key)"
+                        )
+                except (ValueError, TypeError) as exc:
+                    raise click.ClickException(
+                        f"cannot verify key_id {akid[:16]}...: {exc}"
+                    )
+
+        if not yes:
+            click.confirm("Co-sign this registry version?", abort=True)
+
+        # Sign
+        sig = sk.sign(msg).signature.hex()
+        new_sig_entry = {"key_id": kid, "alg": "ed25519", "sig": sig}
+        envelope = {
+            "kind": REGISTRY,
+            "sig_v": 1,
+            "payload": payload,
+            "signatures": existing_sigs + [new_sig_entry],
+        }
+    else:
+        # ---------------------------------------------------------------
+        # Build mode
+        # ---------------------------------------------------------------
+        candidates_url = (
+            effective_server.rstrip("/")
+            + "/api/v1/sync/signer/candidates"
+        )
+        try:
+            candidates = _signer_safe_get(candidates_url, token)
+        except click.ClickException:
+            candidates = []
+        if not isinstance(candidates, list):
+            candidates = []
+
+        prev_payload = latest_payload
+        prev_version = latest_version
+
+        # F8: prev_hash uses org prefix (payload_hash)
+        prev_hash_val = _payload_hash(prev_payload)
+
+        new_version = prev_version + 1
+        org_id = prev_payload.get("org_id", meta.get("org_id", ""))
+
+        # Start with existing keys
+        new_keys = list(prev_payload.get("keys", []))
+        new_admins = list(prev_payload.get("admins", []))
+
+        # Add requested candidates
+        for add_kid in add_key_ids:
+            cand = next(
+                (c for c in candidates if c.get("key_id") == add_kid), None
+            )
+            if cand is None:
+                raise click.ClickException(
+                    f"candidate key {add_kid[:16]}... not found on server"
+                )
+            roles = ["approver"]
+            if admin:
+                roles = ["admin", "approver"]
+            new_keys.append({
+                "key_id": cand["key_id"],
+                "public_key": cand["public_key"],
+                "user_id": cand["user_id"],
+                "iss": cand["iss"],
+                "sub": cand["sub"],
+                "alg": "ed25519",
+                "kind": cand.get("kind", "cli"),
+                "roles": roles,
+                "added_in": new_version,
+            })
+            if admin:
+                new_admins.append(cand["key_id"])
+
+        # F10: --threshold N in build mode
+        new_threshold = prev_payload.get("threshold", 1)
+        if threshold_opt is not None:
+            new_threshold = threshold_opt
+
+        payload = {
+            "org_id": org_id,
+            "version": new_version,
+            "prev_hash": prev_hash_val,
+            "threshold": new_threshold,
+            "admins": new_admins,
+            "keys": new_keys,
+            "bundle_signer": prev_payload.get("bundle_signer", {}),
+            "expires_at": prev_payload.get("expires_at", time.time() + 7 * 24 * 3600),
+        }
+
+        # Compute and show diff
+        prev_bytes = _cj(prev_payload)
+        new_bytes = _cj(payload)
+        diff_text = compute_diff(prev_bytes, new_bytes)
+        click.echo("Registry version diff:")
+        click.echo(diff_text)
+
+        # F1: determine added keys
+        latest_kids = {k["key_id"] for k in prev_payload.get("keys", [])}
+        added_kids_list = [akid for akid in add_key_ids if akid not in latest_kids]
+
+        # F1: check confirm-key-id matches added set exactly
+        if added_kids_list:
+            if confirmed_set != set(added_kids_list):
+                raise click.ClickException(
+                    f"--confirm-key-id set {confirmed_set} does not match "
+                    f"added key set {set(added_kids_list)}; refusing to sign"
+                )
+            # F1: verify sha256(public_key) == key_id for each added key
+            new_key_map = {k["key_id"]: k for k in new_keys}
+            for akid in added_kids_list:
+                entry = new_key_map.get(akid, {})
+                try:
+                    pub_hex = entry.get("public_key", "")
+                    computed = hashlib.sha256(bytes.fromhex(pub_hex)).hexdigest()
+                    if computed != akid:
+                        raise click.ClickException(
+                            f"key_id {akid[:16]}... != sha256(public_key)"
+                        )
+                except (ValueError, TypeError) as exc:
+                    raise click.ClickException(
+                        f"cannot verify key_id {akid[:16]}...: {exc}"
+                    )
+
+        if not yes:
+            click.confirm("Sign this registry version?", abort=True)
+
+        # Sign
+        tag = REGISTRY
+        msg = canonical_bytes(tag, payload)
+        sig = sk.sign(msg).signature.hex()
+        envelope = {
+            "kind": tag,
+            "sig_v": 1,
+            "payload": payload,
+            "signatures": [
+                {"key_id": kid, "alg": "ed25519", "sig": sig}
+            ],
+        }
+
+    # Output
+    if out_file:
+        Path(out_file).write_text(
+            json.dumps(envelope, indent=2), encoding="utf-8"
+        )
+        click.echo(f"Envelope written to {out_file}")
+
+    if publish:
+        pub_url = (
+            effective_server.rstrip("/")
+            + "/api/v1/sync/signer/signatures"
+        )
+        result = _signer_safe_post(
+            pub_url,
+            {"type": "registry", "envelope": envelope, "org_id": meta.get("org_id", "")},
+            token,
+        )
+        click.echo(f"Published: version={result.get('version', '?')}")
+
+
 def register(cli: click.Group) -> None:
     """Attach the sync commands to the main CLI group."""
     cli.add_command(enroll)
@@ -788,3 +1649,6 @@ def register(cli: click.Group) -> None:
 
     signer_group.add_command(signer_approve)
     signer_group.add_command(signer_deny)
+    signer_group.add_command(signer_link)
+    signer_group.add_command(signer_genesis)
+    signer_group.add_command(signer_sign_registry)
