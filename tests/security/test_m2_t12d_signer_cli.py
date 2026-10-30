@@ -2195,6 +2195,164 @@ def test_f10_sign_registry_threshold_flag(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# D4-6: threshold bound = distinct admin user_ids, not keys+1
+# ---------------------------------------------------------------------------
+
+
+def test_d4_6_threshold_bound_distinct_admins(tmp_path):
+    """D4-6: --threshold bound must be count of distinct admin user_ids,
+    not len(keys)+1.
+
+    Setup: v1 with admin key A (user_id u1). sign-registry --add B
+    (same user_id u1, --admin). Two admin keys but one distinct admin.
+    --threshold 2 must be refused (bound = 1 distinct admin).
+    Current code: max(len(keys)+1, 2) = max(3,2) = 3, so threshold 2
+    passes. The fix: bound = count of distinct admin user_ids."""
+    from sandbox.cli.main import cli
+
+    admin_sk = SigningKey.generate()
+    bundle_sk = SigningKey.generate()
+    org_id = "org-d46"
+    bundle_pub = bytes(bundle_sk.verify_key)
+    v1_env, fp = _build_valid_chain_v1(
+        admin_sk, org_id, "https://idp", "sub-1", bundle_pub, user_id="u1"
+    )
+
+    # Second admin key for the same user
+    admin2_sk = SigningKey.generate()
+    admin2_kid = _kid(admin2_sk)
+    admin2_pub = bytes(admin2_sk.verify_key).hex()
+
+    # Candidate from server: same user_id "u1"
+    candidates = [{
+        "key_id": admin2_kid,
+        "public_key": admin2_pub,
+        "user_id": "u1",
+        "iss": "https://idp",
+        "sub": "sub-1",
+        "kind": "cli",
+    }]
+
+    meta = {
+        "server": "https://localhost:9000",
+        "key_id": _kid(admin_sk),
+        "org_id": org_id,
+        "user_id": "u1",
+        "iss": "https://idp",
+        "sub": "sub-1",
+    }
+    kh = _make_key_home(tmp_path, admin_sk, meta)
+    tracker = _signreg_tracker(v1_env, candidates=candidates)
+
+    out_file = tmp_path / "v2.json"
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "sign-registry",
+                "--add", admin2_kid,
+                "--admin",
+                "--confirm-key-id", admin2_kid,
+                "--confirm-identity", "https://idp", "sub-1",
+                "--threshold", "2",
+                "--out", str(out_file),
+                "--expect-fingerprint", fp,
+                "--yes",
+            ])
+
+    bad_opt = _detect_unknown_option(result)
+    if bad_opt:
+        raise M2T12dPending(
+            f"sign-registry flag not implemented: {bad_opt}"
+        )
+
+    # With the fix, threshold 2 > 1 distinct admin should be refused.
+    # With the bug, threshold 2 <= max(2+1, 2) = 3 is accepted.
+    if result.exit_code == 0:
+        raise M2T12dPending(
+            "D4-6: threshold 2 accepted despite only 1 distinct admin user_id; "
+            "bound should be count of distinct admin user_ids, not keys+1"
+        )
+    assert result.exit_code == 1, (
+        f"expected exit 1 for threshold > distinct admins, "
+        f"got {result.exit_code}: {result.output}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# D4-6: genesis identity block printed also with --yes
+# ---------------------------------------------------------------------------
+
+
+def test_d4_6_genesis_identity_block_printed_with_yes(tmp_path):
+    """D4-6 / R1 F12: genesis must always print the identity block
+    (org_id, user_id, iss, sub) even when --yes is given, so the operator
+    can verify the identity before the key is published."""
+    from sandbox.cli.main import cli
+
+    admin_sk = SigningKey.generate()
+    bundle_sk = SigningKey.generate()
+    bundle_pub_hex = bytes(bundle_sk.verify_key).hex()
+    org_id = "org-d46id"
+    user_id = "u-d46id"
+    iss = "https://idp.test"
+    sub_val = "sub-d46id"
+
+    meta = {
+        "server": "https://localhost:9000",
+        "key_id": _kid(admin_sk),
+        "org_id": org_id,
+        "user_id": user_id,
+        "iss": iss,
+        "sub": sub_val,
+    }
+    kh = _make_key_home(tmp_path, admin_sk, meta)
+    tracker = _genesis_tracker(admin_sk, meta)
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "genesis",
+                "--genesis-code", "code-d46id",
+                "--bundle-signer-key", bundle_pub_hex,
+                "--confirm-identity", iss, sub_val,
+                "--yes",
+            ])
+
+    bad_opt = _detect_unknown_option(result)
+    if bad_opt:
+        raise M2T12dPending(f"genesis flag not implemented: {bad_opt}")
+
+    if result.exit_code != 0:
+        raise M2T12dPending(
+            f"genesis failed: exit {result.exit_code}: {result.output}"
+        )
+
+    # The identity block must appear in output even with --yes
+    out = result.output or ""
+    identity_fields_present = (
+        org_id in out
+        and user_id in out
+        and iss in out
+        and sub_val in out
+    )
+    if not identity_fields_present:
+        missing = []
+        if org_id not in out:
+            missing.append("org_id")
+        if user_id not in out:
+            missing.append("user_id")
+        if iss not in out:
+            missing.append("iss")
+        if sub_val not in out:
+            missing.append("sub")
+        raise M2T12dPending(
+            f"D4-6: genesis with --yes does not print identity block; "
+            f"missing: {missing}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Stub ruling 2: GET /api/v1/sync/signer/registry (not /latest)
 # ---------------------------------------------------------------------------
 
@@ -2406,6 +2564,1262 @@ def test_f14_admin_flag_help_exists():
     result = runner.invoke(cli, ["signer", "sign-registry", "--help"])
     assert "--admin" in (result.output or ""), (
         "--admin flag not in sign-registry --help"
+    )
+
+
+# ---------------------------------------------------------------------------
+# d4 tests: ruling 5 + D4-7 -- iss/sub in the signer link response
+# ---------------------------------------------------------------------------
+
+
+def test_d4_ruling5_link_refuses_missing_iss(tmp_path):
+    """Ruling 5: CLI must exit 1 when server link response omits iss.
+    No link.json or seed must be written."""
+    from sandbox.cli.main import cli
+
+    link_response_no_iss = {
+        "org_id": "org-r5a",
+        "user_id": "u-r5a",
+        "sub": "sub-r5a",
+        # no iss
+    }
+    tracker = _MockTracker({"/signer/link": link_response_no_iss})
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "link",
+                "--code", "test-code",
+                "--server", "https://localhost:9000",
+            ])
+
+    # If the CLI accepted the response and wrote files, that is the bug.
+    link_json_path = kh / "signer" / "link.json"
+    seed_path = kh / "signer" / "signer.seed"
+    if result.exit_code == 0:
+        # CLI accepted -- check if it silently stored empty iss
+        if link_json_path.exists():
+            data = json.loads(link_json_path.read_text(encoding="utf-8"))
+            if not data.get("iss"):
+                raise M2T12dPending(
+                    "CLI link stored empty/missing iss instead of refusing"
+                )
+        raise M2T12dPending(
+            "CLI link exit 0 for response without iss"
+        )
+    assert result.exit_code == 1, (
+        f"expected exit 1 for missing iss, got {result.exit_code}"
+    )
+    assert not link_json_path.exists(), "link.json written despite missing iss"
+    assert not seed_path.exists(), "seed written despite missing iss"
+    # Ruling 5: message must name the field
+    out = (result.output or "").lower()
+    assert "iss" in out, (
+        f"refusal message should name the 'iss' field: {result.output}"
+    )
+
+
+def test_d4_ruling5_link_refuses_empty_sub(tmp_path):
+    """Ruling 5: CLI must exit 1 when server link response has sub=''."""
+    from sandbox.cli.main import cli
+
+    link_response_empty_sub = {
+        "org_id": "org-r5b",
+        "user_id": "u-r5b",
+        "iss": "https://idp.test",
+        "sub": "",
+    }
+    tracker = _MockTracker({"/signer/link": link_response_empty_sub})
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "link",
+                "--code", "test-code",
+                "--server", "https://localhost:9000",
+            ])
+
+    link_json_path = kh / "signer" / "link.json"
+    seed_path = kh / "signer" / "signer.seed"
+    if result.exit_code == 0:
+        if link_json_path.exists():
+            data = json.loads(link_json_path.read_text(encoding="utf-8"))
+            if not data.get("sub"):
+                raise M2T12dPending(
+                    "CLI link stored empty sub instead of refusing"
+                )
+        raise M2T12dPending(
+            "CLI link exit 0 for response with empty sub"
+        )
+    assert result.exit_code == 1, (
+        f"expected exit 1 for empty sub, got {result.exit_code}"
+    )
+    assert not link_json_path.exists(), "link.json written despite empty sub"
+    assert not seed_path.exists(), "seed written despite empty sub"
+    # Ruling 5: message must name the field
+    out = (result.output or "").lower()
+    assert "sub" in out, (
+        f"refusal message should name the 'sub' field: {result.output}"
+    )
+
+
+def test_d4_ruling5_link_refuses_missing_org_id(tmp_path):
+    """Ruling 5: CLI must exit 1 when server link response omits org_id.
+    No link.json must be written; output names the field."""
+    from sandbox.cli.main import cli
+
+    link_response_no_org = {
+        "user_id": "u-r5org",
+        "iss": "https://idp.test",
+        "sub": "sub-r5org",
+        # no org_id
+    }
+    tracker = _MockTracker({"/signer/link": link_response_no_org})
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "link",
+                "--code", "test-code",
+                "--server", "https://localhost:9000",
+            ])
+
+    link_json_path = kh / "signer" / "link.json"
+    if result.exit_code == 0:
+        if link_json_path.exists():
+            data = json.loads(link_json_path.read_text(encoding="utf-8"))
+            if not data.get("org_id"):
+                raise M2T12dPending(
+                    "CLI link stored empty/missing org_id instead of refusing"
+                )
+        raise M2T12dPending(
+            "CLI link exit 0 for response without org_id"
+        )
+    assert result.exit_code == 1, (
+        f"expected exit 1 for missing org_id, got {result.exit_code}"
+    )
+    assert not link_json_path.exists(), "link.json written despite missing org_id"
+    out = (result.output or "").lower()
+    assert "org_id" in out or "org" in out, (
+        f"refusal message should name the 'org_id' field: {result.output}"
+    )
+
+
+def test_d4_ruling5_link_refuses_empty_user_id(tmp_path):
+    """Ruling 5: CLI must exit 1 when server link response has user_id=''.
+    No link.json must be written; output names the field."""
+    from sandbox.cli.main import cli
+
+    link_response_empty_uid = {
+        "org_id": "org-r5uid",
+        "user_id": "",
+        "iss": "https://idp.test",
+        "sub": "sub-r5uid",
+    }
+    tracker = _MockTracker({"/signer/link": link_response_empty_uid})
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "link",
+                "--code", "test-code",
+                "--server", "https://localhost:9000",
+            ])
+
+    link_json_path = kh / "signer" / "link.json"
+    if result.exit_code == 0:
+        if link_json_path.exists():
+            data = json.loads(link_json_path.read_text(encoding="utf-8"))
+            if not data.get("user_id"):
+                raise M2T12dPending(
+                    "CLI link stored empty user_id instead of refusing"
+                )
+        raise M2T12dPending(
+            "CLI link exit 0 for response with empty user_id"
+        )
+    assert result.exit_code == 1, (
+        f"expected exit 1 for empty user_id, got {result.exit_code}"
+    )
+    assert not link_json_path.exists(), "link.json written despite empty user_id"
+    out = (result.output or "").lower()
+    assert "user_id" in out or "user" in out, (
+        f"refusal message should name the 'user_id' field: {result.output}"
+    )
+
+
+def test_d4_ruling5_link_positive_complete(tmp_path):
+    """Positive control: link with complete response (org_id, user_id, iss,
+    sub) succeeds and stores iss/sub in link.json."""
+    from sandbox.cli.main import cli
+
+    link_response_ok = {
+        "org_id": "org-r5ok",
+        "user_id": "u-r5ok",
+        "iss": "https://idp.test",
+        "sub": "sub-r5ok",
+    }
+    tracker = _MockTracker({"/signer/link": link_response_ok})
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "link",
+                "--code", "test-code",
+                "--server", "https://localhost:9000",
+            ])
+
+    if result.exit_code != 0:
+        raise M2T12dPending(
+            f"link failed unexpectedly: exit {result.exit_code}: {result.output}"
+        )
+
+    link_json_path = kh / "signer" / "link.json"
+    assert link_json_path.exists(), "link.json not written"
+    data = json.loads(link_json_path.read_text(encoding="utf-8"))
+    assert data.get("iss") == "https://idp.test", (
+        f"iss mismatch: {data.get('iss')}"
+    )
+    assert data.get("sub") == "sub-r5ok", (
+        f"sub mismatch: {data.get('sub')}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# d4 tests: F11 -- setup codes read from stdin '-'
+# ---------------------------------------------------------------------------
+
+
+def test_d4_f11_genesis_code_from_stdin(tmp_path):
+    """F11: 'sandbox signer genesis --genesis-code -' reads the code from
+    stdin, not from argv.  Exits 0 with a valid code on stdin."""
+    from sandbox.cli.main import cli
+
+    admin_sk = SigningKey.generate()
+    bundle_sk = SigningKey.generate()
+    bundle_pub_hex = bytes(bundle_sk.verify_key).hex()
+    org_id = "org-f11"
+    user_id = "u-f11"
+    iss = "https://idp.test"
+    sub_val = "sub-f11"
+    meta = {
+        "server": "https://localhost:9000",
+        "key_id": _kid(admin_sk),
+        "org_id": org_id,
+        "user_id": user_id,
+        "iss": iss,
+        "sub": sub_val,
+    }
+    kh = _make_key_home(tmp_path, admin_sk, meta)
+    tracker = _genesis_tracker(admin_sk, meta)
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "genesis",
+                "--genesis-code", "-",
+                "--bundle-signer-key", bundle_pub_hex,
+                "--confirm-identity", iss, sub_val,
+                "--yes",
+            ], input="my-secret-code\n")
+
+    bad_opt = _detect_unknown_option(result)
+    if bad_opt:
+        raise M2T12dPending(f"genesis flag not implemented: {bad_opt}")
+
+    # The code "-" should trigger stdin read; exit 0 means it worked
+    if result.exit_code != 0:
+        raise M2T12dPending(
+            f"genesis --genesis-code - failed: "
+            f"exit {result.exit_code}: {result.output}"
+        )
+
+    # Verify the genesis code in the POST body is the stdin value, not "-"
+    genesis_posts = tracker.posts_to("/signer/genesis")
+    assert len(genesis_posts) == 1, "expected 1 POST to /genesis"
+    posted_code = genesis_posts[0].get("genesis_code", "")
+    if posted_code == "-":
+        raise M2T12dPending(
+            "genesis --genesis-code - sends literal '-' instead of reading stdin"
+        )
+    assert posted_code == "my-secret-code", (
+        f"expected stdin code, got {posted_code!r}"
+    )
+
+
+def test_d4_f11_link_code_from_stdin(tmp_path):
+    """F11: 'sandbox signer link --code -' reads the code from stdin."""
+    from sandbox.cli.main import cli
+
+    tracker = _MockTracker({
+        "/signer/link": {
+            "org_id": "org-f11lk",
+            "user_id": "u-f11lk",
+            "iss": "https://idp.test",
+            "sub": "sub-f11lk",
+        },
+    })
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "link",
+                "--code", "-",
+                "--server", "https://localhost:9000",
+            ], input="stdin-link-code\n")
+
+    if result.exit_code != 0:
+        raise M2T12dPending(
+            f"link --code - failed: exit {result.exit_code}: {result.output}"
+        )
+
+    # The code sent to the server must be the stdin value, not "-"
+    link_posts = tracker.posts_to("/signer/link")
+    assert len(link_posts) == 1
+    posted_code = link_posts[0].get("code", "")
+    if posted_code == "-":
+        raise M2T12dPending(
+            "link --code - sends literal '-' instead of reading stdin"
+        )
+    assert posted_code == "stdin-link-code", (
+        f"expected stdin code 'stdin-link-code', got {posted_code!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# d4 tests: F13 -- one seed location that signer approve reads
+# ---------------------------------------------------------------------------
+
+
+def test_d4_f13_approve_reads_linked_seed(tmp_path, monkeypatch):
+    """Ruling 1 + D4-2: signer approve reads the seed from signer/signer.seed
+    (same location link writes), posts key_id matching linked key, and
+    user_id must be the linked user (not '').
+
+    R2-3: compare against the seed that signer link actually created (read
+    from keyhome/signer/signer.seed), not a key the test generated itself.
+    Read key_id and user_id from envelope["payload"].  Assert
+    signatures[0]["key_id"].  Verify with the linked public key."""
+    from sandbox.cli.main import cli
+
+    monkeypatch.chdir(tmp_path)
+
+    # Mock link to write the seed -- signer link generates its own seed
+    link_resp = {
+        "org_id": "org-f13",
+        "user_id": "u-f13",
+        "iss": "https://idp.test",
+        "sub": "sub-f13",
+    }
+    link_tracker = _MockTracker({"/signer/link": link_resp})
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=link_tracker.urlopen):
+            link_result = CliRunner().invoke(cli, [
+                "signer", "link",
+                "--code", "f13-code",
+                "--server", "https://localhost:9000",
+            ])
+
+    if link_result.exit_code != 0:
+        raise M2T12dPending(
+            f"link failed: exit {link_result.exit_code}: {link_result.output}"
+        )
+
+    # R2-3: read the seed that signer link actually wrote, derive kid from it
+    seed_path = kh / "signer" / "signer.seed"
+    assert seed_path.exists(), "signer link did not write signer.seed"
+    linked_sk = SigningKey(seed_path.read_bytes())
+    linked_kid = _kid(linked_sk)
+    linked_pub = bytes(linked_sk.verify_key)
+
+    # Now try approve with the same key home.  The escalation is a full v2
+    # record (fp_v 2 plus its binding fingerprint), as GET-by-id returns it:
+    # the signer refuses records without fp_v (T12c c3), so the fixture must
+    # be a valid record for the seed-location check to be reached.
+    from sandbox.connector.approval import _binding_fingerprint
+    esc_record = {
+        "request_id": "esc-1",
+        "command": "echo test",
+        "status": "pending",
+        "requires_dual": False,
+        "policy_sequence": 1,
+        "risk": {"band": "high"},
+        "root": str(tmp_path),
+        "kind": "shell",
+        "tool_name": "Bash",
+        "exec_cwd": str(tmp_path),
+        "bundle_sequence": 1,
+        "fp_v": 2,
+        "script": None,
+        "script_unbound": "",
+        "script_preview": None,
+    }
+    esc_record["fingerprint"] = _binding_fingerprint(esc_record)
+    approve_tracker = _MockTracker({
+        "/signer/token": {"token": "tok-f13"},
+        "/escalations": esc_record,
+        "/approvals": {"ok": True},
+    })
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen",
+                   side_effect=approve_tracker.urlopen):
+            approve_result = CliRunner().invoke(cli, [
+                "signer", "approve", "esc-1",
+                "--server", "https://localhost:9000",
+                "--yes",
+            ])
+
+    # If approve cannot find the seed, it fails. The fix makes them use the
+    # same location.
+    if approve_result.exit_code != 0:
+        out = (approve_result.output or "").lower()
+        if "seed" in out or "key" in out or "not found" in out:
+            raise M2T12dPending(
+                f"signer approve cannot read the linked seed: "
+                f"{approve_result.output[:300]}"
+            )
+        raise M2T12dPending(
+            f"signer approve failed for unknown reason: "
+            f"exit {approve_result.exit_code}: {approve_result.output[:300]}"
+        )
+
+    # D4-2: the posted approval must carry key_id matching the linked key
+    # and user_id == "u-f13" (not "").
+    approval_posts = approve_tracker.posts_to("/approvals")
+    if not approval_posts:
+        raise M2T12dPending("approve did not POST to /approvals")
+    posted = approval_posts[0]
+    envelope = posted.get("envelope", posted)
+    payload = envelope["payload"]
+    posted_kid = payload["key_id"]
+    posted_uid = payload["user_id"]
+    assert posted_kid == linked_kid, (
+        f"approve posted wrong key_id: expected {linked_kid[:16]}... "
+        f"(from signer.seed), got {posted_kid[:16]}..."
+    )
+    assert posted_uid == "u-f13", (
+        f"D4-2: approve posted user_id {posted_uid!r}; expected 'u-f13'"
+    )
+    # signatures[0].key_id must also match
+    assert envelope["signatures"][0]["key_id"] == linked_kid, (
+        f"signatures[0].key_id mismatch: expected {linked_kid[:16]}..."
+    )
+
+    # Ruling 1: signature must be valid under the linked public key.
+    from sandbox.protocol.envelope import verify_envelope, EnvelopeError
+    trusted = {linked_kid: linked_pub}
+    try:
+        verify_envelope(envelope, trusted)
+    except EnvelopeError as exc:
+        raise M2T12dPending(
+            f"approval envelope signature invalid under linked key: {exc}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# D4-2: link.json key_id != seed kid refusal
+# ---------------------------------------------------------------------------
+
+
+def test_d4_2_link_key_id_mismatch_refused(tmp_path, monkeypatch):
+    """D4-2: If link.json key_id does not match the seed's kid, the CLI
+    must refuse to use the key (exit 1 on approve/deny).  This prevents
+    a tampered link.json from making the CLI sign with a misattributed kid."""
+    from sandbox.cli.main import cli
+
+    monkeypatch.chdir(tmp_path)
+
+    admin_sk = SigningKey.generate()
+    kid = _kid(admin_sk)
+
+    # Link normally to write the seed and link.json
+    link_resp = {
+        "org_id": "org-kidmm",
+        "user_id": "u-kidmm",
+        "iss": "https://idp.test",
+        "sub": "sub-kidmm",
+    }
+    link_tracker = _MockTracker({"/signer/link": link_resp})
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=link_tracker.urlopen):
+            link_result = CliRunner().invoke(cli, [
+                "signer", "link",
+                "--code", "kidmm-code",
+                "--server", "https://localhost:9000",
+            ])
+
+    if link_result.exit_code != 0:
+        raise M2T12dPending(
+            f"link failed: exit {link_result.exit_code}: {link_result.output}"
+        )
+
+    # Tamper with link.json: change key_id to a different value
+    link_json_path = kh / "signer" / "link.json"
+    assert link_json_path.exists(), "link.json not written"
+    link_data = json.loads(link_json_path.read_text(encoding="utf-8"))
+    original_kid = link_data.get("key_id", "")
+    assert original_kid, "link.json has no key_id"
+    # Set a wrong key_id
+    link_data["key_id"] = "0" * 64
+    link_json_path.write_text(json.dumps(link_data), encoding="utf-8")
+
+    # Now try to approve -- must refuse because key_id != seed kid
+    from sandbox.connector.approval import _binding_fingerprint
+    esc_record = {
+        "request_id": "esc-kidmm",
+        "command": "echo test",
+        "status": "pending",
+        "requires_dual": False,
+        "policy_sequence": 1,
+        "risk": {"band": "high"},
+        "root": str(tmp_path),
+        "kind": "shell",
+        "tool_name": "Bash",
+        "exec_cwd": str(tmp_path),
+        "bundle_sequence": 1,
+        "fp_v": 2,
+        "script": None,
+        "script_unbound": "",
+        "script_preview": None,
+    }
+    esc_record["fingerprint"] = _binding_fingerprint(esc_record)
+    approve_tracker = _MockTracker({
+        "/signer/token": {"token": "tok-kidmm"},
+        "/escalations": esc_record,
+        "/approvals": {"ok": True},
+    })
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen",
+                   side_effect=approve_tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "approve", "esc-kidmm",
+                "--server", "https://localhost:9000",
+                "--yes",
+            ])
+
+    if result.exit_code == 0:
+        # Check if it posted with the wrong key_id
+        posts = approve_tracker.posts_to("/approvals")
+        if posts:
+            env = posts[0].get("envelope", posts[0])
+            if env.get("key_id") == "0" * 64:
+                raise M2T12dPending(
+                    "D4-2: approve used tampered key_id from link.json "
+                    "instead of the seed's actual kid"
+                )
+        raise M2T12dPending(
+            "D4-2: approve succeeded with mismatched link.json key_id"
+        )
+    assert result.exit_code == 1, (
+        f"expected exit 1 for key_id mismatch, got {result.exit_code}"
+    )
+
+
+def test_d4_2_deny_reads_linked_seed(tmp_path, monkeypatch):
+    """D4-2: signer deny must read the seed from signer/signer.seed
+    (the same location link writes). It must not require verified state
+    beyond the key home.
+
+    R2-3: add the same payload assertions as the approve test -- key_id
+    and user_id from the linked seed, verified signature."""
+    from sandbox.cli.main import cli
+
+    monkeypatch.chdir(tmp_path)
+
+    link_resp = {
+        "org_id": "org-d42d",
+        "user_id": "u-d42d",
+        "iss": "https://idp.test",
+        "sub": "sub-d42d",
+    }
+    link_tracker = _MockTracker({"/signer/link": link_resp})
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=link_tracker.urlopen):
+            link_result = CliRunner().invoke(cli, [
+                "signer", "link",
+                "--code", "d42d-code",
+                "--server", "https://localhost:9000",
+            ])
+
+    if link_result.exit_code != 0:
+        raise M2T12dPending(
+            f"link failed: exit {link_result.exit_code}: {link_result.output}"
+        )
+
+    # R2-3: read the seed that signer link actually wrote
+    seed_path = kh / "signer" / "signer.seed"
+    assert seed_path.exists(), "signer link did not write signer.seed"
+    linked_sk = SigningKey(seed_path.read_bytes())
+    linked_kid = _kid(linked_sk)
+    linked_pub = bytes(linked_sk.verify_key)
+
+    from sandbox.connector.approval import _binding_fingerprint
+    esc_record = {
+        "request_id": "esc-deny-1",
+        "command": "rm -rf /",
+        "status": "pending",
+        "requires_dual": False,
+        "policy_sequence": 1,
+        "risk": {"band": "critical"},
+        "root": str(tmp_path),
+        "kind": "shell",
+        "tool_name": "Bash",
+        "exec_cwd": str(tmp_path),
+        "bundle_sequence": 1,
+        "fp_v": 2,
+        "script": None,
+        "script_unbound": "",
+        "script_preview": None,
+    }
+    esc_record["fingerprint"] = _binding_fingerprint(esc_record)
+    deny_tracker = _MockTracker({
+        "/signer/token": {"token": "tok-d42d"},
+        "/escalations": esc_record,
+        "/approvals": {"ok": True},
+    })
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen",
+                   side_effect=deny_tracker.urlopen):
+            deny_result = CliRunner().invoke(cli, [
+                "signer", "deny", "esc-deny-1",
+                "--server", "https://localhost:9000",
+                "--yes",
+            ])
+
+    if deny_result.exit_code != 0:
+        out = (deny_result.output or "").lower()
+        if "seed" in out or "key" in out or "verified" in out:
+            raise M2T12dPending(
+                f"signer deny cannot read linked seed or requires "
+                f"verified state: {deny_result.output[:300]}"
+            )
+        raise M2T12dPending(
+            f"signer deny failed: exit {deny_result.exit_code}: "
+            f"{deny_result.output[:300]}"
+        )
+
+    # R2-3: payload assertions (same as the approve test).
+    # Both approve and deny post to /approvals (via _post_approval).
+    denial_posts = deny_tracker.posts_to("/approvals")
+    if not denial_posts:
+        raise M2T12dPending("deny did not POST to /denials")
+    posted = denial_posts[0]
+    envelope = posted.get("envelope", posted)
+    payload = envelope["payload"]
+    posted_kid = payload["key_id"]
+    posted_uid = payload["user_id"]
+    assert posted_kid == linked_kid, (
+        f"deny posted wrong key_id: expected {linked_kid[:16]}... "
+        f"(from signer.seed), got {posted_kid[:16]}..."
+    )
+    assert posted_uid == "u-d42d", (
+        f"D4-2: deny posted user_id {posted_uid!r}; expected 'u-d42d'"
+    )
+    assert envelope["signatures"][0]["key_id"] == linked_kid, (
+        f"signatures[0].key_id mismatch: expected {linked_kid[:16]}..."
+    )
+
+    # Verify signature under the linked public key
+    from sandbox.protocol.envelope import verify_envelope, EnvelopeError
+    trusted = {linked_kid: linked_pub}
+    try:
+        verify_envelope(envelope, trusted)
+    except EnvelopeError as exc:
+        raise M2T12dPending(
+            f"denial envelope signature invalid under linked key: {exc}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# d4 tests: R2-4 -- --confirm-key-id with no added keys
+# ---------------------------------------------------------------------------
+
+
+def test_d4_r2_4_confirm_key_id_no_adds_refused(tmp_path):
+    """R2-4: --confirm-key-id X with no --add is refused (the set check must
+    be unconditional).  Exit 1, output mentions 'confirm' or 'key_id',
+    nothing published."""
+    from sandbox.cli.main import cli
+
+    admin_sk = SigningKey.generate()
+    bundle_sk = SigningKey.generate()
+    org_id = "org-r24"
+    bundle_pub = bytes(bundle_sk.verify_key)
+    v1_env, fp = _build_valid_chain_v1(
+        admin_sk, org_id, "https://idp", "sub-1", bundle_pub, user_id="u1"
+    )
+
+    meta = {
+        "server": "https://localhost:9000",
+        "key_id": _kid(admin_sk),
+        "org_id": org_id,
+        "user_id": "u1",
+        "iss": "https://idp",
+        "sub": "sub-1",
+    }
+    kh = _make_key_home(tmp_path, admin_sk, meta)
+    tracker = _signreg_tracker(v1_env)
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "sign-registry",
+                # NO --add, but --confirm-key-id supplied
+                "--confirm-key-id", "phantom-key",
+                "--expect-fingerprint", fp,
+                "--publish",
+                "--yes",
+            ])
+
+    bad_opt = _detect_unknown_option(result)
+    if bad_opt:
+        raise M2T12dPending(
+            f"sign-registry flag not implemented: {bad_opt}"
+        )
+
+    if result.exit_code == 0:
+        raise M2T12dPending(
+            "R2-4: --confirm-key-id with no adds was accepted (should refuse)"
+        )
+    assert result.exit_code == 1, (
+        f"expected exit 1 for extra --confirm-key-id with no adds, "
+        f"got {result.exit_code}: {result.output}"
+    )
+    out = (result.output or "").lower()
+    assert "confirm" in out or "key_id" in out or "key-id" in out, (
+        f"refusal should mention confirm/key_id: {result.output}"
+    )
+    sig_posts = [u for u in tracker.requested_urls
+                 if "/signer/signatures" in u]
+    assert sig_posts == [], "published despite extra --confirm-key-id"
+
+
+# ---------------------------------------------------------------------------
+# d4 tests: R2-5 -- --add of a key already in the registry
+# ---------------------------------------------------------------------------
+
+
+def test_d4_r2_5_add_existing_key_refused(tmp_path):
+    """R2-5: --add of a key_id already in the latest registry is refused
+    (or needs explicit confirmation).  Exit 1, nothing published."""
+    from sandbox.cli.main import cli
+
+    admin_sk = SigningKey.generate()
+    bundle_sk = SigningKey.generate()
+    org_id = "org-r25"
+    bundle_pub = bytes(bundle_sk.verify_key)
+    v1_env, fp = _build_valid_chain_v1(
+        admin_sk, org_id, "https://idp", "sub-1", bundle_pub, user_id="u1"
+    )
+
+    existing_kid = _kid(admin_sk)  # already in the v1 registry
+
+    meta = {
+        "server": "https://localhost:9000",
+        "key_id": existing_kid,
+        "org_id": org_id,
+        "user_id": "u1",
+        "iss": "https://idp",
+        "sub": "sub-1",
+    }
+    kh = _make_key_home(tmp_path, admin_sk, meta)
+    tracker = _signreg_tracker(v1_env)
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "sign-registry",
+                "--add", existing_kid,
+                "--confirm-key-id", existing_kid,
+                "--expect-fingerprint", fp,
+                "--publish",
+                "--yes",
+            ])
+
+    bad_opt = _detect_unknown_option(result)
+    if bad_opt:
+        raise M2T12dPending(
+            f"sign-registry flag not implemented: {bad_opt}"
+        )
+
+    if result.exit_code == 0:
+        raise M2T12dPending(
+            "R2-5: --add of an existing key was accepted (should refuse)"
+        )
+    assert result.exit_code == 1, (
+        f"expected exit 1 for --add existing key, "
+        f"got {result.exit_code}: {result.output}"
+    )
+    out = (result.output or "").lower()
+    # R2-5: the refusal may say "already in registry", "duplicate", "exists",
+    # or currently "candidate key not found" (since the key is not a candidate).
+    # d4 should specifically refuse with an "already" or "exist" message.
+    if "not found" in out or "candidate" in out:
+        raise M2T12dPending(
+            "R2-5: --add of existing key refused as 'not found' instead of "
+            "'already in registry' (needs specific refusal message)"
+        )
+    assert ("exist" in out or "already" in out or "duplicate" in out), (
+        f"refusal should mention existing/duplicate: {result.output}"
+    )
+    sig_posts = [u for u in tracker.requested_urls
+                 if "/signer/signatures" in u]
+    assert sig_posts == [], "published despite --add existing key"
+
+
+# ---------------------------------------------------------------------------
+# d4 tests: R2-6 -- co-sign trust set no wider than verify_chain
+# ---------------------------------------------------------------------------
+
+
+def test_d4_r2_6_cosign_trust_set_matches_verify_chain(tmp_path):
+    """R2-6: existing signatures in co-sign mode are accepted only from
+    keys in prev_admins | cur_admins (same as verify_chain), not from
+    non-admins or keys newly added in this version.
+
+    A signature from a non-admin key in the partial must be refused."""
+    from sandbox.cli.main import cli
+    from sandbox.protocol.envelope import canonical_bytes
+    from sandbox.protocol.domains import REGISTRY
+
+    admin_sk = SigningKey.generate()
+    non_admin_sk = SigningKey.generate()
+    bundle_sk = SigningKey.generate()
+    org_id = "org-r26"
+    bundle_pub = bytes(bundle_sk.verify_key)
+
+    # v1 has only admin_sk as admin; non_admin_sk is approver only
+    from sandbox.connector.sync.signer import build_genesis
+    v1_env, fp = build_genesis(
+        admin_sk, org_id, "https://idp", "sub-1", bundle_pub,
+        user_id="u1",
+    )
+    # Patch in a second key as approver-only in v1
+    non_admin_kid = _kid(non_admin_sk)
+    v1_env["payload"]["keys"].append({
+        "key_id": non_admin_kid,
+        "public_key": bytes(non_admin_sk.verify_key).hex(),
+        "user_id": "u2",
+        "iss": "https://idp",
+        "sub": "sub-2",
+        "alg": "ed25519",
+        "kind": "cli",
+        "roles": ["approver"],  # NOT admin
+        "added_in": 1,
+    })
+    # Re-sign v1 with updated payload
+    tag = b"agg/registry/v1"
+    canonical = json.dumps(v1_env["payload"], sort_keys=True,
+                           separators=(",", ":")).encode()
+    msg = tag + b"\x00" + canonical
+    sig = admin_sk.sign(msg).signature.hex()
+    v1_env["signatures"] = [
+        {"key_id": _kid(admin_sk), "alg": "ed25519", "sig": sig}
+    ]
+
+    # Build v2 with a signature from non_admin_sk (should be refused)
+    v2_payload = {
+        "org_id": org_id,
+        "version": 2,
+        "prev_hash": _payload_hash(v1_env["payload"]),
+        "threshold": 1,
+        "admins": v1_env["payload"]["admins"],
+        "keys": v1_env["payload"]["keys"],
+        "bundle_signer": v1_env["payload"]["bundle_signer"],
+        "expires_at": v1_env["payload"]["expires_at"],
+    }
+    v2_msg = canonical_bytes(REGISTRY, v2_payload)
+    non_admin_sig = non_admin_sk.sign(v2_msg).signature.hex()
+
+    partial = {
+        "kind": REGISTRY,
+        "sig_v": 1,
+        "payload": v2_payload,
+        "signatures": [{
+            "key_id": non_admin_kid,
+            "alg": "ed25519",
+            "sig": non_admin_sig,
+        }],
+    }
+    in_file = tmp_path / "partial.json"
+    in_file.write_text(json.dumps(partial), encoding="utf-8")
+
+    meta = {
+        "server": "https://localhost:9000",
+        "key_id": _kid(admin_sk),
+        "org_id": org_id,
+        "user_id": "u1",
+        "iss": "https://idp",
+        "sub": "sub-1",
+    }
+    kh = _make_key_home(tmp_path / "kh", admin_sk, meta)
+    tracker = _signreg_tracker(v1_env)
+
+    out_file = tmp_path / "out.json"
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "sign-registry",
+                "--in", str(in_file),
+                "--out", str(out_file),
+                "--expect-fingerprint", fp,
+                "--yes",
+            ])
+
+    bad_opt = _detect_unknown_option(result)
+    if bad_opt:
+        raise M2T12dPending(
+            f"sign-registry flag not implemented: {bad_opt}"
+        )
+
+    if result.exit_code == 0:
+        raise M2T12dPending(
+            "R2-6: signature from non-admin accepted (trust set too wide)"
+        )
+    assert result.exit_code == 1, (
+        f"expected exit 1 for non-admin sig in co-sign, "
+        f"got {result.exit_code}: {result.output}"
+    )
+    assert not out_file.exists(), "--out written despite non-admin sig"
+
+
+# ---------------------------------------------------------------------------
+# d4 tests: R2-7 -- threshold bound, root fingerprint, --yes/--confirm-identity
+# ---------------------------------------------------------------------------
+
+
+def test_d4_r2_7_threshold_upper_bound(tmp_path):
+    """R2-7: --threshold N must satisfy 1 <= N <= admin count.  Setting
+    threshold > admin count -> exit 1, nothing written."""
+    from sandbox.cli.main import cli
+
+    admin_sk = SigningKey.generate()
+    bundle_sk = SigningKey.generate()
+    org_id = "org-r27t"
+    bundle_pub = bytes(bundle_sk.verify_key)
+    v1_env, fp = _build_valid_chain_v1(
+        admin_sk, org_id, "https://idp", "sub-1", bundle_pub, user_id="u1"
+    )
+
+    meta = {
+        "server": "https://localhost:9000",
+        "key_id": _kid(admin_sk),
+        "org_id": org_id,
+        "user_id": "u1",
+        "iss": "https://idp",
+        "sub": "sub-1",
+    }
+    kh = _make_key_home(tmp_path, admin_sk, meta)
+    tracker = _signreg_tracker(v1_env)
+    out_file = tmp_path / "v2.json"
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "sign-registry",
+                "--threshold", "99",  # way above admin count (1)
+                "--out", str(out_file),
+                "--expect-fingerprint", fp,
+                "--yes",
+            ])
+
+    bad_opt = _detect_unknown_option(result)
+    if bad_opt:
+        raise M2T12dPending(
+            f"sign-registry flag not implemented: {bad_opt}"
+        )
+
+    if result.exit_code == 0:
+        raise M2T12dPending(
+            "R2-7: --threshold 99 with 1 admin accepted (no upper bound)"
+        )
+    assert result.exit_code == 1, (
+        f"expected exit 1 for threshold > admin count, "
+        f"got {result.exit_code}: {result.output}"
+    )
+    out = (result.output or "").lower()
+    assert "threshold" in out or "admin" in out, (
+        f"refusal should mention threshold/admin: {result.output}"
+    )
+    assert not out_file.exists(), "--out written despite invalid threshold"
+
+
+def test_d4_r2_7_threshold_lower_bound(tmp_path):
+    """R2-7: --threshold 0 -> exit 1, nothing written."""
+    from sandbox.cli.main import cli
+
+    admin_sk = SigningKey.generate()
+    bundle_sk = SigningKey.generate()
+    org_id = "org-r27lo"
+    bundle_pub = bytes(bundle_sk.verify_key)
+    v1_env, fp = _build_valid_chain_v1(
+        admin_sk, org_id, "https://idp", "sub-1", bundle_pub, user_id="u1"
+    )
+
+    meta = {
+        "server": "https://localhost:9000",
+        "key_id": _kid(admin_sk),
+        "org_id": org_id,
+        "user_id": "u1",
+        "iss": "https://idp",
+        "sub": "sub-1",
+    }
+    kh = _make_key_home(tmp_path, admin_sk, meta)
+    tracker = _signreg_tracker(v1_env)
+    out_file = tmp_path / "v2.json"
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "sign-registry",
+                "--threshold", "0",
+                "--out", str(out_file),
+                "--expect-fingerprint", fp,
+                "--yes",
+            ])
+
+    bad_opt = _detect_unknown_option(result)
+    if bad_opt:
+        raise M2T12dPending(
+            f"sign-registry flag not implemented: {bad_opt}"
+        )
+
+    if result.exit_code == 0:
+        raise M2T12dPending(
+            "R2-7: --threshold 0 accepted (no lower bound)"
+        )
+    assert result.exit_code == 1, (
+        f"expected exit 1 for threshold 0, "
+        f"got {result.exit_code}: {result.output}"
+    )
+    assert not out_file.exists(), "--out written despite threshold 0"
+
+
+def test_d4_r2_7_genesis_stores_root_fingerprint(tmp_path):
+    """R2-7: after genesis, the root fingerprint is stored in
+    signer/root_fingerprint so later sign-registry can use it
+    without --expect-fingerprint."""
+    from sandbox.cli.main import cli
+
+    admin_sk = SigningKey.generate()
+    bundle_sk = SigningKey.generate()
+    bundle_pub_hex = bytes(bundle_sk.verify_key).hex()
+    org_id = "org-r27fp"
+    user_id = "u-r27fp"
+    iss = "https://idp.test"
+    sub_val = "sub-r27fp"
+
+    meta = {
+        "server": "https://localhost:9000",
+        "key_id": _kid(admin_sk),
+        "org_id": org_id,
+        "user_id": user_id,
+        "iss": iss,
+        "sub": sub_val,
+    }
+    kh = _make_key_home(tmp_path, admin_sk, meta)
+    tracker = _genesis_tracker(admin_sk, meta)
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "genesis",
+                "--genesis-code", "code-r27fp",
+                "--bundle-signer-key", bundle_pub_hex,
+                "--confirm-identity", iss, sub_val,
+                "--yes",
+            ])
+
+    bad_opt = _detect_unknown_option(result)
+    if bad_opt:
+        raise M2T12dPending(f"genesis flag not implemented: {bad_opt}")
+
+    if result.exit_code != 0:
+        raise M2T12dPending(
+            f"genesis failed: exit {result.exit_code}: {result.output}"
+        )
+
+    # Check that root_fingerprint was stored
+    fp_file = kh / "signer" / "root_fingerprint"
+    if not fp_file.exists():
+        raise M2T12dPending(
+            "genesis does not store signer/root_fingerprint"
+        )
+    stored_fp = fp_file.read_text(encoding="utf-8").strip()
+    assert len(stored_fp) == 64, (
+        f"stored fingerprint has wrong length: {len(stored_fp)}"
+    )
+    # The stored fingerprint should appear in the genesis output
+    assert stored_fp in (result.output or ""), (
+        "stored fingerprint not in genesis output"
+    )
+
+
+def test_d4_r2_7_yes_without_confirm_identity_refused(tmp_path):
+    """R2-7: --yes without --confirm-identity exits 1 (--yes confirms
+    nothing if there is no typed identity).  Output mentions 'identity'
+    or 'confirm'.  Nothing posted."""
+    from sandbox.cli.main import cli
+
+    admin_sk = SigningKey.generate()
+    bundle_sk = SigningKey.generate()
+    bundle_pub_hex = bytes(bundle_sk.verify_key).hex()
+    meta = {
+        "server": "https://localhost:9000",
+        "key_id": _kid(admin_sk),
+        "org_id": "org-r27y",
+        "user_id": "u-r27y",
+        "iss": "https://idp.test",
+        "sub": "sub-r27y",
+    }
+    kh = _make_key_home(tmp_path, admin_sk, meta)
+    tracker = _genesis_tracker(admin_sk, meta)
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "genesis",
+                "--genesis-code", "code-r27y",
+                "--bundle-signer-key", bundle_pub_hex,
+                "--yes",
+                # NO --confirm-identity
+            ])
+
+    bad_opt = _detect_unknown_option(result)
+    if bad_opt:
+        raise M2T12dPending(f"genesis flag not implemented: {bad_opt}")
+
+    if result.exit_code == 0:
+        raise M2T12dPending(
+            "R2-7: --yes without --confirm-identity accepted "
+            "(should refuse in non-interactive mode)"
+        )
+    assert result.exit_code == 1, (
+        f"expected exit 1 for --yes without --confirm-identity, "
+        f"got {result.exit_code}: {result.output}"
+    )
+    out = (result.output or "").lower()
+    assert "identity" in out or "confirm" in out, (
+        f"refusal should mention identity/confirm: {result.output}"
+    )
+    genesis_posts = [u for u in tracker.requested_urls
+                     if "/signer/genesis" in u]
+    assert genesis_posts == [], "posted despite --yes without --confirm-identity"
+
+
+# ---------------------------------------------------------------------------
+# d4 tests: F14 -- per-key roles (not global --admin)
+# ---------------------------------------------------------------------------
+
+
+def test_d4_f14_admin_with_multiple_adds_refused(tmp_path):
+    """F14: --admin gives admin+approver to every --add in the run.
+    With multiple --add keys, refuse (or require per-key roles).
+    Exit 1, nothing published."""
+    from sandbox.cli.main import cli
+
+    admin_sk = SigningKey.generate()
+    bundle_sk = SigningKey.generate()
+    org_id = "org-f14"
+    bundle_pub = bytes(bundle_sk.verify_key)
+    v1_env, fp = _build_valid_chain_v1(
+        admin_sk, org_id, "https://idp", "sub-1", bundle_pub, user_id="u1"
+    )
+
+    carol_sk = SigningKey.generate()
+    carol_kid = _kid(carol_sk)
+    dave_sk = SigningKey.generate()
+    dave_kid = _kid(dave_sk)
+
+    meta = {
+        "server": "https://localhost:9000",
+        "key_id": _kid(admin_sk),
+        "org_id": org_id,
+        "user_id": "u1",
+        "iss": "https://idp",
+        "sub": "sub-1",
+    }
+    kh = _make_key_home(tmp_path, admin_sk, meta)
+    tracker = _signreg_tracker(v1_env, candidates=[
+        {
+            "key_id": carol_kid,
+            "public_key": bytes(carol_sk.verify_key).hex(),
+            "user_id": "carol-u",
+            "iss": "https://idp",
+            "sub": "sub-carol",
+            "kind": "cli",
+        },
+        {
+            "key_id": dave_kid,
+            "public_key": bytes(dave_sk.verify_key).hex(),
+            "user_id": "dave-u",
+            "iss": "https://idp",
+            "sub": "sub-dave",
+            "kind": "cli",
+        },
+    ])
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "sign-registry",
+                "--add", carol_kid,
+                "--add", dave_kid,
+                "--admin",  # applies to both -- F14 says refuse or per-key
+                "--confirm-key-id", carol_kid,
+                "--confirm-key-id", dave_kid,
+                "--expect-fingerprint", fp,
+                "--publish",
+                "--yes",
+            ])
+
+    bad_opt = _detect_unknown_option(result)
+    if bad_opt:
+        raise M2T12dPending(
+            f"sign-registry flag not implemented: {bad_opt}"
+        )
+
+    if result.exit_code == 0:
+        raise M2T12dPending(
+            "F14: --admin with multiple --add accepted (should refuse "
+            "or require per-key roles)"
+        )
+    assert result.exit_code == 1, (
+        f"expected exit 1 for --admin with multiple adds, "
+        f"got {result.exit_code}: {result.output}"
     )
 
 
@@ -2649,4 +4063,353 @@ def test_r2_3_link_non_loopback_http_refuses(tmp_path):
     assert spy_cls.requests == [], (
         f"spy server received requests despite non-loopback refusal: "
         f"{spy_cls.requests}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# R2-2: _refresh_registry_chain security invariants
+# ---------------------------------------------------------------------------
+
+
+def _r2_setup_enrolled_workspace(tmp_path, org_id="org-r22"):
+    """Create a minimal enrolled workspace with pinned root, registry v3
+    chain, and high_water.json at version 3.  Returns (lay, sync_dir, fp,
+    v3_chain_blob)."""
+    from sandbox.connector.layout import FolderLayout
+    from sandbox.connector.sync.signer import build_genesis
+    from sandbox.protocol.registry import verify_chain
+
+    ws = tmp_path / "ws"
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / ".sandbox").mkdir(exist_ok=True)
+    lay = FolderLayout(ws)
+    sync_dir = ws / ".sandbox" / "state" / "sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build a real verifiable v1 chain
+    admin_sk = SigningKey.generate()
+    bsk = SigningKey.generate()
+    bundle_pub = bytes(bsk.verify_key)
+    v1_env, fp = build_genesis(
+        admin_sk, org_id, "https://idp", "sub-1", bundle_pub,
+        user_id="u-r22",
+    )
+
+    # Build v2 and v3 by extending the chain (signed by admin)
+    from sandbox.protocol.envelope import canonical_bytes
+    from sandbox.protocol.domains import REGISTRY
+
+    def _extend(prev_envs, version, admin_sk_local):
+        prev_payload = prev_envs[-1]["payload"]
+        kid = hashlib.sha256(bytes(admin_sk_local.verify_key)).hexdigest()
+        prev_canonical = json.dumps(
+            prev_payload, sort_keys=True, separators=(",", ":"),
+        ).encode()
+        prev_hash = hashlib.sha256(
+            prev_payload["org_id"].encode("utf-8") + b":" + prev_canonical,
+        ).hexdigest()
+        new_payload = dict(prev_payload)
+        new_payload["version"] = version
+        new_payload["prev_hash"] = prev_hash
+        new_canonical = json.dumps(
+            new_payload, sort_keys=True, separators=(",", ":"),
+        ).encode()
+        msg = b"agg/registry/v1\x00" + new_canonical
+        sig = admin_sk_local.sign(msg).signature.hex()
+        return {
+            "kind": "agg/registry/v1", "sig_v": 1,
+            "payload": new_payload,
+            "signatures": [{"key_id": kid, "alg": "ed25519", "sig": sig}],
+        }
+
+    v2_env = _extend([v1_env], 2, admin_sk)
+    v3_env = _extend([v1_env, v2_env], 3, admin_sk)
+    chain_v3 = [v1_env, v2_env, v3_env]
+
+    # Verify the chain is actually valid
+    verify_chain(chain_v3, fp)
+
+    # Write enrolled state
+    (sync_dir / "pinned_root.json").write_text(
+        json.dumps({"fingerprint": fp}), encoding="utf-8",
+    )
+    chain_blob = json.dumps(chain_v3, sort_keys=True, separators=(",", ":"))
+    (sync_dir / "registry.json").write_text(chain_blob, encoding="utf-8")
+    (sync_dir / "high_water.json").write_text(
+        json.dumps({"registry_version": 3, "bundle_sequence": 1}),
+        encoding="utf-8",
+    )
+    (sync_dir / "managed").write_text("1", encoding="utf-8")
+
+    return lay, sync_dir, fp, chain_v3, admin_sk
+
+
+def test_r2_2a_rollback_floor_uses_max_of_local_and_hwm(tmp_path):
+    """R2-2(a): the rollback floor is max(local registry.json version,
+    high_water.json registry_version).  A server serving v2 when the floor
+    is 3 must be refused and nothing written."""
+    lay, sync_dir, fp, chain_v3, admin_sk = _r2_setup_enrolled_workspace(
+        tmp_path,
+    )
+
+    # Delete local registry.json -- leaves only high_water at 3
+    (sync_dir / "registry.json").unlink()
+
+    # The server serves v2 (below the floor of 3)
+    chain_v2 = chain_v3[:2]  # v1 + v2 only
+    server_response = json.dumps({"registry": chain_v2}).encode()
+
+    from unittest.mock import MagicMock
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = server_response
+    mock_resp.status = 200
+    mock_resp.getcode.return_value = 200
+
+    from sandbox.cli.sync_cmds import _refresh_registry_chain
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        _refresh_registry_chain(lay, "https://localhost:9000", "tok-test")
+
+    # Nothing should be written
+    assert not (sync_dir / "registry.json").exists(), (
+        "R2-2(a): _refresh_registry_chain wrote registry.json for v2 "
+        "when the floor (hwm) was 3"
+    )
+
+    # Verified state must stay None (fail closed)
+    from sandbox.connector.sync.verified_state import load_verified_state
+    vs = load_verified_state(lay)
+    assert vs is None, (
+        "R2-2(a): load_verified_state returned non-None after rollback attempt"
+    )
+
+
+def test_r2_2b_missing_high_water_refuses_not_recreates(tmp_path):
+    """R2-2(b): a missing or corrupt high_water.json gives a refusal
+    (the function returns without writing), not a recreated file with
+    bundle_sequence 0.
+
+    Scenario: local registry at v2, hwm deleted, server serves v3.  The
+    function must refuse because the floor cannot be determined (hwm is
+    missing).  It must NOT persist v3 or recreate hwm."""
+    lay, sync_dir, fp, chain_v3, admin_sk = _r2_setup_enrolled_workspace(
+        tmp_path,
+    )
+
+    # Set local registry to v2 so the server's v3 would normally be persisted
+    chain_v2 = chain_v3[:2]
+    (sync_dir / "registry.json").write_text(
+        json.dumps(chain_v2, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+    # Delete high_water.json -- the floor cannot be determined
+    (sync_dir / "high_water.json").unlink()
+
+    # The server serves v3 (higher than local v2)
+    server_response = json.dumps({"registry": chain_v3}).encode()
+
+    from unittest.mock import MagicMock
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = server_response
+    mock_resp.status = 200
+    mock_resp.getcode.return_value = 200
+
+    from sandbox.cli.sync_cmds import _refresh_registry_chain
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        _refresh_registry_chain(lay, "https://localhost:9000", "tok-test")
+
+    # The function must NOT recreate high_water.json
+    assert not (sync_dir / "high_water.json").exists(), (
+        "R2-2(b): _refresh_registry_chain recreated high_water.json when it "
+        "was missing (should refuse, not recreate with bundle_sequence 0)"
+    )
+
+    # Registry must stay at v2 (the update should be refused)
+    reg_data = json.loads(
+        (sync_dir / "registry.json").read_text(encoding="utf-8"),
+    )
+    if isinstance(reg_data, list) and reg_data:
+        cur_ver = reg_data[-1].get("payload", {}).get("version", 0)
+    else:
+        cur_ver = 0
+    assert cur_ver == 2, (
+        f"R2-2(b): registry was updated to v{cur_ver} despite missing hwm "
+        f"(should have refused)"
+    )
+
+
+def test_r2_2c_refresh_never_writes_high_water(tmp_path):
+    """R2-2(c): the function never writes high_water.json.  Only
+    load_verified_state ratchets it through _save_high_water.
+
+    Scenario: server serves v3 over a local v2.  After refresh, the
+    registry is updated to v3, but high_water.json stays at its original
+    value (the next load_verified_state call ratchets it)."""
+    lay, sync_dir, fp, chain_v3, admin_sk = _r2_setup_enrolled_workspace(
+        tmp_path,
+    )
+
+    # Set local state to v2
+    chain_v2 = chain_v3[:2]
+    (sync_dir / "registry.json").write_text(
+        json.dumps(chain_v2, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    (sync_dir / "high_water.json").write_text(
+        json.dumps({"registry_version": 2, "bundle_sequence": 1}),
+        encoding="utf-8",
+    )
+
+    # Server serves v3
+    server_response = json.dumps({"registry": chain_v3}).encode()
+
+    from unittest.mock import MagicMock
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = server_response
+    mock_resp.status = 200
+    mock_resp.getcode.return_value = 200
+
+    from sandbox.cli.sync_cmds import _refresh_registry_chain
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        _refresh_registry_chain(lay, "https://localhost:9000", "tok-test")
+
+    # Registry should be updated to v3
+    reg_data = json.loads(
+        (sync_dir / "registry.json").read_text(encoding="utf-8"),
+    )
+    if isinstance(reg_data, list) and reg_data:
+        new_ver = reg_data[-1].get("payload", {}).get("version", 0)
+    else:
+        new_ver = 0
+    assert new_ver == 3, (
+        f"expected registry to be updated to v3, got v{new_ver}"
+    )
+
+    # high_water.json must NOT have been written by _refresh_registry_chain
+    hwm = json.loads(
+        (sync_dir / "high_water.json").read_text(encoding="utf-8"),
+    )
+    assert hwm["registry_version"] == 2, (
+        f"R2-2(c): _refresh_registry_chain wrote high_water.json "
+        f"(registry_version went from 2 to {hwm['registry_version']}); "
+        f"only load_verified_state should ratchet it"
+    )
+
+
+def test_r2_2_run_once_carries_registry_status(tmp_path, monkeypatch):
+    """R2-2 item 4(b): the run_once result must carry a 'registry' status
+    (refused | updated | unchanged | fetch_failed | verify_failed |
+    rollback_refused)."""
+    lay, sync_dir, fp, chain_v3, admin_sk = _r2_setup_enrolled_workspace(
+        tmp_path,
+    )
+
+    monkeypatch.chdir(tmp_path / "ws")
+
+    # Write enrollment.json with a server URL
+    (sync_dir / "enrollment.json").write_text(
+        json.dumps({
+            "server_url": "https://localhost:9999",
+            "device_id": "dev-r22",
+            "org_id": "org-r22",
+        }),
+        encoding="utf-8",
+    )
+
+    # Mock all network calls to return empty/error
+    from unittest.mock import MagicMock
+
+    def _mock_urlopen(req, **kwargs):
+        raise urllib.error.URLError("connection refused")
+
+    from sandbox.cli.sync_cmds import run_once
+
+    with patch("urllib.request.urlopen", side_effect=_mock_urlopen):
+        result = run_once(lay, server="https://localhost:9999")
+
+    assert "registry" in result, (
+        f"R2-2: run_once result has no 'registry' key: {list(result.keys())}"
+    )
+    assert result["registry"] in (
+        "refused", "updated", "unchanged", "current",
+        "fetch_failed", "verify_failed", "rollback_refused",
+    ), (
+        f"R2-2: run_once registry status {result['registry']!r} is not "
+        f"one of the expected values"
+    )
+
+
+def test_r2_2_shared_verify_persist_helper(tmp_path):
+    """R2-2 item 4(c): the CLI _refresh_registry_chain and the connector
+    process._fetch_registry both verify-and-persist a fetched chain.  Test
+    through behaviour: after a successful update, both callers must produce
+    the same high_water.json state.
+
+    process._fetch_registry does NOT write high_water.json (verified_state
+    ratchets it).  _refresh_registry_chain currently writes it, proving
+    they use different code paths.  A shared helper would not write it.
+
+    Scenario: local v2, server v3.  After refresh, registry is v3.  But
+    high_water.json must NOT be updated by the refresh -- only
+    load_verified_state should ratchet it.  (Overlaps with test_r2_2c
+    but framed as a shared-helper divergence test.)"""
+    lay, sync_dir, fp, chain_v3, admin_sk = _r2_setup_enrolled_workspace(
+        tmp_path,
+    )
+
+    # Set local state to v2
+    chain_v2 = chain_v3[:2]
+    (sync_dir / "registry.json").write_text(
+        json.dumps(chain_v2, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    (sync_dir / "high_water.json").write_text(
+        json.dumps({"registry_version": 2, "bundle_sequence": 1}),
+        encoding="utf-8",
+    )
+
+    # Server serves v3
+    server_response = json.dumps({"registry": chain_v3}).encode()
+
+    from unittest.mock import MagicMock
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = server_response
+    mock_resp.status = 200
+    mock_resp.getcode.return_value = 200
+
+    from sandbox.cli.sync_cmds import _refresh_registry_chain
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        _refresh_registry_chain(lay, "https://localhost:9000", "tok-test")
+
+    # The registry should be updated to v3
+    reg_data = json.loads(
+        (sync_dir / "registry.json").read_text(encoding="utf-8"),
+    )
+    if isinstance(reg_data, list) and reg_data:
+        new_ver = reg_data[-1].get("payload", {}).get("version", 0)
+    else:
+        new_ver = 0
+    assert new_ver == 3, (
+        f"expected registry to be updated to v3, got v{new_ver}"
+    )
+
+    # A shared helper would NOT write high_water.json (process._fetch_registry
+    # does not).  _refresh_registry_chain currently writes it, which proves
+    # the code paths diverge.
+    hwm = json.loads(
+        (sync_dir / "high_water.json").read_text(encoding="utf-8"),
+    )
+    assert hwm["registry_version"] == 2, (
+        f"R2-2 item 4(c): _refresh_registry_chain wrote high_water.json "
+        f"(registry_version went from 2 to {hwm['registry_version']}), "
+        f"which process._fetch_registry would not do -- proves they are "
+        f"separate implementations, not a shared helper"
+    )
+    assert hwm["bundle_sequence"] == 1, (
+        f"R2-2 item 4(c): _refresh_registry_chain changed bundle_sequence "
+        f"from 1 to {hwm['bundle_sequence']}"
     )

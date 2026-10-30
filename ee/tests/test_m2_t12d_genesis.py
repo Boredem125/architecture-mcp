@@ -1453,17 +1453,727 @@ def test_migrate_no_genesis_code_after_v1(genesis_server):
 
 
 # ---------------------------------------------------------------------------
-# Grep test: test_m2_t12b_e2e.py must not call store_registry_version
-# (strict xfail until d4)
+# d4: GET /api/v1/sync/signer/registry (stub ruling 2 -- server side)
+# Full chain, org-scoped, confirmed and pending_link read, refused without auth
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                   reason="T12d d4: e2e test still calls store_registry_version")
+@pytest.mark.pg
+def test_d4_registry_route_returns_full_chain(genesis_server):
+    """GET /api/v1/sync/signer/registry with a confirmed signer token
+    returns the full chain as a JSON list with at least one envelope."""
+    import httpx
+    base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, "RegRoute Org")
+    _uid, sk, kid, confirmed_token = _do_genesis(base, owner_url, org_id)
+
+    r = httpx.get(
+        f"{base}/api/v1/sync/signer/registry",
+        headers={"Authorization": f"Bearer {confirmed_token}"},
+        timeout=10,
+    )
+    if r.status_code in (404, 405):
+        raise M2T12dPending("GET /signer/registry route not implemented")
+    assert r.status_code == 200, (
+        f"expected 200 for confirmed signer, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert isinstance(body, list), f"expected list, got {type(body)}"
+    assert len(body) >= 1, "chain should contain at least v1"
+    # v1 must have payload.version == 1
+    assert body[0].get("payload", {}).get("version") == 1
+
+
+@pytest.mark.pg
+def test_d4_registry_route_org_scoped(genesis_server):
+    """GET /signer/registry with a confirmed token from org A must not see
+    org B's chain (404, not another org's data)."""
+    import httpx
+    base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_a = _fresh_org(owner_url, "RegScope A")
+    _do_genesis(base, owner_url, org_a)
+
+    org_b = _fresh_org(owner_url, "RegScope B")
+    _uid_b, sk_b, kid_b, token_b = _do_genesis(base, owner_url, org_b)
+
+    # token_b is scoped to org_b; the route must return org_b's chain only
+    r = httpx.get(
+        f"{base}/api/v1/sync/signer/registry",
+        headers={"Authorization": f"Bearer {token_b}"},
+        timeout=10,
+    )
+    if r.status_code in (404, 405):
+        raise M2T12dPending("GET /signer/registry route not implemented")
+    assert r.status_code == 200
+    chain = r.json()
+    # Every entry must belong to org_b, never org_a
+    for env in chain:
+        env_org = env.get("payload", {}).get("org_id", "")
+        assert env_org == org_b, (
+            f"chain contains org {env_org}, expected only {org_b}"
+        )
+
+
+@pytest.mark.pg
+def test_d4_registry_route_pending_link_read_only(genesis_server):
+    """A pending_link token can GET /signer/registry (read-only)."""
+    import httpx
+    base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, "PendRead Org")
+    _do_genesis(base, owner_url, org_id)
+
+    # Create a second user with a pending link (not in the registry yet)
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        uid2, _iss, _sub = _seed_user_row(conn, org_id, "carol@pend.test")
+        _grant_role(conn, org_id, uid2, "admin")
+
+    sk2, kid2, pending_token = _link_and_token_httpx(
+        base, owner_url, org_id, uid2,
+    )
+
+    r = httpx.get(
+        f"{base}/api/v1/sync/signer/registry",
+        headers={"Authorization": f"Bearer {pending_token}"},
+        timeout=10,
+    )
+    if r.status_code in (404, 405):
+        raise M2T12dPending("GET /signer/registry route not implemented")
+    assert r.status_code == 200, (
+        f"pending_link should read /signer/registry, got {r.status_code}"
+    )
+    chain = r.json()
+    assert isinstance(chain, list) and len(chain) >= 1
+
+
+@pytest.mark.pg
+def test_d4_registry_route_refused_without_auth(genesis_server):
+    """GET /signer/registry without auth -> 401."""
+    import httpx
+    base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, "NoAuth Org")
+    _do_genesis(base, owner_url, org_id)
+
+    r = httpx.get(
+        f"{base}/api/v1/sync/signer/registry",
+        timeout=10,
+    )
+    if r.status_code in (404, 405):
+        raise M2T12dPending("GET /signer/registry route not implemented")
+    assert r.status_code == 401, (
+        f"expected 401 without auth, got {r.status_code}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# d4: migrate.py emits bundle_signer public key next to genesis_code
+# (stub ruling 1 -- out-of-band source for the CLI)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.pg
+def test_d4_migrate_emits_bundle_signer(genesis_server, bundle_signer_info):
+    """migrate.py must print a bundle_signer JSON line with key_id and
+    public_key derived from AGG_BUNDLE_SIGNER_KEY_FILE, next to the
+    genesis_code line."""
+    import subprocess
+    import sys
+
+    pg_url = genesis_server["pg_url"]
+
+    env = {
+        **os.environ,
+        "AGG_DATABASE_URL": pg_url,
+        "AGG_BOOTSTRAP_ORG_SLUG": "bundlesignertest",
+        "AGG_BOOTSTRAP_ORG_NAME": "BundleSigner Test",
+        "AGG_BOOTSTRAP_ORG_ISSUER": "https://idp.test",
+        "AGG_BOOTSTRAP_ORG_CLIENT_ID": "test-client",
+        "AGG_BUNDLE_SIGNER_KEY_FILE": bundle_signer_info["key_file"],
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-m", "agg_cp.migrate"],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+    stdout = result.stdout.strip()
+    lines = [l for l in stdout.splitlines() if l.strip()]
+
+    bs_lines = [l for l in lines if "bundle_signer" in l]
+    if not bs_lines:
+        raise M2T12dPending(
+            "migrate.py does not emit a bundle_signer JSON line"
+        )
+
+    data = json.loads(bs_lines[0])
+    assert data.get("event") == "bundle_signer", (
+        f"expected event=bundle_signer, got {data.get('event')}"
+    )
+    assert "key_id" in data, "bundle_signer line missing key_id"
+    assert "public_key" in data, "bundle_signer line missing public_key"
+    # key_id must be sha256(public_key bytes)
+    expected_kid = hashlib.sha256(
+        bytes.fromhex(data["public_key"])
+    ).hexdigest()
+    assert data["key_id"] == expected_kid, (
+        f"key_id mismatch: {data['key_id']} != {expected_kid}"
+    )
+    # Must match the configured bundle signer
+    assert data["public_key"] == bundle_signer_info["public_key_hex"], (
+        "bundle_signer public_key does not match AGG_BUNDLE_SIGNER_KEY_FILE"
+    )
+
+
+# ---------------------------------------------------------------------------
+# D4-1 CRITICAL: /signatures must refuse v1 and any post for org with no chain
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.pg
+def test_d4_1_guard_signatures_refuses_v1_when_chain_exists(genesis_server):
+    """D4-1 guard: POST /signatures with version=1 when v1 already exists
+    returns 409 (store_registry_version refuses duplicate v1)."""
+    import httpx
+    base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, "D41Guard Org")
+    uid, sk, kid, confirmed_token = _do_genesis(base, owner_url, org_id)
+
+    env = _build_genesis_envelope(sk, org_id, user_id=uid)
+    r = httpx.post(
+        f"{base}/api/v1/sync/signer/signatures",
+        json={"type": "registry", "envelope": env, "org_id": org_id},
+        headers={"Authorization": f"Bearer {confirmed_token}"},
+        timeout=10,
+    )
+    assert r.status_code == 409, (
+        f"v1 to /signatures with existing chain should be 409, "
+        f"got {r.status_code}"
+    )
+
+
+@pytest.mark.pg
+def test_d4_1_guard_second_genesis_alert_committed(genesis_server):
+    """R2-1: when /signatures returns 409 for a second v1, the
+    second_genesis alert row must be committed (threat 22 detection)."""
+    import httpx
+    base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, "D41Alert Org")
+    uid, sk, kid, confirmed_token = _do_genesis(base, owner_url, org_id)
+
+    env = _build_genesis_envelope(sk, org_id, user_id=uid)
+    r = httpx.post(
+        f"{base}/api/v1/sync/signer/signatures",
+        json={"type": "registry", "envelope": env, "org_id": org_id},
+        headers={"Authorization": f"Bearer {confirmed_token}"},
+        timeout=10,
+    )
+    assert r.status_code == 409
+
+    # R2-1: the guard must commit a second_genesis alert row
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        alert_row = conn.execute(
+            "SELECT kind FROM sync_alerts "
+            "WHERE org_id = %s::uuid AND kind = 'second_genesis'",
+            [org_id],
+        ).fetchone()
+    assert alert_row is not None, (
+        "R2-1: second v1 on /signatures did not commit a "
+        "second_genesis alert row"
+    )
+
+
+@pytest.mark.pg
+def test_d4_1_signatures_refuses_v1_no_chain(genesis_server):
+    """D4-1: POST /signatures with version=1 for an org with no registry
+    must be 409 genesis_only_via_genesis_route, and must store nothing."""
+    import httpx
+    base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, "D41NoChain Org")
+
+    uid, iss, sub, sk, kid, token, _gcode = _seed_admin_with_link_and_code(
+        base, owner_url, org_id, "d41@test.example",
+    )
+
+    env = _build_genesis_envelope(sk, org_id, user_id=uid, iss=iss, sub=sub)
+    r = httpx.post(
+        f"{base}/api/v1/sync/signer/signatures",
+        json={"type": "registry", "envelope": env, "org_id": org_id},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10,
+    )
+
+    if r.status_code == 200:
+        raise M2T12dPending(
+            "D4-1: /signatures accepted v1 for org with no chain "
+            "(should be 409 genesis_only_via_genesis_route)"
+        )
+    assert r.status_code == 409, (
+        f"expected 409, got {r.status_code}: {r.text}"
+    )
+
+    # Verify nothing stored
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        ver_row = conn.execute(
+            "SELECT COUNT(*) FROM key_registry_versions "
+            "WHERE org_id = %s::uuid",
+            [org_id],
+        ).fetchone()
+        assert ver_row[0] == 0, "key_registry_versions row stored despite refusal"
+        ak_row = conn.execute(
+            "SELECT COUNT(*) FROM approver_keys WHERE org_id = %s::uuid",
+            [org_id],
+        ).fetchone()
+        assert ak_row[0] == 0, "approver_keys row stored despite refusal"
+
+
+@pytest.mark.pg
+def test_d4_1_non_admin_cannot_create_root_via_signatures(genesis_server):
+    """D4-1: A non-admin session user with no genesis code cannot create a
+    registry root via any route (neither /genesis nor /signatures)."""
+    import httpx
+    base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, "D41NonAdmin Org")
+
+    # Viewer user -- no admin role
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        uid, iss, sub = _seed_user_row(conn, org_id, "viewer@d41.test")
+        _grant_role(conn, org_id, uid, "viewer")
+
+    sk, kid, token = _link_and_token_httpx(base, owner_url, org_id, uid)
+
+    env = _build_genesis_envelope(sk, org_id, user_id=uid, iss=iss, sub=sub)
+
+    # /genesis must refuse (non-admin) -- this already works
+    r_gen = httpx.post(
+        f"{base}/api/v1/sync/signer/genesis",
+        json={"genesis_code": "fake", "envelope": env},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10,
+    )
+    assert r_gen.status_code in (400, 403), (
+        f"/genesis should refuse non-admin, got {r_gen.status_code}"
+    )
+
+    # /signatures must also refuse (D4-1 fix)
+    r_sig = httpx.post(
+        f"{base}/api/v1/sync/signer/signatures",
+        json={"type": "registry", "envelope": env, "org_id": org_id},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10,
+    )
+    if r_sig.status_code == 200:
+        raise M2T12dPending(
+            "D4-1: non-admin created root via /signatures"
+        )
+    assert r_sig.status_code in (403, 409), (
+        f"expected 403 or 409 for non-admin /signatures, got {r_sig.status_code}"
+    )
+
+
+@pytest.mark.pg
+def test_d4_1_confirmed_other_org_refuses_v1_no_chain(genesis_server):
+    """D4-1: A confirmed signer token from org A must not create a v1
+    registry for org B (which has no chain) via /signatures.  The token
+    scope check prevents cross-org access (404), and the genesis gate
+    (409) provides defence in depth.  Either refusal is correct."""
+    import httpx
+    base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    # Org A: fully bootstrapped (has a genesis)
+    org_a = _fresh_org(owner_url, "D41 OrgA")
+    uid_a, sk_a, kid_a, confirmed_token_a = _do_genesis(
+        base, owner_url, org_a, "d41a@test.example",
+    )
+
+    # Org B: no chain at all
+    org_b = _fresh_org(owner_url, "D41 OrgB")
+
+    # Use org A's confirmed token to try posting a v1 envelope for org B
+    env_b = _build_genesis_envelope(sk_a, org_b, user_id=uid_a)
+    r = httpx.post(
+        f"{base}/api/v1/sync/signer/signatures",
+        json={"type": "registry", "envelope": env_b, "org_id": org_b},
+        headers={"Authorization": f"Bearer {confirmed_token_a}"},
+        timeout=10,
+    )
+
+    # The attack must be prevented.  Today the token scope check fires
+    # first and returns 404 (the token is org-A-scoped, so org B's
+    # resource is "not found").  After the D4-1 genesis gate lands the
+    # version-1 check (409) or an explicit org mismatch (403) may fire
+    # instead.  All three are correct refusals.
+    assert r.status_code in (403, 404, 409), (
+        f"D4-1: expected 403/404/409, got {r.status_code}: {r.text}"
+    )
+
+    # Verify nothing stored for org B
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_b])
+        ver_row = conn.execute(
+            "SELECT COUNT(*) FROM key_registry_versions "
+            "WHERE org_id = %s::uuid",
+            [org_b],
+        ).fetchone()
+        assert ver_row[0] == 0, "key_registry_versions row stored for org B"
+        ak_row = conn.execute(
+            "SELECT COUNT(*) FROM approver_keys WHERE org_id = %s::uuid",
+            [org_b],
+        ).fetchone()
+        assert ak_row[0] == 0, "approver_keys row stored for org B"
+
+
+@pytest.mark.pg
+def test_d4_1_positive_genesis_then_v2_via_signatures(genesis_server):
+    """D4-1 positive control: genesis via /genesis then v2 via /signatures
+    works end to end.  The genesis key appears in approver_keys, and v2
+    adds a second key."""
+    import httpx
+    base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, "D41Pos Org")
+    uid, sk, kid, confirmed_token = _do_genesis(
+        base, owner_url, org_id, "d41pos@test.example",
+    )
+
+    # Build v2 adding a second admin key
+    second_sk = SigningKey.generate()
+    second_kid = _kid(second_sk)
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        uid2, iss2, sub2 = _seed_user_row(conn, org_id, "bob@d41.test")
+        _grant_role(conn, org_id, uid2, "admin")
+        link_code2 = _create_signer_link(conn, org_id, uid2)
+
+    r_link = httpx.post(f"{base}/api/v1/sync/signer/link", json={
+        "code": link_code2, "key_id": second_kid,
+        "public_key": bytes(second_sk.verify_key).hex(),
+    }, timeout=10)
+    assert r_link.status_code == 200
+
+    # Get v1 chain to compute prev_hash
+    r_chain = httpx.get(
+        f"{base}/api/v1/sync/signer/registry",
+        headers={"Authorization": f"Bearer {confirmed_token}"},
+        timeout=10,
+    )
+    if r_chain.status_code in (404, 405):
+        raise M2T12dPending("GET /signer/registry not implemented")
+    assert r_chain.status_code == 200
+    chain = r_chain.json()
+    v1_payload = chain[0]["payload"]
+
+    v1_canonical = json.dumps(
+        v1_payload, sort_keys=True, separators=(",", ":"),
+    ).encode()
+    prev_hash = hashlib.sha256(
+        org_id.encode() + b":" + v1_canonical,
+    ).hexdigest()
+
+    bs_pub = _SERVER_BUNDLE_SIGNER_PUB or bytes(SigningKey.generate().verify_key)
+    bs_kid = hashlib.sha256(bs_pub).hexdigest()
+
+    v2_payload = {
+        "org_id": org_id,
+        "version": 2,
+        "prev_hash": prev_hash,
+        "threshold": 1,
+        "admins": [kid, second_kid],
+        "keys": v1_payload["keys"] + [{
+            "key_id": second_kid,
+            "public_key": bytes(second_sk.verify_key).hex(),
+            "kind": "cli",
+            "alg": "ed25519",
+            "user_id": uid2,
+            "iss": iss2,
+            "sub": sub2,
+            "roles": ["admin", "approver"],
+            "added_in": 2,
+        }],
+        "bundle_signer": {"key_id": bs_kid, "public_key": bs_pub.hex()},
+        "expires_at": v1_payload.get("expires_at", time.time() + 86400),
+    }
+
+    tag = b"agg/registry/v1"
+    v2_canonical = json.dumps(
+        v2_payload, sort_keys=True, separators=(",", ":"),
+    ).encode()
+    msg = tag + b"\x00" + v2_canonical
+    sig = sk.sign(msg).signature.hex()
+    v2_env = {
+        "kind": "agg/registry/v1",
+        "sig_v": 1,
+        "payload": v2_payload,
+        "signatures": [{"key_id": kid, "alg": "ed25519", "sig": sig}],
+    }
+
+    # Carol's pending_link token includes her own key, so she can post
+    second_token = _get_signer_token_httpx(base, second_sk, second_kid)
+    if second_token is None:
+        # Use confirmed token from genesis admin instead
+        second_token = confirmed_token
+
+    r_v2 = httpx.post(
+        f"{base}/api/v1/sync/signer/signatures",
+        json={"type": "registry", "envelope": v2_env, "org_id": org_id},
+        headers={"Authorization": f"Bearer {second_token}"},
+        timeout=10,
+    )
+    assert r_v2.status_code == 200, (
+        f"v2 via /signatures failed: {r_v2.status_code} {r_v2.text}"
+    )
+
+    # Verify approver_keys now has both keys
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        ak_count = conn.execute(
+            "SELECT COUNT(*) FROM approver_keys "
+            "WHERE org_id = %s::uuid AND revoked_at IS NULL",
+            [org_id],
+        ).fetchone()[0]
+        assert ak_count >= 2, (
+            f"expected >= 2 active keys after v2, got {ak_count}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Ruling 5 (ee): link route returns iss and sub
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.pg
+def test_d4_ruling5_link_returns_iss_sub(genesis_server):
+    """Ruling 5 ee: POST /signer/link must return iss == users.oidc_issuer
+    and sub == users.oidc_subject of the linked user."""
+    import httpx
+    base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, "R5Link Org")
+    _do_genesis(base, owner_url, org_id)
+
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        uid, iss, sub = _seed_user_row(conn, org_id, "r5link@test.example")
+        _grant_role(conn, org_id, uid, "admin")
+        link_code = _create_signer_link(conn, org_id, uid)
+
+    sk = SigningKey.generate()
+    kid = _kid(sk)
+    r = httpx.post(f"{base}/api/v1/sync/signer/link", json={
+        "code": link_code, "key_id": kid,
+        "public_key": bytes(sk.verify_key).hex(),
+    }, timeout=10)
+    assert r.status_code == 200, f"link failed: {r.status_code} {r.text}"
+    body = r.json()
+
+    if "iss" not in body or not body.get("iss"):
+        raise M2T12dPending(
+            "link response does not contain iss"
+        )
+    if "sub" not in body or not body.get("sub"):
+        raise M2T12dPending(
+            "link response does not contain sub"
+        )
+
+    assert body["iss"] == iss, (
+        f"iss mismatch: got {body['iss']!r}, expected {iss!r}"
+    )
+    assert body["sub"] == sub, (
+        f"sub mismatch: got {body['sub']!r}, expected {sub!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# D4-7: link route returns error for missing user, never ""
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.pg
+def test_d4_7_link_missing_user_returns_error(genesis_server):
+    """D4-7: If the signer_links user_id has no matching users row, the
+    link route must return an error (500), never iss='' or sub=''."""
+    import httpx
+    base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, "D47 Org")
+    _do_genesis(base, owner_url, org_id)
+
+    # Create a signer_links row pointing to a non-existent user_id
+    ghost_user_id = str(uuid.uuid4())
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        code = secrets.token_hex(16)
+        code_hash = hashlib.sha256(code.encode()).hexdigest()
+        conn.execute(
+            "INSERT INTO signer_links "
+            "(id, org_id, user_id, code_hash, expires_at, status) "
+            "VALUES (%s, %s, %s, %s, now() + interval '15 minutes', 'pending')",
+            [str(uuid.uuid4()), org_id, ghost_user_id, code_hash],
+        )
+
+    sk = SigningKey.generate()
+    kid = _kid(sk)
+    r = httpx.post(f"{base}/api/v1/sync/signer/link", json={
+        "code": code, "key_id": kid,
+        "public_key": bytes(sk.verify_key).hex(),
+    }, timeout=10)
+
+    if r.status_code == 200:
+        body = r.json()
+        if body.get("iss", "") == "" or body.get("sub", "") == "":
+            raise M2T12dPending(
+                f"D4-7: link returned empty iss/sub for missing user: {body}"
+            )
+        # If iss/sub are non-empty despite no user row, that's unexpected
+        raise M2T12dPending(
+            f"D4-7: link returned 200 for missing user row: {body}"
+        )
+    # Expected: 500 or 400 error
+    assert r.status_code in (400, 500), (
+        f"expected error for missing user, got {r.status_code}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# D4-4: migrate fails closed on bad or missing bundle signer key
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.pg
+def test_d4_4_migrate_fails_closed_bad_bundle_key(genesis_server, tmp_path):
+    """D4-4: When AGG_BUNDLE_SIGNER_KEY_FILE is set but the key cannot be
+    loaded (bad format), migrate must exit non-zero with a clear message
+    and print no private material."""
+    import subprocess
+    import sys
+
+    pg_url = genesis_server["pg_url"]
+
+    # Write a bad key file
+    bad_key_file = tmp_path / "bad_bundle_key"
+    bad_key_file.write_text("not-a-valid-hex-key", encoding="utf-8")
+
+    env = {
+        **os.environ,
+        "AGG_DATABASE_URL": pg_url,
+        "AGG_BOOTSTRAP_ORG_SLUG": "d44badkey",
+        "AGG_BOOTSTRAP_ORG_NAME": "D44 Bad Key",
+        "AGG_BOOTSTRAP_ORG_ISSUER": "https://idp.test",
+        "AGG_BOOTSTRAP_ORG_CLIENT_ID": "test-client",
+        "AGG_BUNDLE_SIGNER_KEY_FILE": str(bad_key_file),
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-m", "agg_cp.migrate"],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+
+    combined = result.stdout + result.stderr
+    # Must not print private material
+    assert "not-a-valid-hex-key" not in combined, (
+        "migrate printed the bad key file contents"
+    )
+
+    if result.returncode == 0:
+        # Check if it silently ignored the bad key
+        if "bundle_signer_error" not in result.stdout:
+            raise M2T12dPending(
+                "D4-4: migrate exited 0 with bad bundle key file "
+                "and no error event"
+            )
+    else:
+        # Non-zero exit is correct; check for clear message
+        assert "bundle_signer" in combined.lower() or "key" in combined.lower(), (
+            f"migrate failed but message unclear: {combined[:300]}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# D4-3: compose.yml gives migrate jobs the bundle_signer_key secret
+# ---------------------------------------------------------------------------
+
+
+def test_d4_3_compose_gives_migrate_bundle_signer():
+    """D4-3: ee/deploy/compose.yml must mount bundle_signer_key into the
+    migrate and migrate-demo services, with AGG_BUNDLE_SIGNER_KEY_FILE
+    pointing to the mounted secret."""
+    import yaml
+    from pathlib import Path
+
+    compose_file = Path(__file__).parent.parent / "deploy" / "compose.yml"
+    assert compose_file.exists(), f"compose.yml not found at {compose_file}"
+
+    with open(compose_file, encoding="utf-8") as f:
+        compose = yaml.safe_load(f)
+
+    services = compose.get("services", {})
+
+    for svc_name in ("migrate", "migrate-demo"):
+        svc = services.get(svc_name)
+        if svc is None:
+            continue
+        svc_secrets = svc.get("secrets", [])
+        if "bundle_signer_key" not in svc_secrets:
+            raise M2T12dPending(
+                f"D4-3: {svc_name} service does not mount bundle_signer_key secret"
+            )
+        svc_env = svc.get("environment", {})
+        env_val = svc_env.get("AGG_BUNDLE_SIGNER_KEY_FILE", "")
+        if not env_val:
+            raise M2T12dPending(
+                f"D4-3: {svc_name} service does not set "
+                f"AGG_BUNDLE_SIGNER_KEY_FILE env var"
+            )
+
+
+# Positive control: api service already has bundle_signer_key
+def test_d4_3_positive_api_has_bundle_signer():
+    """D4-3 positive control: the api service already mounts bundle_signer_key."""
+    import yaml
+    from pathlib import Path
+
+    compose_file = Path(__file__).parent.parent / "deploy" / "compose.yml"
+    with open(compose_file, encoding="utf-8") as f:
+        compose = yaml.safe_load(f)
+
+    api = compose["services"]["api"]
+    assert "bundle_signer_key" in api.get("secrets", []), (
+        "api service must mount bundle_signer_key"
+    )
+
+
+# ---------------------------------------------------------------------------
+# D4-8: AST check replaces grep (store_registry_version)
+# ---------------------------------------------------------------------------
+
+
 def test_e2e_does_not_call_store_registry_version():
     """ee/tests/test_m2_t12b_e2e.py must not call store_registry_version
-    directly once d4 moves it to the genesis/signature routes."""
-    import re
+    directly once d4 moves it to the genesis/signature routes.
+
+    D4-8: Uses AST walk instead of regex to ignore comments and strings."""
+    import ast
     from pathlib import Path
 
     e2e_file = Path(__file__).parent / "test_m2_t12b_e2e.py"
@@ -1471,9 +2181,37 @@ def test_e2e_does_not_call_store_registry_version():
         raise M2T12dPending("test_m2_t12b_e2e.py not found")
 
     source = e2e_file.read_text(encoding="utf-8")
-    calls = re.findall(r'\bstore_registry_version\s*\(', source)
-    if calls:
+    tree = ast.parse(source, filename=str(e2e_file))
+
+    # Walk AST looking for calls to store_registry_version
+    # or imports of that name
+    calls_found = []
+    imports_found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            # Direct call: store_registry_version(...)
+            if isinstance(func, ast.Name) and func.id == "store_registry_version":
+                calls_found.append(node.lineno)
+            # Attribute call: module.store_registry_version(...)
+            elif isinstance(func, ast.Attribute) and func.attr == "store_registry_version":
+                calls_found.append(node.lineno)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = [alias.name for alias in getattr(node, "names", [])]
+            if "store_registry_version" in names:
+                imports_found.append(node.lineno)
+            # Check aliased imports
+            for alias in getattr(node, "names", []):
+                if alias.asname == "store_registry_version":
+                    imports_found.append(node.lineno)
+
+    if calls_found:
         raise M2T12dPending(
-            f"test_m2_t12b_e2e.py still calls store_registry_version "
-            f"({len(calls)} call(s)); d4 must move to the routes"
+            f"test_m2_t12b_e2e.py calls store_registry_version "
+            f"at line(s) {calls_found}; d4 must move to the routes"
+        )
+    if imports_found:
+        raise M2T12dPending(
+            f"test_m2_t12b_e2e.py imports store_registry_version "
+            f"at line(s) {imports_found}; d4 must remove the import"
         )

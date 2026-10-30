@@ -618,6 +618,7 @@ def test_run_once_persists_verified_registry_update(tmp_path, key_home):
     (sync_dir / "registry.json").write_text(
         json.dumps([genesis_env], sort_keys=True, separators=(",", ":")))
     (sync_dir / "device_id").write_text("d-update-1")
+    (sync_dir / "high_water.json").write_text(json.dumps({"registry_version": 1, "bundle_sequence": 0}))
 
     ws_id_file = lay.root / ".sandbox" / "workspace_id"
     ws_id = ws_id_file.read_text(encoding="utf-8").strip()

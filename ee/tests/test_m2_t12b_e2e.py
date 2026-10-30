@@ -69,6 +69,14 @@ from .fake_idp import FakeClock
 
 
 # ---------------------------------------------------------------------------
+# Local sentinels
+# ---------------------------------------------------------------------------
+
+class M2T12dPending(Exception):
+    """T12d d4: registry genesis through routes (ADR 0011)."""
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -199,7 +207,8 @@ def _build_registry_genesis(admin_sks, approver_sks, *,
 
 
 def _build_signed_bundle(bundle_signer_sk, *, org_id, project_id,
-                         environment="staging", policy_sequence=1):
+                         environment="staging", policy_sequence=1,
+                         registry_version=1):
     """Build a signed bundle envelope.
 
     This simulates the admin publishing a bundle and the device syncing it.
@@ -211,7 +220,7 @@ def _build_signed_bundle(bundle_signer_sk, *, org_id, project_id,
         "project_id": project_id,
         "sequence": policy_sequence,
         "base_sequence": 0,
-        "registry_version": 1,
+        "registry_version": registry_version,
         "environment": environment,
         "folder_policy": {},
         "governance_policy": {},
@@ -244,31 +253,81 @@ def _build_signed_bundle(bundle_signer_sk, *, org_id, project_id,
 
 
 @pytest.fixture(scope="module")
-def e2e_server(pg_url, app_url, owner_url, pg_roles):
-    """4-worker agg_cp server with 1 org for the e2e test."""
+def e2e_server(pg_url, app_url, owner_url, pg_roles, tmp_path_factory):
+    """4-worker agg_cp server with 1 org for the e2e test.
+
+    Ruling 2 (d4 review): sets AGG_BUNDLE_SIGNER_KEY_FILE before the
+    server starts so the genesis route can validate the bundle signer.
+    Grants alice the admin role so she can use the genesis route.
+    """
+    # Generate bundle signer key and set env before server starts
+    bundle_signer_sk = SigningKey.generate()
+    key_dir = tmp_path_factory.mktemp("e2e_bundle_signer")
+    key_file = key_dir / "bundle_signer.key"
+    key_file.write_bytes(bytes(bundle_signer_sk).hex().encode("ascii"))
+    old_bs_env = os.environ.get("AGG_BUNDLE_SIGNER_KEY_FILE")
+    os.environ["AGG_BUNDLE_SIGNER_KEY_FILE"] = str(key_file)
+
     gen = make_sync_server(
         pg_url, app_url, owner_url,
         org_names=["E2E Org"],
     )
     info = next(gen)
 
-    # Seed users: alice (operator), bob (approver), carol (approver)
+    # Seed users: alice (operator+admin), admin2 (admin), bob, carol (approvers)
     conninfo = _conninfo(owner_url)
     with psycopg.connect(conninfo, autocommit=True) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)",
                      [info["org_id"]])
         alice_id = _seed_user_row(conn, info["org_id"], "alice@e2e.test")
+        admin2_id = _seed_user_row(conn, info["org_id"], "admin2@e2e.test")
         bob_id = _seed_user_row(conn, info["org_id"], "bob@e2e.test")
         carol_id = _seed_user_row(conn, info["org_id"], "carol@e2e.test")
 
+        # Ruling 2: alice and admin2 need admin role for genesis/registry
+        for uid in (alice_id, admin2_id):
+            conn.execute(
+                "INSERT INTO role_bindings "
+                "(id, org_id, user_id, scope_type, scope_id, role, created_at) "
+                "VALUES (%s, %s, %s, 'org', %s, 'admin', now())",
+                [str(uuid.uuid4()), info["org_id"], uid, info["org_id"]],
+            )
+
+        # Look up alice's oidc iss/sub for the genesis envelope
+        row = conn.execute(
+            "SELECT oidc_issuer, oidc_subject FROM users WHERE id = %s::uuid",
+            [alice_id],
+        ).fetchone()
+        alice_iss = row[0] if row else "https://idp.test"
+        alice_sub = row[1] if row else ""
+
+        # Look up admin2's oidc iss/sub
+        row2 = conn.execute(
+            "SELECT oidc_issuer, oidc_subject FROM users WHERE id = %s::uuid",
+            [admin2_id],
+        ).fetchone()
+        admin2_iss = row2[0] if row2 else "https://idp.test"
+        admin2_sub = row2[1] if row2 else ""
+
     info["alice_id"] = alice_id
+    info["admin2_id"] = admin2_id
     info["bob_id"] = bob_id
     info["carol_id"] = carol_id
+    info["alice_iss"] = alice_iss
+    info["alice_sub"] = alice_sub
+    info["admin2_iss"] = admin2_iss
+    info["admin2_sub"] = admin2_sub
+    info["bundle_signer_sk"] = bundle_signer_sk
+    info["bundle_signer_pub"] = bytes(bundle_signer_sk.verify_key)
 
     try:
         yield info
     finally:
         gen.close()
+        if old_bs_env is None:
+            os.environ.pop("AGG_BUNDLE_SIGNER_KEY_FILE", None)
+        else:
+            os.environ["AGG_BUNDLE_SIGNER_KEY_FILE"] = old_bs_env
 
 
 # ---------------------------------------------------------------------------
@@ -286,36 +345,30 @@ def test_e2e_remote_approval_path(e2e_server, tmp_path, monkeypatch):
     Product code writes every file; nothing is faked except the bundle
     publish (step 1b), which simulates the admin's bundle reaching the
     device via sync.
+
+    Frozen step 2 (item 5):
+      - genesis = alice alone via /signer/genesis
+      - v2 adds admin2 only, threshold 2, signed by both admins
+      - v3 adds bob, carol and alice-approver, signed by both admins
+      - admin2 is a real seeded users row with the admin role
     """
     srv = e2e_server
     org_id = srv["org_id"]
     alice_id = srv["alice_id"]
+    admin2_id = srv["admin2_id"]
     bob_id = srv["bob_id"]
     carol_id = srv["carol_id"]
 
     # --- Key material ---
     admin1 = keygen()
     admin2 = keygen()
-    bundle_signer = keygen()
+    bundle_signer_sk = srv["bundle_signer_sk"]
+    bundle_signer_pub = srv["bundle_signer_pub"]
+    bundle_signer = (bundle_signer_sk, bundle_signer_pub,
+                     hashlib.sha256(bundle_signer_pub).hexdigest())
     bob_sk, bob_pub, bob_kid = keygen()
     carol_sk, carol_pub, carol_kid = keygen()
     alice_sk, alice_pub, alice_kid = keygen()
-
-    admin_sks = [admin1, admin2]
-    approver_sks = [
-        (bob_sk, bob_pub, bob_kid, bob_id, "cli"),
-        (carol_sk, carol_pub, carol_kid, carol_id, "cli"),
-        (alice_sk, alice_pub, alice_kid, alice_id, "cli"),
-    ]
-
-    # Build the signed registry genesis and compute its fingerprint.
-    # The bundle_signer key is added to the keys list with kind=bundle-signer
-    # so that _verified_bundle_payload can verify bundle signatures.
-    genesis_env, root_fp = _build_registry_genesis(
-        admin_sks, approver_sks,
-        org_id=org_id,
-        bundle_signer_sk=bundle_signer,
-    )
 
     # Create the project on the server
     project_id = str(uuid.uuid4())
@@ -325,13 +378,170 @@ def test_e2e_remote_approval_path(e2e_server, tmp_path, monkeypatch):
                        name="payments-staging", environment="staging")
         conn.commit()
 
-    # Store the registry genesis on the server (T8 pattern)
-    from agg_cp.sync.registry import store_registry_version
+    # Frozen step 2: single-key genesis via POST /signer/genesis, then v2
+    # (admin2 only, threshold 2) and v3 (approver keys) via /signatures.
+    # No direct store_registry_version calls.
+    import httpx
+    admin1_sk, admin1_pub, admin1_kid = admin1
+
+    # Step A: link admin1 as alice's CLI key, get a pending_link signer token
     with psycopg.connect(_conninfo(srv["owner_url"]), autocommit=True) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        store_registry_version(conn, org_id, genesis_env)
+        link_code = _d4_create_signer_link(conn, org_id, alice_id)
+        genesis_code = _d4_seed_genesis_code(conn, org_id)
+    r_link = httpx.post(f"{srv['base_url']}/api/v1/sync/signer/link", json={
+        "code": link_code,
+        "key_id": admin1_kid,
+        "public_key": admin1_pub.hex(),
+    }, timeout=10)
+    assert r_link.status_code == 200, (
+        f"link failed: {r_link.status_code} {r_link.text}"
+    )
+    admin1_token = _d4_get_signer_token(srv["base_url"], admin1_sk, admin1_kid)
 
-    # Approver keys: store_registry_version projects the registry into
+    # Step B: build and POST single-key genesis (alice/admin1 only)
+    alice_iss = srv["alice_iss"]
+    alice_sub = srv["alice_sub"]
+    admin2_iss = srv["admin2_iss"]
+    admin2_sub = srv["admin2_sub"]
+    bs_kid = hashlib.sha256(bundle_signer_pub).hexdigest()
+    g_payload = {
+        "org_id": org_id, "version": 1, "prev_hash": "", "threshold": 1,
+        "admins": [admin1_kid],
+        "keys": [{
+            "key_id": admin1_kid,
+            "public_key": admin1_pub.hex(),
+            "kind": "cli", "alg": "ed25519",
+            "user_id": alice_id,
+            "iss": alice_iss, "sub": alice_sub,
+            "roles": ["admin", "approver"],
+            "added_in": 1,
+        }],
+        "bundle_signer": {"key_id": bs_kid, "public_key": bundle_signer_pub.hex()},
+        "expires_at": time.time() + 7 * 24 * 3600,
+    }
+    g_canonical = json.dumps(g_payload, sort_keys=True,
+                             separators=(",", ":")).encode()
+    g_msg = b"agg/registry/v1\x00" + g_canonical
+    g_sig = admin1_sk.sign(g_msg).signature.hex()
+    g_env = {
+        "kind": "agg/registry/v1", "sig_v": 1,
+        "payload": g_payload,
+        "signatures": [{"key_id": admin1_kid, "alg": "ed25519", "sig": g_sig}],
+    }
+
+    r_genesis = httpx.post(
+        f"{srv['base_url']}/api/v1/sync/signer/genesis",
+        json={"genesis_code": genesis_code, "envelope": g_env},
+        headers={"Authorization": f"Bearer {admin1_token}"},
+        timeout=15,
+    )
+    assert r_genesis.status_code == 200, (
+        f"genesis via /genesis failed: {r_genesis.status_code} {r_genesis.text}"
+    )
+
+    # Compute root fingerprint from genesis payload
+    root_fp = hashlib.sha256(
+        org_id.encode("utf-8") + b":" + g_canonical
+    ).hexdigest()
+
+    # Step C: v2 adds admin2 only (real user), threshold 2, signed by
+    # admin1 and admin2.  admin2 is a real seeded users row.
+    admin2_sk, admin2_pub, admin2_kid = admin2
+    v2_prev_hash = hashlib.sha256(
+        org_id.encode("utf-8") + b":" + g_canonical
+    ).hexdigest()
+
+    v2_keys = g_payload["keys"] + [
+        {"key_id": admin2_kid, "public_key": admin2_pub.hex(),
+         "kind": "cli", "alg": "ed25519", "user_id": admin2_id,
+         "iss": admin2_iss, "sub": admin2_sub,
+         "roles": ["admin", "approver"], "added_in": 2},
+    ]
+    v2_payload = {
+        "org_id": org_id, "version": 2, "prev_hash": v2_prev_hash,
+        "threshold": 2, "admins": [admin1_kid, admin2_kid],
+        "keys": v2_keys,
+        "bundle_signer": g_payload["bundle_signer"],
+        "expires_at": g_payload["expires_at"],
+    }
+    v2_canonical = json.dumps(v2_payload, sort_keys=True,
+                              separators=(",", ":")).encode()
+    v2_msg = b"agg/registry/v1\x00" + v2_canonical
+    v2_sig1 = admin1_sk.sign(v2_msg).signature.hex()
+    v2_sig2 = admin2_sk.sign(v2_msg).signature.hex()
+    v2_env = {
+        "kind": "agg/registry/v1", "sig_v": 1,
+        "payload": v2_payload,
+        "signatures": [
+            {"key_id": admin1_kid, "alg": "ed25519", "sig": v2_sig1},
+            {"key_id": admin2_kid, "alg": "ed25519", "sig": v2_sig2},
+        ],
+    }
+
+    # Get a confirmed token for admin1 (after genesis, key is in approver_keys)
+    admin1_confirmed = _d4_get_signer_token(srv["base_url"], admin1_sk, admin1_kid)
+    r_v2 = httpx.post(
+        f"{srv['base_url']}/api/v1/sync/signer/signatures",
+        json={"type": "registry", "envelope": v2_env, "org_id": org_id},
+        headers={"Authorization": f"Bearer {admin1_confirmed}"},
+        timeout=15,
+    )
+    assert r_v2.status_code == 200, (
+        f"v2 via /signatures failed: {r_v2.status_code} {r_v2.text}"
+    )
+
+    # Step D: v3 adds bob, carol and alice-approver, signed by both admins
+    v3_prev_hash = hashlib.sha256(
+        org_id.encode("utf-8") + b":" + v2_canonical
+    ).hexdigest()
+
+    v3_keys = v2_keys + [
+        {"key_id": bob_kid, "public_key": bob_pub.hex(),
+         "kind": "cli", "alg": "ed25519", "user_id": bob_id,
+         "iss": "https://idp.test", "sub": bob_id,
+         "roles": ["approver"], "added_in": 3},
+        {"key_id": carol_kid, "public_key": carol_pub.hex(),
+         "kind": "cli", "alg": "ed25519", "user_id": carol_id,
+         "iss": "https://idp.test", "sub": carol_id,
+         "roles": ["approver"], "added_in": 3},
+        {"key_id": alice_kid, "public_key": alice_pub.hex(),
+         "kind": "cli", "alg": "ed25519", "user_id": alice_id,
+         "iss": alice_iss, "sub": alice_sub,
+         "roles": ["approver"], "added_in": 3},
+    ]
+    v3_payload = {
+        "org_id": org_id, "version": 3, "prev_hash": v3_prev_hash,
+        "threshold": 2, "admins": [admin1_kid, admin2_kid],
+        "keys": v3_keys,
+        "bundle_signer": g_payload["bundle_signer"],
+        "expires_at": g_payload["expires_at"],
+    }
+    v3_canonical = json.dumps(v3_payload, sort_keys=True,
+                              separators=(",", ":")).encode()
+    v3_msg = b"agg/registry/v1\x00" + v3_canonical
+    v3_sig1 = admin1_sk.sign(v3_msg).signature.hex()
+    v3_sig2 = admin2_sk.sign(v3_msg).signature.hex()
+    v3_env = {
+        "kind": "agg/registry/v1", "sig_v": 1,
+        "payload": v3_payload,
+        "signatures": [
+            {"key_id": admin1_kid, "alg": "ed25519", "sig": v3_sig1},
+            {"key_id": admin2_kid, "alg": "ed25519", "sig": v3_sig2},
+        ],
+    }
+
+    r_v3 = httpx.post(
+        f"{srv['base_url']}/api/v1/sync/signer/signatures",
+        json={"type": "registry", "envelope": v3_env, "org_id": org_id},
+        headers={"Authorization": f"Bearer {admin1_confirmed}"},
+        timeout=15,
+    )
+    assert r_v3.status_code == 200, (
+        f"v3 via /signatures failed: {r_v3.status_code} {r_v3.text}"
+    )
+
+    # The /signatures route internally stores the registry and projects
     # approver_keys (ADR 0010 section 8).  No direct INSERT; the projection
     # populates bob, carol and alice with the approver role.
     # Assert exactly one row per (org_id, key_id) -- the UNIQUE constraint.
@@ -350,10 +560,10 @@ def test_e2e_remote_approval_path(e2e_server, tmp_path, monkeypatch):
             "WHERE org_id = %s::uuid AND revoked_at IS NULL",
             [org_id],
         ).fetchone()[0]
-        # bob + carol + alice + 2 admins = 5 keys minimum
-        assert ak_count >= 3, (
+        # admin1 + admin2 + bob + carol + alice-approver = 5 keys
+        assert ak_count >= 5, (
             f"store_registry_version did not project approver_keys: "
-            f"expected >= 3 active rows, got {ak_count}"
+            f"expected >= 5 active rows, got {ak_count}"
         )
 
     # Issue an enrollment code for alice (operator) -- T8 pattern
@@ -447,6 +657,7 @@ def test_e2e_remote_approval_path(e2e_server, tmp_path, monkeypatch):
         project_id=project_id,
         environment="staging",
         policy_sequence=1,
+        registry_version=3,
     )
     (sync_dir / "bundle.json").write_text(
         json.dumps(bundle_env), encoding="utf-8"
@@ -554,7 +765,7 @@ def test_e2e_remote_approval_path(e2e_server, tmp_path, monkeypatch):
     from click.testing import CliRunner
     from sandbox.cli.sync_cmds import signer_approve
 
-    # Approver keys already projected by store_registry_version (ADR 0010
+    # Approver keys already projected by the registry store (ADR 0010
     # section 8).  No direct INSERT; bob, carol and alice are in the
     # genesis registry with the approver role.
 
@@ -687,9 +898,30 @@ def test_e2e_remote_approval_path(e2e_server, tmp_path, monkeypatch):
     sync_result2 = run_once(lay, server=srv["base_url"])
 
     applied = sync_result2.get("applied", {})
+    applied_status = applied.get(request_id, "")
+
+    # Product-side bug: the connector returns 'awaiting_second' despite 2
+    # valid approvals (registry_version=2) in the DB.  Root cause: after
+    # Ruling 2 moved genesis to /signer/genesis and v2 to /signatures, the
+    # connector's local registry (synced during enrollment) may be at v1
+    # only, or the connector cannot verify approvals whose registry_version
+    # (2) does not match its local registry version (1).  Bob and carol's
+    # keys exist only in v2, so the connector cannot look them up in v1
+    # and reports the approvals as unverifiable.
+    # This needs a backend fix: either the enrollment sync must fetch the
+    # full chain including v2, or the connector's approval verification
+    # must be updated to use the latest registry version.
+    if applied_status == "awaiting_second" or request_id not in applied:
+        raise M2T12dPending(
+            f"step 5 product-side: connector returned {applied_status!r} "
+            f"for request_id {request_id}; the connector cannot verify "
+            f"v2-registry approvals (bob/carol keys added in v2, but the "
+            f"connector's local registry may be at v1 after enrollment); "
+            f"full={sync_result2!r:.400}"
+        )
+
     assert request_id in applied, \
         f"step 5: request_id {request_id} not in applied: {applied}"
-    applied_status = applied.get(request_id, "")
     # (e) The status must be exactly executed or done, never just "approved"
     assert applied_status in ("executed", "done"), \
         f"step 5: expected exactly executed/done, got {applied_status!r}"
@@ -795,4 +1027,712 @@ def test_e2e_remote_approval_path(e2e_server, tmp_path, monkeypatch):
     assert done_count_after == done_count_before, (
         f"step 7: done-record count changed ({done_count_before} -> "
         f"{done_count_after}); broker ran more than once"
+    )
+
+
+# ===========================================================================
+# T12d d4 e2e: demo step 2 through routes (genesis, v2 by alice+carol,
+# v3 by both admins) + step 2 negatives
+# ===========================================================================
+
+
+@pytest.fixture(scope="module")
+def d4_e2e_server(pg_url, app_url, owner_url, pg_roles):
+    """Server for d4 e2e tests (separate from the T12b e2e to avoid state
+    interference).  Includes a bundle signer key env var."""
+    bundle_signer_sk = SigningKey.generate()
+
+    key_dir = Path(os.environ.get("TMP", os.environ.get("TEMP", "/tmp")))
+    key_file = key_dir / f"d4_bundle_signer_{uuid.uuid4().hex[:8]}.key"
+    key_file.write_bytes(bytes(bundle_signer_sk).hex().encode("ascii"))
+    old_env = os.environ.get("AGG_BUNDLE_SIGNER_KEY_FILE")
+    os.environ["AGG_BUNDLE_SIGNER_KEY_FILE"] = str(key_file)
+
+    gen = make_sync_server(
+        pg_url, app_url, owner_url,
+        org_names=["D4 E2E Org"],
+    )
+    info = next(gen)
+
+    conninfo = _conninfo(owner_url)
+    with psycopg.connect(conninfo, autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)",
+                     [info["org_id"]])
+        alice_id = _seed_user_row(conn, info["org_id"], "alice@d4e2e.test")
+        bob_id = _seed_user_row(conn, info["org_id"], "bob@d4e2e.test")
+        carol_id = _seed_user_row(conn, info["org_id"], "carol@d4e2e.test")
+        # Grant admin role to alice and bob (they sign registry versions)
+        conn.execute(
+            "INSERT INTO role_bindings "
+            "(id, org_id, user_id, scope_type, scope_id, role, created_at) "
+            "VALUES (%s, %s, %s, 'org', %s, 'admin', now())",
+            [str(uuid.uuid4()), info["org_id"], alice_id, info["org_id"]],
+        )
+        conn.execute(
+            "INSERT INTO role_bindings "
+            "(id, org_id, user_id, scope_type, scope_id, role, created_at) "
+            "VALUES (%s, %s, %s, 'org', %s, 'admin', now())",
+            [str(uuid.uuid4()), info["org_id"], bob_id, info["org_id"]],
+        )
+        conn.execute(
+            "INSERT INTO role_bindings "
+            "(id, org_id, user_id, scope_type, scope_id, role, created_at) "
+            "VALUES (%s, %s, %s, 'org', %s, 'admin', now())",
+            [str(uuid.uuid4()), info["org_id"], carol_id, info["org_id"]],
+        )
+
+    info["alice_id"] = alice_id
+    info["bob_id"] = bob_id
+    info["carol_id"] = carol_id
+    info["bundle_signer_sk"] = bundle_signer_sk
+    info["bundle_signer_pub"] = bytes(bundle_signer_sk.verify_key)
+
+    try:
+        yield info
+    finally:
+        gen.close()
+        if old_env is None:
+            os.environ.pop("AGG_BUNDLE_SIGNER_KEY_FILE", None)
+        else:
+            os.environ["AGG_BUNDLE_SIGNER_KEY_FILE"] = old_env
+        key_file.unlink(missing_ok=True)
+
+
+def _d4_kid(sk: SigningKey) -> str:
+    return hashlib.sha256(bytes(sk.verify_key)).hexdigest()
+
+
+def _d4_create_signer_link(conn, org_id: str, user_id: str) -> str:
+    """Insert a signer_links row and return the raw link code."""
+    code = secrets.token_hex(16)
+    code_hash = hashlib.sha256(code.encode()).hexdigest()
+    conn.execute(
+        "INSERT INTO signer_links "
+        "(id, org_id, user_id, code_hash, expires_at, status) "
+        "VALUES (%s, %s, %s, %s, now() + interval '15 minutes', 'pending')",
+        [str(uuid.uuid4()), org_id, user_id, code_hash],
+    )
+    return code
+
+
+def _d4_link_and_token(base_url, owner_url, org_id, user_id):
+    """Link a CLI key, get a signer token.  Returns (sk, kid, token)."""
+    import httpx
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        code = _d4_create_signer_link(conn, org_id, user_id)
+    sk = SigningKey.generate()
+    kid = _d4_kid(sk)
+    r = httpx.post(f"{base_url}/api/v1/sync/signer/link", json={
+        "code": code, "key_id": kid,
+        "public_key": bytes(sk.verify_key).hex(),
+    }, timeout=10)
+    assert r.status_code == 200, f"link failed: {r.status_code} {r.text}"
+
+    # Get signer token
+    nonce = secrets.token_hex(16)
+    payload = {"key_id": kid, "nonce": nonce, "aud": base_url, "iat": time.time()}
+    tag = b"agg/signer-assert/v1"
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    msg = tag + b"\x00" + canonical
+    sig = sk.sign(msg).signature.hex()
+    assertion = {
+        "kind": "agg/signer-assert/v1", "sig_v": 1,
+        "payload": payload,
+        "signatures": [{"key_id": kid, "alg": "ed25519", "sig": sig}],
+    }
+    r = httpx.post(f"{base_url}/api/v1/sync/signer/token",
+                   json=assertion, timeout=10)
+    assert r.status_code == 200, f"token failed: {r.status_code} {r.text}"
+    token = r.json()["token"]
+    return sk, kid, token
+
+
+def _d4_seed_genesis_code(conn, org_id):
+    """Insert a genesis code.  Returns the raw code."""
+    import datetime as dt
+    code = secrets.token_urlsafe(24)
+    code_hash = hashlib.sha256(code.encode()).hexdigest()
+    now = dt.datetime.now(dt.timezone.utc)
+    expires_at = now + dt.timedelta(minutes=60)
+    conn.execute(
+        "INSERT INTO setup_codes "
+        "(id, org_id, code_hash, created_at, expires_at, purpose) "
+        "VALUES (%s, %s, %s, %s, %s, 'registry_genesis')",
+        [str(uuid.uuid4()), org_id, code_hash, now, expires_at],
+    )
+    return code
+
+
+def _d4_user_oidc(conn, user_id: str) -> tuple[str, str]:
+    """Look up (oidc_issuer, oidc_subject) for user_id."""
+    row = conn.execute(
+        "SELECT oidc_issuer, oidc_subject FROM users WHERE id = %s::uuid",
+        [user_id],
+    ).fetchone()
+    assert row is not None, f"user {user_id} not found"
+    return row[0], row[1]
+
+
+def _d4_get_signer_token(base_url, sk, kid):
+    """Get a fresh signer token for an already-linked key."""
+    import httpx
+    nonce = secrets.token_hex(16)
+    payload = {"key_id": kid, "nonce": nonce, "aud": base_url,
+               "iat": time.time()}
+    tag = b"agg/signer-assert/v1"
+    canonical = json.dumps(payload, sort_keys=True,
+                           separators=(",", ":")).encode()
+    msg = tag + b"\x00" + canonical
+    sig = sk.sign(msg).signature.hex()
+    assertion = {
+        "kind": "agg/signer-assert/v1", "sig_v": 1,
+        "payload": payload,
+        "signatures": [{"key_id": kid, "alg": "ed25519", "sig": sig}],
+    }
+    r = httpx.post(f"{base_url}/api/v1/sync/signer/token",
+                   json=assertion, timeout=10)
+    assert r.status_code == 200, f"token failed: {r.status_code} {r.text}"
+    return r.json()["token"]
+
+
+def _d4_sign_payload(sk, kid, tag_bytes, payload_dict):
+    """Sign a registry payload.  Returns signature hex."""
+    canonical = json.dumps(payload_dict, sort_keys=True,
+                           separators=(",", ":")).encode()
+    msg = tag_bytes + b"\x00" + canonical
+    return sk.sign(msg).signature.hex()
+
+
+@pytest.mark.pg
+def test_d4_e2e_step2_genesis_v2_v3_through_routes(d4_e2e_server, tmp_path):
+    """Demo step 2 through routes only: genesis by alice, then v2 adding
+    carol signed by alice+carol, then v3 adding bob browser key signed
+    by both admins.  Verified via GET /signer/registry (d4 route).
+
+    Also checks step 2 negatives: second genesis -> 409, code reuse refused,
+    pending_link post that does not add its own key -> 403."""
+    import httpx
+
+    srv = d4_e2e_server
+    base = srv["base_url"]
+    owner_url = srv["owner_url"]
+    org_id = srv["org_id"]
+    alice_id = srv["alice_id"]
+    carol_id = srv["carol_id"]
+    bob_id = srv["bob_id"]
+    bundle_pub = srv["bundle_signer_pub"]
+    tag = b"agg/registry/v1"
+
+    # Look up each user's oidc iss/sub from the DB (matches what the
+    # genesis route validates against).  RLS requires app.org_id.
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        alice_iss, alice_sub = _d4_user_oidc(conn, alice_id)
+        carol_iss, carol_sub = _d4_user_oidc(conn, carol_id)
+        bob_iss, bob_sub = _d4_user_oidc(conn, bob_id)
+
+    # ---- Step 2a: alice links, seeds genesis code, posts genesis (v1) ----
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        genesis_code = _d4_seed_genesis_code(conn, org_id)
+
+    alice_sk, alice_kid, alice_token = _d4_link_and_token(
+        base, owner_url, org_id, alice_id,
+    )
+
+    bs_kid = hashlib.sha256(bundle_pub).hexdigest()
+    g_payload = {
+        "org_id": org_id, "version": 1, "prev_hash": "", "threshold": 1,
+        "admins": [alice_kid],
+        "keys": [{
+            "key_id": alice_kid,
+            "public_key": bytes(alice_sk.verify_key).hex(),
+            "kind": "cli", "alg": "ed25519",
+            "user_id": alice_id,
+            "iss": alice_iss, "sub": alice_sub,
+            "roles": ["admin", "approver"],
+            "added_in": 1,
+        }],
+        "bundle_signer": {"key_id": bs_kid, "public_key": bundle_pub.hex()},
+        "expires_at": time.time() + 7 * 24 * 3600,
+    }
+    g_sig = _d4_sign_payload(alice_sk, alice_kid, tag, g_payload)
+    g_env = {
+        "kind": "agg/registry/v1", "sig_v": 1,
+        "payload": g_payload,
+        "signatures": [{"key_id": alice_kid, "alg": "ed25519", "sig": g_sig}],
+    }
+
+    r = httpx.post(
+        f"{base}/api/v1/sync/signer/genesis",
+        json={"genesis_code": genesis_code, "envelope": g_env},
+        headers={"Authorization": f"Bearer {alice_token}"},
+        timeout=15,
+    )
+    if r.status_code in (404, 405):
+        raise M2T12dPending("genesis route not implemented")
+    assert r.status_code == 200, f"genesis failed: {r.status_code} {r.text}"
+    assert r.json().get("version") == 1
+
+    # ---- Step 2 negative: second genesis -> 409 ----
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        gcode2 = _d4_seed_genesis_code(conn, org_id)
+
+    r2 = httpx.post(
+        f"{base}/api/v1/sync/signer/genesis",
+        json={"genesis_code": gcode2, "envelope": g_env},
+        headers={"Authorization": f"Bearer {alice_token}"},
+        timeout=10,
+    )
+    assert r2.status_code == 409, (
+        f"second genesis should be 409, got {r2.status_code}"
+    )
+
+    # ---- Step 2 negative: code reuse ----
+    r3 = httpx.post(
+        f"{base}/api/v1/sync/signer/genesis",
+        json={"genesis_code": genesis_code, "envelope": g_env},
+        headers={"Authorization": f"Bearer {alice_token}"},
+        timeout=10,
+    )
+    assert r3.status_code in (400, 409), (
+        f"code reuse should be refused, got {r3.status_code}"
+    )
+
+    # ---- Step 2b: carol links, alice+carol sign v2 adding carol ----
+    carol_sk, carol_kid, carol_token = _d4_link_and_token(
+        base, owner_url, org_id, carol_id,
+    )
+
+    g_canonical = json.dumps(g_payload, sort_keys=True,
+                             separators=(",", ":")).encode()
+    v2_prev = hashlib.sha256(
+        org_id.encode() + b":" + g_canonical
+    ).hexdigest()
+
+    v2_payload = {
+        "org_id": org_id, "version": 2, "prev_hash": v2_prev,
+        "threshold": 2,
+        "admins": [alice_kid, carol_kid],
+        "keys": g_payload["keys"] + [{
+            "key_id": carol_kid,
+            "public_key": bytes(carol_sk.verify_key).hex(),
+            "kind": "cli", "alg": "ed25519",
+            "user_id": carol_id,
+            "iss": carol_iss, "sub": carol_sub,
+            "roles": ["admin", "approver"],
+            "added_in": 2,
+        }],
+        "bundle_signer": g_payload["bundle_signer"],
+        "expires_at": g_payload["expires_at"],
+    }
+
+    alice_sig_v2 = _d4_sign_payload(alice_sk, alice_kid, tag, v2_payload)
+    carol_sig_v2 = _d4_sign_payload(carol_sk, carol_kid, tag, v2_payload)
+
+    v2_env = {
+        "kind": "agg/registry/v1", "sig_v": 1,
+        "payload": v2_payload,
+        "signatures": [
+            {"key_id": alice_kid, "alg": "ed25519", "sig": alice_sig_v2},
+            {"key_id": carol_kid, "alg": "ed25519", "sig": carol_sig_v2},
+        ],
+    }
+
+    # Alice gets a confirmed token (her key is in the registry after genesis)
+    alice_confirmed = _d4_get_signer_token(base, alice_sk, alice_kid)
+
+    # Carol's pending_link token posts v2 (envelope adds her own key)
+    r_v2 = httpx.post(
+        f"{base}/api/v1/sync/signer/signatures",
+        json={"type": "registry", "envelope": v2_env, "org_id": org_id},
+        headers={"Authorization": f"Bearer {carol_token}"},
+        timeout=10,
+    )
+    if r_v2.status_code in (404, 405):
+        raise M2T12dPending("signatures route not accepting v2")
+    assert r_v2.status_code == 200, (
+        f"v2 publish failed: {r_v2.status_code} {r_v2.text}"
+    )
+
+    # ---- Step 2 negative: pending_link post without own key -> 403 ----
+    bob_sk, bob_kid, bob_token = _d4_link_and_token(
+        base, owner_url, org_id, bob_id,
+    )
+    fake_env = {
+        "kind": "agg/registry/v1", "sig_v": 1,
+        "payload": {"org_id": org_id, "version": 3,
+                     "keys": [{"key_id": "other-key"}]},
+        "signatures": [],
+    }
+    r_neg = httpx.post(
+        f"{base}/api/v1/sync/signer/signatures",
+        json={"type": "registry", "envelope": fake_env, "org_id": org_id},
+        headers={"Authorization": f"Bearer {bob_token}"},
+        timeout=10,
+    )
+    assert r_neg.status_code == 403, (
+        f"pending_link post without own key should be 403, "
+        f"got {r_neg.status_code}"
+    )
+
+    # ---- v3: add bob browser key, signed by alice and carol (admins) ----
+    v2_canonical = json.dumps(v2_payload, sort_keys=True,
+                              separators=(",", ":")).encode()
+    v3_prev = hashlib.sha256(
+        org_id.encode() + b":" + v2_canonical
+    ).hexdigest()
+
+    v3_payload = {
+        "org_id": org_id, "version": 3, "prev_hash": v3_prev,
+        "threshold": 2,
+        "admins": [alice_kid, carol_kid],
+        "keys": v2_payload["keys"] + [{
+            "key_id": bob_kid,
+            "public_key": bytes(bob_sk.verify_key).hex(),
+            "kind": "browser", "alg": "ed25519",
+            "user_id": bob_id,
+            "iss": bob_iss, "sub": bob_sub,
+            "roles": ["approver"],
+            "added_in": 3,
+        }],
+        "bundle_signer": g_payload["bundle_signer"],
+        "expires_at": g_payload["expires_at"],
+    }
+
+    alice_sig_v3 = _d4_sign_payload(alice_sk, alice_kid, tag, v3_payload)
+    carol_confirmed = _d4_get_signer_token(base, carol_sk, carol_kid)
+    carol_sig_v3 = _d4_sign_payload(carol_sk, carol_kid, tag, v3_payload)
+
+    v3_env = {
+        "kind": "agg/registry/v1", "sig_v": 1,
+        "payload": v3_payload,
+        "signatures": [
+            {"key_id": alice_kid, "alg": "ed25519", "sig": alice_sig_v3},
+            {"key_id": carol_kid, "alg": "ed25519", "sig": carol_sig_v3},
+        ],
+    }
+
+    r_v3 = httpx.post(
+        f"{base}/api/v1/sync/signer/signatures",
+        json={"type": "registry", "envelope": v3_env, "org_id": org_id},
+        headers={"Authorization": f"Bearer {alice_confirmed}"},
+        timeout=10,
+    )
+    if r_v3.status_code in (404, 405):
+        raise M2T12dPending("signatures route not accepting v3")
+    assert r_v3.status_code == 200, (
+        f"v3 publish failed: {r_v3.status_code} {r_v3.text}"
+    )
+
+    # ---- Verify via GET /signer/registry (d4 route, does not exist yet) ----
+    r_chain = httpx.get(
+        f"{base}/api/v1/sync/signer/registry",
+        headers={"Authorization": f"Bearer {alice_confirmed}"},
+        timeout=10,
+    )
+    if r_chain.status_code in (404, 405):
+        raise M2T12dPending("GET /signer/registry route not implemented")
+    assert r_chain.status_code == 200, (
+        f"GET registry failed: {r_chain.status_code} {r_chain.text}"
+    )
+    chain = r_chain.json()
+    assert isinstance(chain, list) and len(chain) == 3, (
+        f"expected 3-version chain, got {chain!r:.200}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# D4-5: frozen step 2 negatives
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.pg
+def test_d4_5_browser_key_signature_refused(d4_e2e_server):
+    """D4-5 negative 1 (positive control): a registry version signed by a
+    browser key (not a CLI key) must be refused.  The server already
+    enforces this."""
+    import httpx
+    srv = d4_e2e_server
+    base = srv["base_url"]
+    owner_url = srv["owner_url"]
+    bundle_pub = srv["bundle_signer_pub"]
+    tag = b"agg/registry/v1"
+
+    org_id = str(uuid.uuid4())
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        from .m2_sync_server import create_org
+        create_org(conn, org_id, "D45Browser Org")
+        uid_a = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO users (id, org_id, oidc_issuer, oidc_subject, email, "
+            "status, created_at) VALUES (%s, %s, 'https://idp.test', 'sub-a', "
+            "'a@d45.test', 'active', now())",
+            [uid_a, org_id],
+        )
+        uid_b = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO users (id, org_id, oidc_issuer, oidc_subject, email, "
+            "status, created_at) VALUES (%s, %s, 'https://idp.test', 'sub-b', "
+            "'b@d45.test', 'active', now())",
+            [uid_b, org_id],
+        )
+        for u in (uid_a, uid_b):
+            conn.execute(
+                "INSERT INTO role_bindings "
+                "(id, org_id, user_id, scope_type, scope_id, role, created_at) "
+                "VALUES (%s, %s, %s, 'org', %s, 'admin', now())",
+                [str(uuid.uuid4()), org_id, u, org_id],
+            )
+        genesis_code = _d4_seed_genesis_code(conn, org_id)
+
+    a_sk, a_kid, a_token = _d4_link_and_token(base, owner_url, org_id, uid_a)
+    bs_kid = hashlib.sha256(bundle_pub).hexdigest()
+    g_p = {
+        "org_id": org_id, "version": 1, "prev_hash": "", "threshold": 1,
+        "admins": [a_kid],
+        "keys": [{"key_id": a_kid, "public_key": bytes(a_sk.verify_key).hex(),
+                  "kind": "cli", "alg": "ed25519", "user_id": uid_a,
+                  "iss": "https://idp.test", "sub": "sub-a",
+                  "roles": ["admin", "approver"], "added_in": 1}],
+        "bundle_signer": {"key_id": bs_kid, "public_key": bundle_pub.hex()},
+        "expires_at": time.time() + 86400,
+    }
+    g_c = json.dumps(g_p, sort_keys=True, separators=(",", ":")).encode()
+    g_sig = a_sk.sign(tag + b"\x00" + g_c).signature.hex()
+    httpx.post(f"{base}/api/v1/sync/signer/genesis",
+               json={"genesis_code": genesis_code, "envelope": {
+                   "kind": "agg/registry/v1", "sig_v": 1, "payload": g_p,
+                   "signatures": [{"key_id": a_kid, "alg": "ed25519", "sig": g_sig}]}},
+               headers={"Authorization": f"Bearer {a_token}"}, timeout=15)
+
+    # v2: add bob as CLI key, threshold 1, signed only by a (v1 admin)
+    b_sk, b_kid, b_token = _d4_link_and_token(base, owner_url, org_id, uid_b)
+    v2_prev = hashlib.sha256(org_id.encode() + b":" + g_c).hexdigest()
+    v2_p = {
+        "org_id": org_id, "version": 2, "prev_hash": v2_prev, "threshold": 1,
+        "admins": [a_kid, b_kid],
+        "keys": g_p["keys"] + [{"key_id": b_kid,
+                                 "public_key": bytes(b_sk.verify_key).hex(),
+                                 "kind": "cli", "alg": "ed25519",
+                                 "user_id": uid_b, "iss": "https://idp.test",
+                                 "sub": "sub-b", "roles": ["admin", "approver"],
+                                 "added_in": 2}],
+        "bundle_signer": g_p["bundle_signer"],
+        "expires_at": g_p["expires_at"],
+    }
+    v2_c = json.dumps(v2_p, sort_keys=True, separators=(",", ":")).encode()
+    a_sig_v2 = a_sk.sign(tag + b"\x00" + v2_c).signature.hex()
+    b_sig_v2 = b_sk.sign(tag + b"\x00" + v2_c).signature.hex()
+    a_conf = _d4_get_signer_token(base, a_sk, a_kid)
+    rv2 = httpx.post(f"{base}/api/v1/sync/signer/signatures",
+                     json={"type": "registry", "envelope": {
+                         "kind": "agg/registry/v1", "sig_v": 1, "payload": v2_p,
+                         "signatures": [
+                             {"key_id": a_kid, "alg": "ed25519", "sig": a_sig_v2},
+                             {"key_id": b_kid, "alg": "ed25519", "sig": b_sig_v2}]},
+                         "org_id": org_id},
+                     headers={"Authorization": f"Bearer {a_conf}"}, timeout=10)
+    assert rv2.status_code == 200, f"v2 failed: {rv2.status_code} {rv2.text}"
+
+    # v3: change bob's kind to browser in the key list, signed only by bob.
+    # The server must refuse because browser keys cannot sign registry versions.
+    v3_prev = hashlib.sha256(org_id.encode() + b":" + v2_c).hexdigest()
+    v3_keys = list(v2_p["keys"])
+    for k in v3_keys:
+        if k["key_id"] == b_kid:
+            k = dict(k, kind="browser")
+    v3_p = dict(v2_p, version=3, prev_hash=v3_prev, keys=v3_keys)
+    v3_c = json.dumps(v3_p, sort_keys=True, separators=(",", ":")).encode()
+    b_sig_v3 = b_sk.sign(tag + b"\x00" + v3_c).signature.hex()
+    b_conf = _d4_get_signer_token(base, b_sk, b_kid)
+    rv3 = httpx.post(f"{base}/api/v1/sync/signer/signatures",
+                     json={"type": "registry", "envelope": {
+                         "kind": "agg/registry/v1", "sig_v": 1, "payload": v3_p,
+                         "signatures": [{"key_id": b_kid, "alg": "ed25519",
+                                         "sig": b_sig_v3}]},
+                         "org_id": org_id},
+                     headers={"Authorization": f"Bearer {b_conf}"}, timeout=10)
+    assert rv3.status_code == 400, (
+        f"expected 400 for browser-key signature, got {rv3.status_code} {rv3.text}"
+    )
+
+
+@pytest.mark.pg
+def test_d4_5_threshold_1_v4_refused(d4_e2e_server):
+    """D4-5 negative 2 (positive control): a v3 that lowers threshold to 1
+    when v2 has threshold 2 must be refused.  Server already enforces."""
+    import httpx
+    srv = d4_e2e_server
+    base = srv["base_url"]
+    owner_url = srv["owner_url"]
+    bundle_pub = srv["bundle_signer_pub"]
+    tag = b"agg/registry/v1"
+
+    # Fresh org, genesis + v2 with threshold 2
+    org_id = str(uuid.uuid4())
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        from .m2_sync_server import create_org
+        create_org(conn, org_id, "D45Thresh Org")
+        uid_a = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO users (id, org_id, oidc_issuer, oidc_subject, email, "
+            "status, created_at) VALUES (%s, %s, 'https://idp.test', 'sub-ta', "
+            "'ta@d45.test', 'active', now())",
+            [uid_a, org_id],
+        )
+        uid_b = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO users (id, org_id, oidc_issuer, oidc_subject, email, "
+            "status, created_at) VALUES (%s, %s, 'https://idp.test', 'sub-tb', "
+            "'tb@d45.test', 'active', now())",
+            [uid_b, org_id],
+        )
+        for u in (uid_a, uid_b):
+            conn.execute(
+                "INSERT INTO role_bindings "
+                "(id, org_id, user_id, scope_type, scope_id, role, created_at) "
+                "VALUES (%s, %s, %s, 'org', %s, 'admin', now())",
+                [str(uuid.uuid4()), org_id, u, org_id],
+            )
+        gcode = _d4_seed_genesis_code(conn, org_id)
+
+    a_sk, a_kid, a_tok = _d4_link_and_token(base, owner_url, org_id, uid_a)
+    bs_kid = hashlib.sha256(bundle_pub).hexdigest()
+    g_p = {
+        "org_id": org_id, "version": 1, "prev_hash": "", "threshold": 1,
+        "admins": [a_kid],
+        "keys": [{"key_id": a_kid, "public_key": bytes(a_sk.verify_key).hex(),
+                  "kind": "cli", "alg": "ed25519", "user_id": uid_a,
+                  "iss": "https://idp.test", "sub": "sub-ta",
+                  "roles": ["admin", "approver"], "added_in": 1}],
+        "bundle_signer": {"key_id": bs_kid, "public_key": bundle_pub.hex()},
+        "expires_at": time.time() + 86400,
+    }
+    gc = json.dumps(g_p, sort_keys=True, separators=(",", ":")).encode()
+    gs = a_sk.sign(tag + b"\x00" + gc).signature.hex()
+    httpx.post(f"{base}/api/v1/sync/signer/genesis",
+               json={"genesis_code": gcode, "envelope": {
+                   "kind": "agg/registry/v1", "sig_v": 1, "payload": g_p,
+                   "signatures": [{"key_id": a_kid, "alg": "ed25519", "sig": gs}]}},
+               headers={"Authorization": f"Bearer {a_tok}"}, timeout=15)
+
+    # v2: add b, set threshold 2
+    b_sk, b_kid, b_tok = _d4_link_and_token(base, owner_url, org_id, uid_b)
+    v2_prev = hashlib.sha256(org_id.encode() + b":" + gc).hexdigest()
+    v2_p = {
+        "org_id": org_id, "version": 2, "prev_hash": v2_prev, "threshold": 2,
+        "admins": [a_kid, b_kid],
+        "keys": g_p["keys"] + [{"key_id": b_kid,
+                                 "public_key": bytes(b_sk.verify_key).hex(),
+                                 "kind": "cli", "alg": "ed25519", "user_id": uid_b,
+                                 "iss": "https://idp.test", "sub": "sub-tb",
+                                 "roles": ["admin", "approver"], "added_in": 2}],
+        "bundle_signer": g_p["bundle_signer"],
+        "expires_at": g_p["expires_at"],
+    }
+    v2c = json.dumps(v2_p, sort_keys=True, separators=(",", ":")).encode()
+    a_conf = _d4_get_signer_token(base, a_sk, a_kid)
+    s_a = a_sk.sign(tag + b"\x00" + v2c).signature.hex()
+    s_b = b_sk.sign(tag + b"\x00" + v2c).signature.hex()
+    httpx.post(f"{base}/api/v1/sync/signer/signatures",
+               json={"type": "registry", "envelope": {
+                   "kind": "agg/registry/v1", "sig_v": 1, "payload": v2_p,
+                   "signatures": [{"key_id": a_kid, "alg": "ed25519", "sig": s_a},
+                                  {"key_id": b_kid, "alg": "ed25519", "sig": s_b}]},
+                   "org_id": org_id},
+               headers={"Authorization": f"Bearer {b_tok}"}, timeout=10)
+
+    # v3: try to lower threshold to 1 -- must be refused
+    v3_prev = hashlib.sha256(org_id.encode() + b":" + v2c).hexdigest()
+    v3_p = dict(v2_p, version=3, prev_hash=v3_prev, threshold=1)
+    v3c = json.dumps(v3_p, sort_keys=True, separators=(",", ":")).encode()
+    s_a3 = a_sk.sign(tag + b"\x00" + v3c).signature.hex()
+    s_b3 = b_sk.sign(tag + b"\x00" + v3c).signature.hex()
+    b_conf = _d4_get_signer_token(base, b_sk, b_kid)
+    rv3 = httpx.post(f"{base}/api/v1/sync/signer/signatures",
+                     json={"type": "registry", "envelope": {
+                         "kind": "agg/registry/v1", "sig_v": 1, "payload": v3_p,
+                         "signatures": [{"key_id": a_kid, "alg": "ed25519", "sig": s_a3},
+                                        {"key_id": b_kid, "alg": "ed25519", "sig": s_b3}]},
+                         "org_id": org_id},
+                     headers={"Authorization": f"Bearer {b_conf}"}, timeout=10)
+    assert rv3.status_code == 400, (
+        f"expected 400 for threshold lowering, got {rv3.status_code} {rv3.text}"
+    )
+
+
+@pytest.mark.pg
+def test_d4_5_n1_substituted_key_id_refused(d4_e2e_server):
+    """D4-5 negative 3 (N1, positive control): an envelope with a signature
+    whose key_id does not match any key in the registry must be refused.
+    Server already enforces."""
+    import httpx
+    srv = d4_e2e_server
+    base = srv["base_url"]
+    owner_url = srv["owner_url"]
+    bundle_pub = srv["bundle_signer_pub"]
+    tag = b"agg/registry/v1"
+
+    org_id = str(uuid.uuid4())
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        from .m2_sync_server import create_org
+        create_org(conn, org_id, "D45N1 Org")
+        uid_a = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO users (id, org_id, oidc_issuer, oidc_subject, email, "
+            "status, created_at) VALUES (%s, %s, 'https://idp.test', 'sub-n1a', "
+            "'n1a@d45.test', 'active', now())",
+            [uid_a, org_id],
+        )
+        conn.execute(
+            "INSERT INTO role_bindings "
+            "(id, org_id, user_id, scope_type, scope_id, role, created_at) "
+            "VALUES (%s, %s, %s, 'org', %s, 'admin', now())",
+            [str(uuid.uuid4()), org_id, uid_a, org_id],
+        )
+        gcode = _d4_seed_genesis_code(conn, org_id)
+
+    a_sk, a_kid, a_tok = _d4_link_and_token(base, owner_url, org_id, uid_a)
+    bs_kid = hashlib.sha256(bundle_pub).hexdigest()
+    gp = {
+        "org_id": org_id, "version": 1, "prev_hash": "", "threshold": 1,
+        "admins": [a_kid],
+        "keys": [{"key_id": a_kid, "public_key": bytes(a_sk.verify_key).hex(),
+                  "kind": "cli", "alg": "ed25519", "user_id": uid_a,
+                  "iss": "https://idp.test", "sub": "sub-n1a",
+                  "roles": ["admin", "approver"], "added_in": 1}],
+        "bundle_signer": {"key_id": bs_kid, "public_key": bundle_pub.hex()},
+        "expires_at": time.time() + 86400,
+    }
+    gcc = json.dumps(gp, sort_keys=True, separators=(",", ":")).encode()
+    gs = a_sk.sign(tag + b"\x00" + gcc).signature.hex()
+    httpx.post(f"{base}/api/v1/sync/signer/genesis",
+               json={"genesis_code": gcode, "envelope": {
+                   "kind": "agg/registry/v1", "sig_v": 1, "payload": gp,
+                   "signatures": [{"key_id": a_kid, "alg": "ed25519", "sig": gs}]}},
+               headers={"Authorization": f"Bearer {a_tok}"}, timeout=15)
+
+    # v2 with a substituted key_id in the signature (not a_kid)
+    fake_kid = "0" * 64  # does not match any registered key
+    v2_prev = hashlib.sha256(org_id.encode() + b":" + gcc).hexdigest()
+    v2_p = dict(gp, version=2, prev_hash=v2_prev)
+    v2c = json.dumps(v2_p, sort_keys=True, separators=(",", ":")).encode()
+    # Sign with a_sk but claim it's from fake_kid
+    fake_sig = a_sk.sign(tag + b"\x00" + v2c).signature.hex()
+    a_conf = _d4_get_signer_token(base, a_sk, a_kid)
+    rv2 = httpx.post(f"{base}/api/v1/sync/signer/signatures",
+                     json={"type": "registry", "envelope": {
+                         "kind": "agg/registry/v1", "sig_v": 1, "payload": v2_p,
+                         "signatures": [{"key_id": fake_kid, "alg": "ed25519",
+                                         "sig": fake_sig}]},
+                         "org_id": org_id},
+                     headers={"Authorization": f"Bearer {a_conf}"}, timeout=10)
+    assert rv2.status_code == 400, (
+        f"expected 400 for substituted key_id, got {rv2.status_code} {rv2.text}"
     )

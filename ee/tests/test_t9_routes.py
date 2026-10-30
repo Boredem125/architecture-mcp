@@ -106,6 +106,7 @@ _M2_T12C_ROUTES = frozenset({
 _M2_T12D_ROUTES = frozenset({
     ("POST", "/api/v1/sync/signer/genesis"),
     ("GET", "/api/v1/sync/signer/candidates"),
+    ("GET", "/api/v1/sync/signer/registry"),
 })
 
 # Infrastructure routes

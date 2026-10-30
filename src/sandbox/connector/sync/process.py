@@ -329,33 +329,12 @@ def _refresh_token(sync: SyncProcess) -> None:
 def _fetch_registry(sync: SyncProcess) -> None:
     """Fetch a registry update from the server and persist if verified.
 
-    Only writes when the new chain passes ``verify_chain`` against the
-    pinned root **and** the latest version is >= the current on-disk
-    version (anti-rollback).  A forged or rollback chain is silently
-    ignored -- it never overwrites the local state.
+    Delegates to the shared ``apply_registry_chain`` helper (R2-2) for
+    verification, anti-rollback and atomic persistence.  Only the
+    transport stays here.
     """
     if sync.layout is None:
         return
-
-    # Lazy imports -- never at module level (socket guard)
-    from sandbox.connector.sync.state import pinned_root as _pinned_root
-
-    fp = _pinned_root(sync.layout)
-    if fp is None:
-        return  # not enrolled
-
-    sync_dir = sync.layout.root / ".sandbox" / "state" / "sync"
-    reg_file = sync_dir / "registry.json"
-
-    # Current version on disk
-    current_version = 0
-    if reg_file.exists():
-        try:
-            cur_chain = json.loads(reg_file.read_text(encoding="utf-8"))
-            if isinstance(cur_chain, list) and cur_chain:
-                current_version = cur_chain[-1].get("payload", {}).get("version", 0)
-        except (OSError, ValueError):
-            pass
 
     # Fetch from server
     url = f"{sync.server_url}/api/v1/sync/registry"
@@ -369,47 +348,9 @@ def _fetch_registry(sync: SyncProcess) -> None:
     if not new_chain or not isinstance(new_chain, list):
         return
 
-    # Verify the chain against the pinned root
-    from sandbox.protocol.registry import verify_chain, RegistryError
-    from sandbox.protocol.envelope import EnvelopeError
-
-    try:
-        verify_chain(new_chain, fp)
-    except (RegistryError, EnvelopeError):
-        return  # forged chain -- never persist
-
-    # Anti-rollback: new version must be strictly greater, OR
-    # byte-identical at the same version (no-op).
-    new_version = new_chain[-1].get("payload", {}).get("version", 0)
-    if new_version < current_version:
-        return  # rollback attempt -- never persist
-
-    new_blob = json.dumps(new_chain, sort_keys=True, separators=(",", ":"))
-
-    if new_version == current_version:
-        # Same version: only accept if byte-identical (no-op)
-        if reg_file.exists():
-            try:
-                old_blob = reg_file.read_text(encoding="utf-8")
-            except OSError:
-                old_blob = ""
-            if new_blob == old_blob:
-                return  # no-op, already identical
-        # Same version but different content -- refuse
-        return
-
-    # Persist (atomic rename)
-    import os
-
-    reg_tmp = sync_dir / "registry.json.tmp"
-    try:
-        reg_tmp.write_text(new_blob, encoding="utf-8")
-        os.replace(str(reg_tmp), str(reg_file))
-    except Exception:
-        try:
-            reg_tmp.unlink(missing_ok=True)
-        except Exception:  # noqa: BLE001
-            pass
+    # Delegate to shared verify-and-persist helper (R2-2)
+    from sandbox.connector.sync.registry_chain import apply_registry_chain
+    apply_registry_chain(sync.layout, new_chain)
 
 
 def _fetch_decisions(sync: SyncProcess) -> None:

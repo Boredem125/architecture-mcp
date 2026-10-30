@@ -139,9 +139,11 @@ services:
         condition: service_healthy
     secrets:
       - pg_owner_url
+      - bundle_signer_key
     environment:
       # migrate connects as agg_owner
       AGG_DATABASE_URL_FILE: /run/secrets/pg_owner_url
+      AGG_BUNDLE_SIGNER_KEY_FILE: /run/secrets/bundle_signer_key
     entrypoint: ["python", "-m", "agg_cp.migrate"]
     command: []
 
@@ -170,8 +172,10 @@ services:
         condition: service_healthy
     secrets:
       - pg_owner_url
+      - bundle_signer_key
     environment:
       AGG_DATABASE_URL_FILE: /run/secrets/pg_owner_url
+      AGG_BUNDLE_SIGNER_KEY_FILE: /run/secrets/bundle_signer_key
       AGG_BOOTSTRAP_ORG_SLUG: acme
       AGG_BOOTSTRAP_ORG_NAME: "Acme Corp"
       AGG_BOOTSTRAP_ORG_ISSUER: "https://idp.localhost/realms/acme"
