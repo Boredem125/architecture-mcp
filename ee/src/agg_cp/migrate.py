@@ -227,6 +227,36 @@ def main() -> int | None:
         "expires_at": g_expires.isoformat(),
     }))
 
+    # D4-4: emit bundle_signer public key using the server's own loader.
+    # The CLI uses this as the out-of-band source for --bundle-signer-key.
+    # Derived from AGG_BUNDLE_SIGNER_KEY_FILE; a public value.
+    bs_key_file = os.environ.get("AGG_BUNDLE_SIGNER_KEY_FILE")
+    if bs_key_file:
+        try:
+            from agg_cp.sync.bundles import _load_bundle_signer_key
+            bs_sk = _load_bundle_signer_key()
+            if bs_sk is None:
+                # D4-4: key file set but unloadable -- fail closed
+                print(json.dumps({
+                    "event": "bundle_signer_error",
+                    "reason": "bad_format",
+                }))
+                return 1
+            bs_pub = bytes(bs_sk.verify_key)
+            bs_kid = hashlib.sha256(bs_pub).hexdigest()
+            print(json.dumps({
+                "event": "bundle_signer",
+                "key_id": bs_kid,
+                "public_key": bs_pub.hex(),
+            }))
+        except OSError:
+            # D4-4: unreadable file -- fail closed, no path/bytes/exception
+            print(json.dumps({
+                "event": "bundle_signer_error",
+                "reason": "unreadable",
+            }))
+            return 1
+
 
 if __name__ == "__main__":
     sys.exit(main())

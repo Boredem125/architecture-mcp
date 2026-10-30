@@ -1015,42 +1015,49 @@ def test_pending_link_token_can_complete_link(signer_server):
 # ===================================================================
 
 
-@pytest.mark.pg
-def test_second_genesis_refused_via_route(signer_server):
-    """POST /signatures with a second v1 genesis is refused (threat 22)."""
+def _second_genesis_setup(signer_server):
+    """Shared setup for R2-1 second-genesis tests.
+
+    Creates a **fresh org** inside the running server, creates v1 via
+    store_registry_version, obtains a confirmed token, posts v1 again
+    to /signatures (expects 409).  Returns (srv, org_id, r2) where r2
+    is the second POST response.
+    """
     _need("agg_cp.sync.signer", "store_signer_signatures")
+    from agg_cp.sync.registry import store_registry_version
+    from sandbox.connector.sync.signer import build_genesis
+
     srv = signer_server
     sk, pub, kid = _keygen()
+    bsk, bpub, bkid = _keygen()
 
+    # Fresh org so tests are independent of each other
+    org_id = str(uuid.uuid4())
     with psycopg.connect(_conninfo(srv["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        _create_org(conn, org_id, "R2-1 Genesis Org")
+        user_id = _seed_user(conn, org_id, "r21@test", "https://idp",
+                             f"r21-{uuid.uuid4().hex[:6]}")
+
+    env, fp = build_genesis(
+        admin_sk=sk, org_id=org_id,
+        iss="https://idp", sub="r21",
+        bundle_signer_pub=bpub,
+        user_id=user_id,
+    )
+    with psycopg.connect(_conninfo(srv["owner_url"])) as conn:
+        conn.autocommit = False
         conn.execute("SELECT set_config('app.org_id', %s, false)",
-                     [srv["org_id"]])
-        _seed_live_key(conn, srv["org_id"], srv["alice_id"], kid, pub.hex())
+                     [org_id])
+        store_registry_version(conn, org_id, env)
 
     assertion = _sign_assertion(sk, kid, nonce=f"n-{uuid.uuid4().hex[:8]}",
                                 aud=srv["base_url"])
     r = httpx.post(f"{srv['base_url']}/api/v1/sync/signer/token",
                    json=assertion, timeout=10.0)
-    assert r.status_code == 200
+    assert r.status_code == 200, f"token request failed: {r.status_code}"
     token = r.json()["token"]
-
-    bsk, bpub, bkid = _keygen()
-    from sandbox.connector.sync.signer import build_genesis
-    env, fp = build_genesis(
-        admin_sk=sk, org_id=srv["org_id"],
-        iss="https://idp", sub="alice",
-        bundle_signer_pub=bpub,
-    )
-
     headers = {"Authorization": f"Bearer {token}"}
-
-    r1 = httpx.post(
-        f"{srv['base_url']}/api/v1/sync/signer/signatures",
-        headers=headers,
-        json={"type": "registry", "envelope": env},
-        timeout=10.0,
-    )
-    assert r1.status_code == 200
 
     r2 = httpx.post(
         f"{srv['base_url']}/api/v1/sync/signer/signatures",
@@ -1058,7 +1065,40 @@ def test_second_genesis_refused_via_route(signer_server):
         json={"type": "registry", "envelope": env},
         timeout=10.0,
     )
-    assert r2.status_code in (409, 400)
+    return srv, org_id, r2
+
+
+@pytest.mark.pg
+def test_second_genesis_refused_via_route(signer_server):
+    """R2-1: POST /signatures with a second v1 after a genesis-route v1
+    returns 409 (the /signatures guard refuses duplicate v1)."""
+    srv, org_id, r2 = _second_genesis_setup(signer_server)
+    assert r2.status_code == 409, (
+        f"second v1 on /signatures should be 409, got {r2.status_code}: "
+        f"{r2.text[:300]}"
+    )
+
+
+@pytest.mark.pg
+def test_second_genesis_alert_via_route(signer_server):
+    """R2-1 alert: when /signatures returns 409 for a second v1,
+    a second_genesis alert row must be committed (threat 22)."""
+    srv, org_id, r2 = _second_genesis_setup(signer_server)
+    assert r2.status_code == 409
+
+    with psycopg.connect(_conninfo(srv["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)",
+                     [org_id])
+        alert_row = conn.execute(
+            "SELECT kind FROM sync_alerts "
+            "WHERE org_id = %s::uuid AND kind = 'second_genesis'",
+            [org_id],
+        ).fetchone()
+    assert alert_row is not None, (
+        "R2-1: second genesis via /signatures did not commit a "
+        "second_genesis alert row"
+    )
+    assert alert_row[0] == "second_genesis"
 
 
 # ===================================================================

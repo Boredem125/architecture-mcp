@@ -123,7 +123,7 @@ def check_signer_token_scope(
     if status == "confirmed":
         return  # confirmed may access everything
     if status == "pending_link":
-        if route in ("link", "genesis", "signatures"):
+        if route in ("link", "genesis", "signatures", "registry"):
             return
         raise SignerScopeError(
             f"pending_link token cannot access route {route!r}"
@@ -620,11 +620,31 @@ def build_signer_router(db_url: str, clock: Any = None) -> APIRouter:
                 [key_id_val, public_key, code_hash],
             )
 
+            # Stub ruling 3 (d4): return iss and sub of the link's user
+            # so the CLI can store them in link.json for genesis identity
+            # confirmation (F9).
+            user_row = conn.execute(
+                "SELECT oidc_issuer, oidc_subject FROM users "
+                "WHERE id = %s::uuid AND org_id = %s::uuid",
+                [result["user_id"], result["org_id"]],
+            ).fetchone()
+            # D4-7: return 500 internal_error if user row is missing,
+            # never empty iss/sub.
+            if user_row is None:
+                return JSONResponse(
+                    {"error": "internal_error"},
+                    status_code=500,
+                )
+            user_iss = user_row[0] or ""
+            user_sub = user_row[1] or ""
+
             return JSONResponse(
                 {
                     "key_id": key_id_val,
                     "org_id": result["org_id"],
                     "user_id": result["user_id"],
+                    "iss": user_iss,
+                    "sub": user_sub,
                 }
             )
         except Exception as exc:
@@ -730,6 +750,44 @@ def build_signer_router(db_url: str, clock: Any = None) -> APIRouter:
                 return JSONResponse(
                     {"error": "not found"}, status_code=404
                 )
+
+            # D4-1: refuse any registry envelope with payload.version == 1.
+            # Genesis (v1) must go through /signer/genesis only (ADR 0011).
+            # Version 2+ without a prior chain is rejected by
+            # store_registry_version (chain continuity check).
+            envelope = body.get("envelope") or {}
+            sig_type = body.get("type", "")
+            if sig_type == "registry" and envelope:
+                env_payload = envelope.get("payload") or {}
+                env_version = env_payload.get("version")
+                if env_version == 1:
+                    # R2-1: check if the org already has a registry
+                    # version.  If yes, commit a second_genesis alert
+                    # (threat 22 detection) before returning 409.
+                    import uuid as _uuid
+                    conn.execute(
+                        "SELECT set_config('app.org_id', %s, false)",
+                        [info["org_id"]],
+                    )
+                    existing = conn.execute(
+                        "SELECT 1 FROM key_registry_versions "
+                        "WHERE org_id = %s::uuid LIMIT 1",
+                        [info["org_id"]],
+                    ).fetchone()
+                    if existing is not None:
+                        conn.execute(
+                            "INSERT INTO sync_alerts "
+                            "(id, org_id, project_id, kind, created_at) "
+                            "VALUES (%s::uuid, %s::uuid, "
+                            "'00000000-0000-0000-0000-000000000000'::uuid, "
+                            "'second_genesis', now())",
+                            [str(_uuid.uuid4()), info["org_id"]],
+                        )
+                        conn.commit()
+                    return JSONResponse(
+                        {"error": "genesis_only_via_genesis_route"},
+                        status_code=409,
+                    )
 
             result = store_signer_signatures(conn, info["org_id"], body)
             return JSONResponse(result)
@@ -1321,6 +1379,61 @@ def build_signer_router(db_url: str, clock: Any = None) -> APIRouter:
             # but the route structure is ready.
 
             return JSONResponse(candidates)
+        except Exception as exc:
+            return JSONResponse(
+                {"error": str(exc)}, status_code=500
+            )
+        finally:
+            if conn is not None:
+                conn.close()
+
+    # -- GET /registry (T12d d4, stub ruling 2) ----------------------------
+    # Returns the full registry chain for the token's org.
+    # Org-scoped: other orgs get 404.
+    # Allowed for confirmed signer tokens and, read-only, for
+    # pending_link tokens (carol co-signs v2 before her key is
+    # in the registry).  Refused without auth (401).
+
+    @rbac_route(router, "get", "/api/v1/sync/signer/registry",
+                role="signer", scope="token")
+    async def registry_route(
+        request: Request,
+        authorization: str = Header(default=""),
+    ):
+        conn = None
+        try:
+            import psycopg
+            from ..sync.registry import get_chain
+
+            url = db_url.replace("postgresql+psycopg://", "postgresql://")
+            conn = psycopg.connect(url, autocommit=True)
+            conn.execute("SET ROLE agg_app")
+
+            try:
+                info = _auth_from_bearer(
+                    conn, authorization, "registry"
+                )
+            except SignerScopeError:
+                return JSONResponse(
+                    {"error": "scope denied"}, status_code=403
+                )
+            except EnvelopeError:
+                return JSONResponse(
+                    {"error": "unauthorized"}, status_code=401
+                )
+
+            # RLS: set org_id at session level (false) so autocommit
+            # doesn't reset it between get_chain's statements.
+            conn.execute(
+                "SELECT set_config('app.org_id', %s, false)",
+                [info["org_id"]],
+            )
+            chain = get_chain(conn, info["org_id"])
+            if not chain:
+                return JSONResponse(
+                    {"error": "not found"}, status_code=404
+                )
+            return JSONResponse(chain)
         except Exception as exc:
             return JSONResponse(
                 {"error": str(exc)}, status_code=500

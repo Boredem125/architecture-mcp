@@ -1,5 +1,78 @@
 # Control-plane hand-off (M2 T6-T10 done, 22 Oct 2026)
 
+**30 Oct 2026 (late), d4 round 2: D4-1 CLOSED; R2-1 and R2-2 built; uncommitted, never stash.**
+- **Round 3 (30 Oct, security W): APPROVE.** R2-1 (alert commit survives the 409, `signer.py:754-790`), R2-2 (`registry_chain.py`; both callers use it; `verified_state.py:189` alone ratchets high_water), the `test_m2_enroll_persist.py:621` fixture signed off by node id; no relaxed check; Semgrep 0 ERROR (1 known WARNING, `sync_cmds.py:1323`), gitleaks clean. qa removed the 7 XPASS markers. Measured: connector 2352 passed, 7 skipped, 1 xfailed; ee 826 passed, 2 skipped, 0 failed. Founder ruling 14: push `T12D_D4_SECURITY_REVIEW.md` with the d4 commit (D4-1 closed; R2-4 is named as G-L4 in ADR 0011 A1 in the same commit). Steps 1-4 of "Next, in order" below are done once the d4 commit is in and CI is green; the d4 exit (`ee/deploy/demo.py` step 2 through the routes) is next.
+- **Security leader round 2** (appended to `T12D_D4_SECURITY_REVIEW.md`): D4-1 closed (the guard catches version 1, 1.0 and true; other shapes are refused by `verify_chain` or store nothing; probed). D4-2 closed in the product. CHANGES for R2-1 (the `second_genesis` alert was dropped; `test_m2_t7_signer.py::test_second_genesis_refused_via_route` encoded the hole) and R2-2 (`_refresh_registry_chain` recreated `high_water.json`; no high-water floor; duplicated `process.py::_fetch_registry`). R2-3 was a test bug in the F13 test. Rulings: D4-6 narrowed bound accepted for this commit (unconditional in d5); debug log and O_TRUNC accepted; `run_once` must report a `registry` status; e2e step 5 follows frozen step 2 (v2 adds admin2 only, threshold 2; v3 adds bob, carol and alice-approver; no S9 change). The CLI has no relaxed check (AST-equal to `ed26bff` in `_fetch_escalation`, fp_v, binding, signatures, transport).
+- **R2-4 HIGH** (one admin holding two admin keys gets dual control): founder ruling 13, fixed in d5; see the R2-4 block below.
+- **Built since** (qa tests first, then backend W):
+  - ee `signer.py:754-784`: the v1 guard commits the `second_genesis` alert when a chain exists, then returns 409.
+  - New `src/sandbox/connector/sync/registry_chain.py` `apply_registry_chain`: one helper for the CLI refresh and `process.py::_fetch_registry`. The floor is max(local, high_water); a missing or corrupt `high_water.json` is refused; the helper never writes high_water; a same-version change in bytes is refused; `verify_chain` runs before an atomic write. `run_once` returns `results["registry"]`.
+  - Tests: e2e step 5 passes on the frozen step 2 flow; the F13 and deny tests pass against the real linked seed.
+- **Measured (backend's last run):**
+  - 7 R2 tests XPASS strict; their markers are not yet removed.
+  - Connector: 2345 passed, 7 failed (5 of the R2-2 XPASS, the PATH test, plus `test_m2_enroll_persist.py::test_run_once_persists_verified_registry_update`).
+  - ee: 823 passed, 3 failed (2 of the R2-1 XPASS, 1 known flake).
+- **Next, in order:**
+  1. qa (W): remove the xfail markers of `ee/tests/test_m2_t7_signer.py::test_second_genesis_alert_via_route`, `ee/tests/test_m2_t12d_genesis.py::test_d4_1_guard_second_genesis_alert_committed` and the five `tests/security/test_m2_t12d_signer_cli.py::test_r2_2*` tests.
+  2. qa (W): give `test_run_once_persists_verified_registry_update` a `high_water.json` fixture mirroring `enroll.py:520`. The new helper correctly refuses a missing file; this test edit needs a security sign-off by node id. Then run the full connector and ee suites. Known flakes: `test_concurrent_role_grants_idempotent`, `test_signer_nonce_replay_across_workers`; the PATH test `test_r3_done_record_carries_exec_argv`.
+  3. security (W) re-review by node id: R2-1, R2-2 (`registry_chain.py`; check that `verified_state.py` still advances high_water after a newer registry), the fixture sign-off, Semgrep, gitleaks.
+  4. git-ops commits d4 (product, tests, ADR 0011 A1, plan, baseline and manifest, `T12D_D4_SECURITY_REVIEW.md`, HANDOFF) and checks CI.
+  - Founder push decision still open: push the review file now (D4-1 is closed; R2-4 is marked "fix in d5", an insider gap) or hold it until d5.
+- **Then:** the d4 exit: `ee/deploy/demo.py` step 2 through the routes (ruling 6; not started). Then d5 (2 d, incl. R2-4 and the ruled d5 items), c6 (real NF-1 tests), T15b, T16, T17; X0 alongside.
+
+**30 Oct 2026, c5 and d3 committed; d4 built, security CHANGES (one critical); founder rulings 1-12 on plan and split.**
+- **Commits:**
+  - `353547d` c5: web script panel. Worker re-review APPROVE. CI green on all jobs.
+  - `ed26bff` d3: signer CLI. Leader security CHANGES in rounds 1-2, APPROVE in round 3, `T12D_D3_SECURITY_REVIEW.md`. CI: 3 ee jobs red on `test_d0_3` XPASS (strict), because d3's F5 diff fix closed D0-3.
+  - `b265c10` CI follow-up drops that marker (security d4 ruling 4). Check that it is green.
+- **Stub rulings (d3 review):**
+  - The bundle-signer key comes from a required `--bundle-signer-key` flag; the migrations job prints it.
+  - The server grows `GET /api/v1/sync/signer/registry`, the full chain verified locally.
+  - The link response returns iss/sub; `link.json` stores them.
+- **d4: uncommitted, never stash.** Built by backend (W).
+  - Changes:
+    - server registry route, iss/sub in the link response, migrate prints the `bundle_signer` line;
+    - CLI F11, F13, F14, R2-4..R2-7;
+    - the e2e moved off `store_registry_version`;
+    - frozen `ee/tests/test_t9_routes.py` route-set row (approved; `M2_BASELINE.md` row and manifest hash `4583c359...` done; the reviewer's `ba142d90...` was the CRLF hash).
+  - The orchestrator reverted two builder relaxations in `cli/sync_cmds.py` (the review confirmed both byte-identical to `ed26bff`):
+    - `signer approve` skipped the fp_v refusal and the binding-fingerprint check when fp_v was absent;
+    - `_fetch_escalation` picked `data[0]` from a list.
+  - It fixed the F13 test's mock record to a full v2 record (approved).
+  - Measured before round 2: connector suite 2336 passed, 7 skipped, 2 xfailed, 1 failed (the known PATH test); ee d4 files 66 passed.
+- **d4 leader security review: CHANGES.** The file `docs/control-plane/T12D_D4_SECURITY_REVIEW.md` is untracked on purpose: **do not push it, or this section, until D4-1 is fixed**. The repo is public and D4-1 is live in pushed code since d2.
+  - **D4-1 CRITICAL** (`ee/src/agg_cp/sync/signer.py` `/signatures`, `store_signer_signatures`): a version-1 registry is accepted for an org with no chain, so a non-admin can create the root without a genesis code. Fix: `/signatures` refuses v1 or no chain with 409.
+  - **D4-2 HIGH:** F13 linked-key approve signs `user_id ""`. Fix: user_id from vs.registry; deny uses the same key loading.
+  - **D4-3:** compose migrate jobs lack the bundle_signer secret and env.
+  - **D4-5:** e2e lacks 3 frozen step 2 negatives; v2 threshold must be 2.
+  - **Lows:** D4-4, D4-6, D4-7, D4-8.
+  - **Rulings:**
+    - The e2e setup edit is REFUSED: it used the D4-1 hole. Rework: alice admin, a code, genesis via `/signer/genesis`, v2 via `/signatures`.
+    - The never-passing `test_d4_link_response_contains_iss_sub` is replaced: link refuses without iss/sub, plus an ee pg test.
+    - Demo step 2 (`ee/deploy/demo.py` through routes) stays in d4.
+- **Round-2 tests (qa W): partial, status unverified.** Two qa agents worked on them; both stopped (usage limit, then the founder's stop on 30 Oct). Marker counts at the stop: 47 `M2T12dPending` in `ee/tests/test_m2_t12d_genesis.py`, 5 in `ee/tests/test_m2_t12b_e2e.py`, 105 in `tests/security/test_m2_t12d_signer_cli.py`. The last agent was looking at a "step 5" failure in the e2e test. The next qa diffs the 3 files against items 1-6 of `T12D_D4_SECURITY_REVIEW.md`, finishes what is missing, and runs the 3 files once.
+- **CI:** `b265c10` green on every job (tests, security, image).
+
+**Plan and split (founder rulings 30 Oct, `T12B_PLAN.md` "Founder rulings (30 Oct 2026)", rows 1-12):**
+- **Split:** free, MIT = the security layer for AI agents (blocking, shell canonicalisation, script binding, broker, local audit chain, local approvals and dual control, evidence builder and verifier; ADR 0004 rule 6). Paid, ELv2 `ee/` = the control plane: central policy, org-wide audit, identity-bound approvals (OIDC, user-bound keys, registry), signed org evidence. Never "authorization layer", never "audit edition".
+- **Pitch:** "Blocks the agent actions that native classifiers wave through, on every coding agent; the paid control plane proves which person approved the rest." The free layer is the deterministic floor where native guards fail, not a deny-rule list.
+- **M2 order (1A):** D4-1 first; d4, d5, c6, T15b, T16, T17 stay the critical path; NF-1 post and Lane X X0 alongside (both by 15 Nov); X1-X9 after the gate. Lane X adds Friendly Fire, TrustFall and CVE-2026-35603 (row 10).
+- **NF-1 draft:** `docs/NF1.md` (untracked, founder says it looks good; he posts on LinkedIn himself). Hold the post until c6 adds the real NF-1 tests (c6 row): the two marker tests pass only because the broker refuses their old-format record.
+- **Market scan (30 Oct):** `research/2026-10-30-market-scan.md` (local-only). PM: existence about 60%, business survival about 30% until discovery calls; biggest risk: a platform ships approval routing plus audit export for local sessions.
+- **New agents (local `.claude/agents/`):** `researcher` (Opus 5.5 high, writes `research/`) and `outreach` (Sonnet 5.5 medium, drafts only, writes `outreach/`); both folders are in `.git/info/exclude`. PM fallback: Opus 5.5 high whenever Fable 5.1 has no credits.
+
+**Next, in order:**
+1. qa (W) finishes and verifies the round-2 tests.
+2. backend (W) fixes D4-1 first, then D4-2..D4-8 and `ee/deploy/demo.py` step 2 through the routes; check its diff for any relaxed check before review.
+3. security (L) re-reviews d4; git-ops commits d4 with `T12D_D4_SECURITY_REVIEW.md`, the plan and this section (safe to push only once D4-1 is fixed).
+4. d5, c6 (incl. the real NF-1 tests), T15b, T16, T17; X0 alongside.
+5. Founder: book discovery call 1 of 5 this week (3 by 13 Nov); outreach can draft the target list.
+
+**R2-4 (d4 review round 2), founder ruling 13, 30 Oct: fixed in d5, in M2.**
+- ADR 0011 amendment A1. For registry v2 and later, `/signatures` binds every added key to that user's own pending link or browser enrollment (a `users` row in the same org; admin keys need the org admin role binding). S9 and dual control count distinct user_ids on both sides; the connector already does (D0-2), so d5 adds pin tests only.
+- **Named limit G-L4 until d5 is committed:** one admin can reach dual control alone, with a second admin key under an invented user_id. Never demo or claim "two humans" before then.
+- d5 is now 2 d: security (L) writes the spec, qa (W) writes the tests first, backend (W) builds, security (L) reviews. The M2 gate is about 13 Nov, or 16 Nov if d4 needs a third security round (`T12B_PLAN.md` d5 row, ruling 13).
+
 **28 Oct 2026 (evening), T12c c2-c4 and T12d d2 committed; c5 and d3 built, uncommitted.** Commits: `eb50920` plan rulings; `dca1873` c2 (connector script binding, broker shell parity, security APPROVE after R1-R6, `T12C_C2_SECURITY_REVIEW.md`); `85d6b8f` and `c51d0f0` CI follow-ups (gitleaks ignore for the c1 fixture key, frozen manifest rows, the lexer bounds test pins `shellwords.DEADLINE_SECONDS`); `c786c5f` c3 + c4 + d2 (`T12C_C3_SECURITY_REVIEW.md`, `T12C_C4_SECURITY_REVIEW.md`, `T12D_D2_SECURITY_REVIEW.md`, all APPROVE after fixes). CI on `c786c5f` is green on every job of tests, security and image.
 
 **Uncommitted, never stash:**

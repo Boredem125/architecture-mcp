@@ -266,6 +266,17 @@ def run_once(lay, server: str | None = None) -> dict:
                 decisions_by_request.setdefault(rid, []).append(envelope)
         results["polled"] = len(raw_decisions)
 
+    # 2b. Refresh registry chain (D4-1 / step 5 fix).
+    # The connector must have the latest verified registry before applying
+    # decisions, otherwise approvals signed under a newer registry version
+    # (e.g. v2 keys for bob/carol) cannot be verified against an old local
+    # copy (v1 only from enrollment).
+    if effective_server:
+        reg_status = _refresh_registry_chain(lay, effective_server, token)
+        results["registry"] = reg_status
+    else:
+        results["registry"] = "unchanged"
+
     # 3. Apply decisions
     for rid, envelopes in decisions_by_request.items():
         try:
@@ -340,6 +351,52 @@ def _fetch_decisions(server: str, token: str | None) -> list[dict]:
     return []
 
 
+def _refresh_registry_chain(
+    lay, server: str, token: str | None,
+) -> str:
+    """Fetch and verify the full registry chain, persist if newer.
+
+    D4-1 / step 5 fix: without this the connector's local registry.json
+    stays at v1 (written during enrollment) and cannot verify approvals
+    whose keys were added in v2+.
+
+    Returns a registry status string (R2-2).
+
+    Security invariants (delegated to apply_registry_chain):
+      - verify_chain against pinned root (never persist a forged chain)
+      - floor = max(local version, hwm version); refuse below
+      - missing/corrupt high_water.json => refuse (S1 fail-closed)
+      - never write high_water.json
+      - same-version-different-bytes refused
+      - atomic write (temp + rename)
+    """
+    from sandbox.connector.sync.state import pinned_root as _pinned_root
+
+    fp = _pinned_root(lay)
+    if fp is None:
+        return "refused:not_enrolled"
+
+    # Fetch from server
+    url = server.rstrip("/") + "/api/v1/sync/registry"
+    headers: dict[str, str] = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        resp = urllib.request.urlopen(req, timeout=30)
+        body = json.loads(resp.read())
+    except Exception:  # noqa: BLE001
+        return "fetch_failed"
+
+    new_chain = body.get("registry")
+    if not new_chain or not isinstance(new_chain, list):
+        return "fetch_failed"
+
+    # Delegate to shared verify-and-persist helper (R2-2)
+    from sandbox.connector.sync.registry_chain import apply_registry_chain
+    return apply_registry_chain(lay, new_chain)
+
+
 def _rebuild_envelope(row: dict) -> dict | None:
     """Rebuild an agg/remote-approval/v1 envelope from a server decision row.
 
@@ -389,6 +446,7 @@ def unenroll(decision_file: str) -> None:
 
 def _build_and_sign_envelope(
     request_id: str, rec: dict, vs, kid: str, sk, decision: str,
+    *, user_id_override: str | None = None,
 ) -> dict:
     """Build and sign an agg/remote-approval/v1 envelope.
 
@@ -399,9 +457,19 @@ def _build_and_sign_envelope(
     T12c c3 (ADR 0010 s9 9.5): the payload includes script_rel,
     script_sha256 and preview_sha256, built from the same parsed values
     that were rendered (display rule: what you see is what you sign).
+
+    D4-2: *user_id_override* is used when the key comes from a signer
+    link (link.json) rather than a workspace registry entry.
     """
     # Use server-supplied fields from the GET detail response
-    user_id = vs.registry._keys[kid]["user_id"] if (vs and vs.registry) else ""
+    # D4-2: prefer user_id_override (link path), then registry entry
+    if user_id_override:
+        user_id = user_id_override
+    elif vs and vs.registry:
+        entry = vs.registry._keys.get(kid)
+        user_id = entry["user_id"] if entry else ""
+    else:
+        user_id = ""
 
     # T12c c3: extract script fields from the record for the signed payload
     _script = rec.get("script")
@@ -575,13 +643,49 @@ def signer_approve(escalation_id: str, server: str | None, yes: bool) -> None:
 
     lay = FolderLayout(".")
     vs = load_verified_state(lay)
-    if vs is None:
-        raise click.ClickException("verified state unavailable; cannot sign")
 
-    sk, kid, user_id = _load_signer_key(lay, vs)
+    # F13 + D4-2: try workspace key first, then signer directory (from signer link).
+    # D4-2: do not drop vs when _load_signer_key fails; only fall through
+    # to the link key.  vs is needed for registry_version and other fields.
+    user_id = ""
+    _using_link_key = False
+    if vs is not None:
+        try:
+            sk, kid, user_id = _load_signer_key(lay, vs)
+        except click.ClickException:
+            # D4-2: keep vs, fall through to signer dir for the key only
+            try:
+                sk, kid, meta_f13 = _load_signer_link_key()
+                user_id = meta_f13.get("user_id", "")
+                _using_link_key = True
+                # D4-2: look up the link key in vs.registry if available
+                if vs.registry:
+                    entry = vs.registry._keys.get(kid)
+                    if entry:
+                        user_id = entry.get("user_id", user_id)
+            except click.ClickException:
+                raise click.ClickException(
+                    "no signer key found; run 'signer link' or set up a workspace"
+                )
+    else:
+        try:
+            sk, kid, meta_f13 = _load_signer_link_key()
+            user_id = meta_f13.get("user_id", "")
+            _using_link_key = True
+        except click.ClickException:
+            raise click.ClickException(
+                "no signer key found; run 'signer link' or set up a workspace"
+            )
 
     enroll_data = _read_enrollment(lay)
     effective_server = server or (enroll_data.get("server_url", "") if enroll_data else "")
+    if not effective_server:
+        # F13: also try signer link metadata for server URL
+        try:
+            _, _, _meta = _load_signer_link_key()
+            effective_server = _meta.get("server", "")
+        except click.ClickException:
+            pass
     if not effective_server:
         raise click.ClickException("no server URL; pass --server or enroll first")
 
@@ -685,7 +789,10 @@ def signer_approve(escalation_id: str, server: str | None, yes: bool) -> None:
         click.confirm("Approve this request?", abort=True)
 
     request_id = rec.get("request_id", escalation_id)
-    envelope = _build_and_sign_envelope(request_id, rec, vs, kid, sk, "approve")
+    envelope = _build_and_sign_envelope(
+        request_id, rec, vs, kid, sk, "approve",
+        user_id_override=user_id if _using_link_key else None,
+    )
     _post_approval(effective_server, escalation_id, envelope, signer_token)
     click.echo(f"Approval posted for {escalation_id}")
 
@@ -706,13 +813,42 @@ def signer_deny(escalation_id: str, server: str | None, yes: bool) -> None:
 
     lay = FolderLayout(".")
     vs = load_verified_state(lay)
-    if vs is None:
-        raise click.ClickException("verified state unavailable; cannot sign")
 
-    sk, kid, user_id = _load_signer_key(lay, vs)
+    # D4-2: try workspace key first, then signer link key (same as approve).
+    user_id = ""
+    _deny_using_link = False
+    if vs is not None:
+        try:
+            sk, kid, user_id = _load_signer_key(lay, vs)
+        except click.ClickException:
+            try:
+                sk, kid, _meta_deny = _load_signer_link_key()
+                user_id = _meta_deny.get("user_id", "")
+                _deny_using_link = True
+                if vs.registry:
+                    entry = vs.registry._keys.get(kid)
+                    if entry:
+                        user_id = entry.get("user_id", user_id)
+            except click.ClickException:
+                raise click.ClickException(
+                    "no signer key found; run 'signer link' or set up a workspace"
+                )
+    else:
+        try:
+            sk, kid, _meta_deny = _load_signer_link_key()
+            user_id = _meta_deny.get("user_id", "")
+            _deny_using_link = True
+        except click.ClickException:
+            raise click.ClickException(
+                "no signer key found; run 'signer link' or set up a workspace"
+            )
 
     enroll_data = _read_enrollment(lay)
     effective_server = server or (enroll_data.get("server_url", "") if enroll_data else "")
+    if not effective_server:
+        # D4-2: also try signer link metadata for server URL
+        if _deny_using_link:
+            effective_server = _meta_deny.get("server", "")
     if not effective_server:
         raise click.ClickException("no server URL; pass --server or enroll first")
 
@@ -771,7 +907,10 @@ def signer_deny(escalation_id: str, server: str | None, yes: bool) -> None:
         click.confirm("Deny this request?", abort=True)
 
     request_id = rec.get("request_id", escalation_id)
-    envelope = _build_and_sign_envelope(request_id, rec, vs, kid, sk, "deny")
+    envelope = _build_and_sign_envelope(
+        request_id, rec, vs, kid, sk, "deny",
+        user_id_override=user_id if _deny_using_link else None,
+    )
     _post_approval(effective_server, escalation_id, envelope, signer_token)
     click.echo(f"Deny posted for {escalation_id}")
 
@@ -983,6 +1122,20 @@ def _load_seed_checked(seed_path, signer_dir):
 # signer link (F4 hardened)
 # ---------------------------------------------------------------------------
 
+def _read_stdin_value(value: str) -> str:
+    """F11: if *value* is ``"-"``, read one line from stdin (stripping
+    the trailing newline).  Otherwise return *value* unchanged.
+
+    This keeps one-time codes out of argv / shell history / process
+    listings while remaining backward-compatible with explicit values.
+    """
+    if value == "-":
+        import sys
+        line = sys.stdin.readline()
+        return line.rstrip("\n").rstrip("\r")
+    return value
+
+
 @click.command("link")
 @click.option("--code", required=True, help="Signer link code from the web UI")
 @click.option("--server", required=True, help="Control plane URL")
@@ -995,9 +1148,12 @@ def signer_link(code: str, server: str) -> None:
     R2-1: root_exposure check before writing a new seed.
     R2-3: routed through _signer_safe_post (https-except-loopback, no
     redirects).
+    F11: --code - reads the code from stdin.
     """
     from nacl.signing import SigningKey
     from sandbox.connector.keyhome import key_home_root, root_exposure
+
+    code = _read_stdin_value(code)
 
     kh = key_home_root()
     if kh is None:
@@ -1005,7 +1161,8 @@ def signer_link(code: str, server: str) -> None:
 
     link_dir = _ensure_signer_dir(kh)
     seed_path = link_dir / "signer.seed"
-    if seed_path.exists():
+    _seed_preexisted = seed_path.exists()
+    if _seed_preexisted:
         sk = _load_seed_checked(seed_path, link_dir)
     else:
         # R2-1: check exposure before writing -- a pre-existing signer/
@@ -1032,7 +1189,29 @@ def signer_link(code: str, server: str) -> None:
             "public_key": pub.hex(),
         }, token=None)
     except click.ClickException as exc:
+        # Clean up freshly generated seed on link failure
+        if not _seed_preexisted and seed_path.exists():
+            try:
+                seed_path.unlink()
+            except OSError:
+                pass
         raise click.ClickException(f"link failed: {exc.message}") from exc
+
+    # Ruling 5 + D4-7: refuse missing or empty iss, sub, org_id, user_id
+    # before writing link.json.  Name the field in the message.
+    for _field in ("iss", "sub", "org_id", "user_id"):
+        _val = resp_data.get(_field, "")
+        if not _val:
+            # Clean up freshly generated seed on validation failure
+            if not _seed_preexisted and seed_path.exists():
+                try:
+                    seed_path.unlink()
+                except OSError:
+                    pass
+            raise click.ClickException(
+                f"server link response missing or empty '{_field}'; "
+                f"cannot complete link"
+            )
 
     click.echo(f"Linked: key_id={kid[:16]}...")
     click.echo(f"Org: {resp_data.get('org_id', '?')}")
@@ -1053,6 +1232,8 @@ def _load_signer_link_key():
     """Load the signer key and link metadata from the key home (F4 checked).
 
     Returns (sk, kid, link_meta) where link_meta has server, org_id, user_id.
+
+    D4-2: refuses when link.json key_id != seed kid (tamper detection).
     """
     from sandbox.connector.keyhome import key_home_root
 
@@ -1073,6 +1254,15 @@ def _load_signer_link_key():
         raise click.ClickException("no link metadata; run 'signer link' first")
 
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
+
+    # D4-2: refuse if link.json key_id != seed kid (tamper detection)
+    meta_kid = meta.get("key_id", "")
+    if meta_kid and meta_kid != kid:
+        raise click.ClickException(
+            f"link.json key_id ({meta_kid[:16]}...) does not match "
+            f"seed kid ({kid[:16]}...); refusing to use mismatched key"
+        )
+
     return sk, kid, meta
 
 
@@ -1127,7 +1317,12 @@ def _get_link_signer_token(server: str, sk, kid: str) -> str | None:
     try:
         data = _signer_safe_post(url, assertion, None)
         return data.get("token")
-    except Exception:
+    except Exception as exc:
+        # D4-6: keep the reason for debugging (do not swallow silently)
+        import logging
+        logging.getLogger("sandbox.cli.sync_cmds").debug(
+            "signer token request failed: %s", exc
+        )
         return None
 
 
@@ -1160,6 +1355,9 @@ def signer_genesis(genesis_code: str, server: str | None, approver: bool,
     """
     from sandbox.connector.sync.signer import build_genesis
 
+    # F11: read genesis code from stdin if "-"
+    genesis_code = _read_stdin_value(genesis_code)
+
     sk, kid, meta = _load_signer_link_key()
     effective_server = server or meta.get("server", "")
     if not effective_server:
@@ -1167,6 +1365,13 @@ def signer_genesis(genesis_code: str, server: str | None, approver: bool,
 
     # F7: transport safety on the effective server URL
     _check_transport_safety(effective_server)
+
+    # R2-7: --yes without --confirm-identity is refused
+    if yes and confirm_identity is None:
+        raise click.ClickException(
+            "--yes requires --confirm-identity; non-interactive mode "
+            "cannot confirm identity without typed values"
+        )
 
     # F3/stub ruling 1: --bundle-signer-key is required; never call /config
     if not bundle_signer_key:
@@ -1225,14 +1430,16 @@ def signer_genesis(genesis_code: str, server: str | None, approver: bool,
 
     bundle_kid = hashlib.sha256(bundle_pub).hexdigest()
 
+    # D4-6 / R1 F12: always print the identity block, even with --yes,
+    # so the operator can verify the identity before the key is published.
+    click.echo(f"Org ID:    {org_id}")
+    click.echo(f"User ID:   {user_id}")
+    click.echo(f"ISS:       {iss}")
+    click.echo(f"SUB:       {sub_val}")
+    click.echo(f"Key ID:    {kid[:16]}...")
+    click.echo(f"Bundle signer key_id: {bundle_kid[:16]}...")
+    click.echo(f"Roles:     {['admin', 'approver'] if approver else ['admin']}")
     if not yes:
-        click.echo(f"Org ID:    {org_id}")
-        click.echo(f"User ID:   {user_id}")
-        click.echo(f"ISS:       {iss}")
-        click.echo(f"SUB:       {sub_val}")
-        click.echo(f"Key ID:    {kid[:16]}...")
-        click.echo(f"Bundle signer key_id: {bundle_kid[:16]}...")
-        click.echo(f"Roles:     {['admin', 'approver'] if approver else ['admin']}")
         click.confirm("Create genesis registry?", abort=True)
 
     env, fp = build_genesis(
@@ -1249,6 +1456,24 @@ def signer_genesis(genesis_code: str, server: str | None, approver: bool,
 
     click.echo(f"Genesis published: version={result.get('version', '?')}")
     click.echo(f"Fingerprint: {fp}")
+
+    # R2-7: store the root fingerprint for later sign-registry use
+    from sandbox.connector.keyhome import key_home_root as _khr
+    _kh = _khr()
+    if _kh:
+        fp_path = _kh / "signer" / "root_fingerprint"
+        # D4-6: write with 0o600 (sensitive fingerprint, same pattern
+        # as _write_seed_excl but text, not binary; overwrite allowed).
+        fp_path.parent.mkdir(parents=True, exist_ok=True)
+        _flags = _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC
+        if not _is_windows_platform():
+            _fd = _os.open(str(fp_path), _flags, 0o600)
+        else:
+            _fd = _os.open(str(fp_path), _flags)
+        try:
+            _os.write(_fd, fp.encode("utf-8"))
+        finally:
+            _os.close(_fd)
 
 
 @click.command("sign-registry")
@@ -1410,24 +1635,38 @@ def signer_sign_registry(in_file: str | None, out_file: str | None,
 
         # F2: verify every existing signature
         msg = canonical_bytes(REGISTRY, payload)
-        # Build a trusted key map from the latest version's keys
-        trusted_keys: dict[str, bytes] = {}
+        # R2-6: trusted set is prev_admins | cur_admins (same as verify_chain),
+        # not all keys.  Non-admins and keys newly added in this version
+        # are excluded.
+        prev_admins_set = set(latest_payload.get("admins", []))
+        cur_admins_set = set(payload.get("admins", []))
+        allowed_signers = prev_admins_set | cur_admins_set
+
+        # Build a key map for ALL keys (need the public_key bytes for
+        # signature verification), but only accept signatures from the
+        # allowed set.
+        all_keys: dict[str, bytes] = {}
         for k in latest_payload.get("keys", []):
             try:
-                trusted_keys[k["key_id"]] = bytes.fromhex(k["public_key"])
+                all_keys[k["key_id"]] = bytes.fromhex(k["public_key"])
             except (ValueError, KeyError):
                 pass
-        # Also include keys from the new payload (for new signers)
         for k in payload.get("keys", []):
             try:
-                trusted_keys[k["key_id"]] = bytes.fromhex(k["public_key"])
+                all_keys[k["key_id"]] = bytes.fromhex(k["public_key"])
             except (ValueError, KeyError):
                 pass
 
         for sig_entry in existing_sigs:
             sig_kid = sig_entry.get("key_id", "")
             sig_hex = sig_entry.get("sig", "")
-            pub_bytes = trusted_keys.get(sig_kid)
+            # R2-6: only accept sigs from prev_admins | cur_admins
+            if sig_kid not in allowed_signers:
+                raise click.ClickException(
+                    f"existing signature by {sig_kid[:16]}... is not from "
+                    f"an admin key (trust set: prev_admins | cur_admins)"
+                )
+            pub_bytes = all_keys.get(sig_kid)
             if pub_bytes is None:
                 raise click.ClickException(
                     f"existing signature by unknown key {sig_kid[:16]}..."
@@ -1462,14 +1701,15 @@ def signer_sign_registry(in_file: str | None, out_file: str | None,
             k["key_id"] for k in payload.get("keys", [])
             if k["key_id"] not in latest_kids
         ]
-        # F1: check confirm-key-id matches added set exactly
+        # R2-4: confirm-key-id check is unconditional (even with no adds).
+        # The confirmed set must exactly equal the added set.
+        if confirmed_set != set(added_kids):
+            raise click.ClickException(
+                f"--confirm-key-id set {confirmed_set} does not match "
+                f"added key set {set(added_kids)}; refusing to sign"
+            )
+        # F1: verify sha256(public_key) == key_id for each added key
         if added_kids:
-            if confirmed_set != set(added_kids):
-                raise click.ClickException(
-                    f"--confirm-key-id set {confirmed_set} does not match "
-                    f"added key set {set(added_kids)}; refusing to sign"
-                )
-            # F1: verify sha256(public_key) == key_id for each added key
             new_key_map = {k["key_id"]: k for k in payload.get("keys", [])}
             for akid in added_kids:
                 entry = new_key_map.get(akid, {})
@@ -1515,6 +1755,13 @@ def signer_sign_registry(in_file: str | None, out_file: str | None,
         prev_payload = latest_payload
         prev_version = latest_version
 
+        # F14: --admin with multiple --add is refused
+        if admin and len(add_key_ids) > 1:
+            raise click.ClickException(
+                "--admin with multiple --add is refused; use per-key roles "
+                "or add keys one at a time with --admin"
+            )
+
         # F8: prev_hash uses org prefix (payload_hash)
         prev_hash_val = _payload_hash(prev_payload)
 
@@ -1524,6 +1771,15 @@ def signer_sign_registry(in_file: str | None, out_file: str | None,
         # Start with existing keys
         new_keys = list(prev_payload.get("keys", []))
         new_admins = list(prev_payload.get("admins", []))
+
+        # R2-5: refuse --add of a key already in the latest registry
+        latest_kids = {k["key_id"] for k in prev_payload.get("keys", [])}
+        for add_kid in add_key_ids:
+            if add_kid in latest_kids:
+                raise click.ClickException(
+                    f"key {add_kid[:16]}... already exists in the registry; "
+                    f"refusing to add a duplicate"
+                )
 
         # Add requested candidates
         for add_kid in add_key_ids:
@@ -1551,10 +1807,41 @@ def signer_sign_registry(in_file: str | None, out_file: str | None,
             if admin:
                 new_admins.append(cand["key_id"])
 
-        # F10: --threshold N in build mode
+        # F10 / D4-6 / R2-7: --threshold N in build mode with bounds check.
+        # General upper bound: max(keys+1, 2) (R2-7: cannot set threshold
+        # wildly above current key count).
+        # D4-6 bound (admin --add only): threshold must not exceed
+        # distinct admin user_ids (prevents same-person dual control).
         new_threshold = prev_payload.get("threshold", 1)
         if threshold_opt is not None:
             new_threshold = threshold_opt
+        if new_threshold < 1:
+            raise click.ClickException(
+                f"threshold must be >= 1, got {new_threshold}"
+            )
+        # R2-7: general upper bound
+        general_bound = max(len(new_keys) + 1, 2)
+        if new_threshold > general_bound:
+            raise click.ClickException(
+                f"threshold {new_threshold} exceeds upper bound "
+                f"({general_bound}); refusing"
+            )
+        # D4-6: when adding admin keys, refuse threshold that exceeds
+        # distinct admin user_ids (prevents same-person dual control).
+        if admin and add_key_ids:
+            admin_user_ids: set[str] = set()
+            admin_kid_set = set(new_admins)
+            for k in new_keys:
+                if k.get("key_id") in admin_kid_set:
+                    uid = k.get("user_id", "")
+                    if uid:
+                        admin_user_ids.add(uid)
+            max_threshold = max(len(admin_user_ids), 1)
+            if new_threshold > max_threshold:
+                raise click.ClickException(
+                    f"threshold {new_threshold} exceeds distinct admin "
+                    f"user count ({max_threshold}); refusing"
+                )
 
         payload = {
             "org_id": org_id,
@@ -1575,17 +1862,16 @@ def signer_sign_registry(in_file: str | None, out_file: str | None,
         click.echo(diff_text)
 
         # F1: determine added keys
-        latest_kids = {k["key_id"] for k in prev_payload.get("keys", [])}
-        added_kids_list = [akid for akid in add_key_ids if akid not in latest_kids]
+        added_kids_list = list(add_key_ids)
 
-        # F1: check confirm-key-id matches added set exactly
+        # R2-4: confirm-key-id check is unconditional
+        if confirmed_set != set(added_kids_list):
+            raise click.ClickException(
+                f"--confirm-key-id set {confirmed_set} does not match "
+                f"added key set {set(added_kids_list)}; refusing to sign"
+            )
+        # F1: verify sha256(public_key) == key_id for each added key
         if added_kids_list:
-            if confirmed_set != set(added_kids_list):
-                raise click.ClickException(
-                    f"--confirm-key-id set {confirmed_set} does not match "
-                    f"added key set {set(added_kids_list)}; refusing to sign"
-                )
-            # F1: verify sha256(public_key) == key_id for each added key
             new_key_map = {k["key_id"]: k for k in new_keys}
             for akid in added_kids_list:
                 entry = new_key_map.get(akid, {})
