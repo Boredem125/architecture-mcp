@@ -123,6 +123,12 @@ Where it runs:
    - Store nothing: no version row, no `approver_keys` row, and the link stays unconsumed.
    - Commit an `admin_audit` row `registry_identity_refused`, the same way as the `second_genesis` alert.
 7. **One user, several keys.** A user may hold more than one key, for example a rotation, a second machine or alice's approver key next to her admin key. This is safe because every count is by `user_id`, so two keys of one user count once.
+   - **Note (R-5, `T12D_D5_SPEC.md` section 6), stricter than rule 1:** a key_id that is pending-linked by two different users is refused as `unknown_key`, so "exactly one pending enrollment" means one user too. Cost: a user who knows another user's public key can block that enrollment; the victim links a fresh key. Proof of possession on `/link` (F-1) removes this in M3 or T15b.
+8. **Bundle signer pin (F-3, ruled 31 Oct 2026).** Section 2 step 4 pins `bundle_signer` at genesis only. For v2 and later, after the pre-verify and before rules 1 to 7, `bundle_signer` must equal the server's configured bundle-signer key (`public_key` and its sha256 `key_id`, exact strings), whatever the threshold.
+   - No key configured: 400 `bundle_signer_not_configured`, nothing stored, no audit row.
+   - Mismatch: 400 `bundle_signer_mismatch`, nothing stored, and an `admin_audit` `registry_identity_refused` row with reason `bundle_signer_mismatch`.
+   - Why: in M2 only the server signs policy bundles, after its review flow. Without the pin, one admin at threshold 1 could rotate `bundle_signer` to her own key and sign a loosened bundle with no second reviewer.
+   - Rotation in M2: the operator replaces the server key first (host access, inside G-L1), then admins publish a version carrying the new key. Connectors refuse bundles signed by the new key until that version lands (fail closed). A bundle signer held outside the server needs its own ADR (M3 or later).
 
 ### A1.2 Counting: distinct user_ids, on both sides
 
@@ -175,6 +181,7 @@ Minimum set (security may add more):
 | B8 | alice links two CLI keys of her own and v2 adds the second as admin. With threshold 2: | `verify_chain` refuses (1 distinct user) |
 |  | Same, with threshold 1: | accepted; the keys that a v3 signed by both of her keys adds give `counts_for_dual` False (connector test) |
 | B9 | Two approvals from two keys of one user_id | count once; the connector stays `awaiting_second` |
+| B12 | v2 or later swaps `bundle_signer` to a key the server does not hold, at threshold 1 or 2 (F-3, A1.1 rule 8) | 400 `bundle_signer_mismatch` |
 | E2E | The frozen step 2 flow through the routes | passes |
 | E2E | Probe B through the routes | refused at v2 |
 

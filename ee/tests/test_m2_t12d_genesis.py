@@ -2215,3 +2215,208 @@ def test_e2e_does_not_call_store_registry_version():
             f"test_m2_t12b_e2e.py imports store_registry_version "
             f"at line(s) {imports_found}; d4 must remove the import"
         )
+
+
+# ---------------------------------------------------------------------------
+# D2-8: migrate.py unreadable / directory bundle_signer key
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.pg
+@pytest.mark.xfail(strict=True, raises=M2T12dPending,
+                    reason="d5: D2-8 unreadable bundle_signer label")
+@pytest.mark.parametrize("kind", ["missing", "directory"],
+                         ids=["missing_path", "directory_path"])
+def test_d5_d4_4_unreadable_label(genesis_server, tmp_path, kind):
+    """D2-8: migrate with unreadable bundle_signer key -> exit != 0,
+    stdout has reason='unreadable', path string absent."""
+    import subprocess
+    import sys
+
+    pg_url = genesis_server["pg_url"]
+
+    if kind == "missing":
+        bad_path = str(tmp_path / "nonexistent_key_file")
+    else:
+        bad_dir = tmp_path / "a_directory"
+        bad_dir.mkdir()
+        bad_path = str(bad_dir)
+
+    env = {
+        **os.environ,
+        "AGG_DATABASE_URL": pg_url,
+        "AGG_BOOTSTRAP_ORG_SLUG": f"d58{kind}",
+        "AGG_BOOTSTRAP_ORG_NAME": f"D58 {kind}",
+        "AGG_BOOTSTRAP_ORG_ISSUER": "https://idp.test",
+        "AGG_BOOTSTRAP_ORG_CLIENT_ID": "test-client",
+        "AGG_BUNDLE_SIGNER_KEY_FILE": bad_path,
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-m", "agg_cp.migrate"],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+
+    combined = result.stdout + result.stderr
+    if result.returncode == 0:
+        raise M2T12dPending(
+            f"D2-8 {kind}: migrate exited 0; d5 unreadable check not built"
+        )
+    # d5 adds the "unreadable" vs "bad_format" distinction
+    if '"reason":"unreadable"' not in result.stdout and "unreadable" not in result.stdout:
+        raise M2T12dPending(
+            f"D2-8 {kind}: expected 'unreadable' in stdout but got: "
+            f"{result.stdout[:200]}"
+        )
+    # The path string must not appear
+    assert bad_path not in combined, (
+        f"path string {bad_path!r} leaked into output"
+    )
+
+
+# ---------------------------------------------------------------------------
+# D2-9: migrate.py bad format bundle_signer key
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.pg
+def test_d5_d4_4_bad_format_label(genesis_server, tmp_path):
+    """D2-9: migrate with bad-format bundle_signer key -> exit != 0,
+    reason=='bad_format', file text absent. Plain pass."""
+    import subprocess
+    import sys
+
+    pg_url = genesis_server["pg_url"]
+
+    bad_key_file = tmp_path / "bad_format_key"
+    bad_key_file.write_text("not-a-valid-hex-key", encoding="utf-8")
+
+    env = {
+        **os.environ,
+        "AGG_DATABASE_URL": pg_url,
+        "AGG_BOOTSTRAP_ORG_SLUG": "d59badfmt",
+        "AGG_BOOTSTRAP_ORG_NAME": "D59 Bad Format",
+        "AGG_BOOTSTRAP_ORG_ISSUER": "https://idp.test",
+        "AGG_BOOTSTRAP_ORG_CLIENT_ID": "test-client",
+        "AGG_BUNDLE_SIGNER_KEY_FILE": str(bad_key_file),
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-m", "agg_cp.migrate"],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0, (
+        f"expected non-zero exit for bad format, got 0"
+    )
+    assert "bad_format" in result.stdout or "bad_format" in combined, (
+        f"expected 'bad_format' in output: {result.stdout[:300]}"
+    )
+    assert "not-a-valid-hex-key" not in combined, (
+        "bad key file text leaked into output"
+    )
+
+
+# ---------------------------------------------------------------------------
+# D2-10: /signatures version type shapes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.pg
+@pytest.mark.parametrize("version_val,has_chain,expected_status", [
+    pytest.param(2, False, 400, id="int_2_no_chain"),
+    pytest.param("1", False, 400, id="str_1_no_chain"),
+    pytest.param("2", False, 400, id="str_2_no_chain"),
+    pytest.param(1.0, False, 409, id="float_1_0_no_chain"),
+    pytest.param(True, False, 409, id="bool_True_no_chain"),
+    pytest.param("2", True, 400, id="str_2_with_chain"),
+    pytest.param(2.0, True, 400, id="float_2_0_with_chain"),
+])
+def test_d5_d4_1_signatures_version_shapes(
+    genesis_server, version_val, has_chain, expected_status,
+):
+    """D2-10: POST /signatures with various version types.
+    Check key_registry_versions and approver_keys unchanged.
+    No-chain cases add no sync_alerts row."""
+    import httpx
+    base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, f"D510-{version_val!r:.10}-{has_chain}")
+
+    if has_chain:
+        uid, sk, kid, confirmed_token = _do_genesis(
+            base, owner_url, org_id,
+        )
+    else:
+        uid, iss, sub, sk, kid, token, _gcode = _seed_admin_with_link_and_code(
+            base, owner_url, org_id, "d510@test.example",
+        )
+        confirmed_token = token
+
+    # Build a minimal envelope with the version_val
+    env = {
+        "kind": "agg/registry/v1", "sig_v": 1,
+        "payload": {
+            "org_id": org_id,
+            "version": version_val,
+            "keys": [{"key_id": kid, "public_key": bytes(sk.verify_key).hex()}],
+        },
+        "signatures": [],
+    }
+
+    # Snap before
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        ver_before = conn.execute(
+            "SELECT count(*) FROM key_registry_versions WHERE org_id = %s::uuid",
+            [org_id],
+        ).fetchone()[0]
+        ak_before = conn.execute(
+            "SELECT count(*) FROM approver_keys WHERE org_id = %s::uuid",
+            [org_id],
+        ).fetchone()[0]
+
+    r = httpx.post(
+        f"{base}/api/v1/sync/signer/signatures",
+        json={"type": "registry", "envelope": env, "org_id": org_id},
+        headers={"Authorization": f"Bearer {confirmed_token}"},
+        timeout=15,
+    )
+
+    assert r.status_code == expected_status, (
+        f"expected {expected_status}, got {r.status_code}: {r.text}"
+    )
+
+    # Verify no side effects
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        ver_after = conn.execute(
+            "SELECT count(*) FROM key_registry_versions WHERE org_id = %s::uuid",
+            [org_id],
+        ).fetchone()[0]
+        ak_after = conn.execute(
+            "SELECT count(*) FROM approver_keys WHERE org_id = %s::uuid",
+            [org_id],
+        ).fetchone()[0]
+
+    assert ver_after == ver_before, (
+        f"key_registry_versions count changed: {ver_before} -> {ver_after}"
+    )
+    # For no-chain cases, approver_keys should be unchanged
+    if not has_chain:
+        assert ak_after == ak_before
+
+    # No-chain cases: no sync_alerts row added
+    if not has_chain:
+        with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+            conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+            alerts = conn.execute(
+                "SELECT count(*) FROM sync_alerts "
+                "WHERE org_id = %s::uuid",
+                [org_id],
+            ).fetchone()[0]
+        assert alerts == 0, (
+            f"no-chain case should not add sync_alerts, got {alerts}"
+        )
