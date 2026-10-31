@@ -2133,7 +2133,8 @@ def test_f8_build_mode_passes_verify_chain(tmp_path):
 
 def test_f10_sign_registry_threshold_flag(tmp_path):
     """F10: sign-registry --threshold N sets the threshold in the new
-    version payload."""
+    version payload.  D2-1: also adds a carol candidate and verifies the
+    output threshold is 2."""
     from sandbox.cli.main import cli
 
     admin_sk = SigningKey.generate()
@@ -2144,6 +2145,19 @@ def test_f10_sign_registry_threshold_flag(tmp_path):
         admin_sk, org_id, "https://idp", "sub-1", bundle_pub, user_id="u1"
     )
 
+    # D2-1: add a carol candidate (u2, sub-2)
+    carol_sk = SigningKey.generate()
+    carol_kid = _kid(carol_sk)
+    carol_pub = bytes(carol_sk.verify_key).hex()
+    candidates = [{
+        "key_id": carol_kid,
+        "public_key": carol_pub,
+        "user_id": "u2",
+        "iss": "https://idp",
+        "sub": "sub-2",
+        "kind": "cli",
+    }]
+
     meta = {
         "server": "https://localhost:9000",
         "key_id": _kid(admin_sk),
@@ -2153,7 +2167,7 @@ def test_f10_sign_registry_threshold_flag(tmp_path):
         "sub": "sub-1",
     }
     kh = _make_key_home(tmp_path, admin_sk, meta)
-    tracker = _signreg_tracker(v1_env)
+    tracker = _signreg_tracker(v1_env, candidates=candidates)
 
     out_file = tmp_path / "v2.json"
 
@@ -2169,6 +2183,10 @@ def test_f10_sign_registry_threshold_flag(tmp_path):
 
             result = CliRunner().invoke(cli, [
                 "signer", "sign-registry",
+                "--add", carol_kid,
+                "--admin",
+                "--confirm-key-id", carol_kid,
+                "--confirm-identity", "https://idp", "sub-2",
                 "--threshold", "2",
                 "--out", str(out_file),
                 "--expect-fingerprint", fp,
@@ -4413,3 +4431,389 @@ def test_r2_2_shared_verify_persist_helper(tmp_path):
         f"R2-2 item 4(c): _refresh_registry_chain changed bundle_sequence "
         f"from 1 to {hwm['bundle_sequence']}"
     )
+
+
+# ===========================================================================
+# D2-2: threshold bound unconditional
+# ===========================================================================
+
+
+@pytest.mark.xfail(strict=True, raises=M2T12dPending,
+                    reason="d5: D2-2 threshold bound unconditional")
+def test_d5_threshold_bound_unconditional(tmp_path):
+    """D2-2: v1 one admin u1; sign-registry --threshold 2 with no --add
+    -> exit 1; message names 'distinct admin'; v2.json not written."""
+    from sandbox.cli.main import cli
+
+    admin_sk = SigningKey.generate()
+    bundle_sk = SigningKey.generate()
+    org_id = "org-d52"
+    bundle_pub = bytes(bundle_sk.verify_key)
+    v1_env, fp = _build_valid_chain_v1(
+        admin_sk, org_id, "https://idp", "sub-1", bundle_pub, user_id="u1"
+    )
+
+    meta = {
+        "server": "https://localhost:9000",
+        "key_id": _kid(admin_sk),
+        "org_id": org_id,
+        "user_id": "u1",
+        "iss": "https://idp",
+        "sub": "sub-1",
+    }
+    kh = _make_key_home(tmp_path, admin_sk, meta)
+    tracker = _signreg_tracker(v1_env)
+    out_file = tmp_path / "v2.json"
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "sign-registry",
+                "--threshold", "2",
+                "--out", str(out_file),
+                "--expect-fingerprint", fp,
+                "--yes",
+            ])
+
+    if result.exit_code == 0:
+        raise M2T12dPending(
+            "D2-2: sign-registry --threshold 2 with no --add exited 0"
+        )
+    assert result.exit_code == 1, (
+        f"expected exit 1, got {result.exit_code}: {result.output}"
+    )
+    assert "distinct admin" in result.output.lower(), (
+        f"expected 'distinct admin' in output: {result.output[:300]}"
+    )
+    assert not out_file.exists(), "v2.json should not have been written"
+
+
+# ===========================================================================
+# D2-3: link token failure reason class (parametrised)
+# ===========================================================================
+
+
+@pytest.mark.xfail(strict=True, raises=M2T12dPending,
+                    reason="d5: D2-3 link token failure reason class")
+@pytest.mark.parametrize("scenario,mock_response,expected_reason,forbidden_text", [
+    (
+        "http_401",
+        "401_body",
+        "(HTTP 401)",
+        "SECRET-BODY-123",
+    ),
+    (
+        "redirect",
+        "302_redirect",
+        "(redirect refused)",
+        None,
+    ),
+    (
+        "transport",
+        "transport_error",
+        "(transport refused)",
+        None,
+    ),
+], ids=["http_401", "redirect", "transport"])
+def test_d5_link_token_failure_reason_class(
+    tmp_path, scenario, mock_response, expected_reason, forbidden_text,
+):
+    """D2-3: _get_link_signer_token returns a reason class; the CLI
+    prints it; never prints SECRET-BODY-123."""
+    from sandbox.cli.main import cli
+
+    admin_sk = SigningKey.generate()
+    org_id = "org-d53"
+    meta = {
+        "server": "https://localhost:9000",
+        "key_id": _kid(admin_sk),
+        "org_id": org_id,
+        "user_id": "u1",
+        "iss": "https://idp",
+        "sub": "sub-1",
+    }
+    kh = _make_key_home(tmp_path, admin_sk, meta)
+
+    # Build mock routes based on scenario
+    if mock_response == "401_body":
+        token_resp = HTTPError(
+            "http://localhost:9000/api/v1/sync/signer/token",
+            401, "Unauthorized", {},
+            io.BytesIO(b"SECRET-BODY-123"),
+        )
+    elif mock_response == "302_redirect":
+        token_resp = HTTPError(
+            "http://localhost:9000/api/v1/sync/signer/token",
+            302, "Redirect", {"Location": "http://evil.test/phish"},
+            io.BytesIO(b""),
+        )
+    elif mock_response == "transport_error":
+        # Use example.com (transport error)
+        token_resp = URLError("connection refused")
+
+    # The link command first POSTs to /signer/link (must succeed),
+    # then calls _get_link_signer_token which hits /signer/token.
+    link_response = {
+        "status": "linked", "key_id": _kid(admin_sk),
+        "iss": "https://idp", "sub": "sub-1",
+    }
+    routes = {
+        "/signer/link": link_response,
+        "/signer/token": token_resp,
+    }
+    tracker = _MockTracker(routes)
+
+    with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
+        with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+            result = CliRunner().invoke(cli, [
+                "signer", "link",
+                "--code", "test-code",
+                "--server", "http://localhost:9000",
+            ])
+
+    # Today the link command does not print the reason class from
+    # _get_link_signer_token; d5 adds that.
+    if expected_reason not in (result.output or ""):
+        raise M2T12dPending(
+            f"D2-3 {scenario}: expected reason {expected_reason!r} not in "
+            f"output: {result.output[:300]}"
+        )
+    assert result.exit_code == 1, (
+        f"expected exit 1, got {result.exit_code}: {result.output}"
+    )
+    if forbidden_text:
+        assert forbidden_text not in result.output, (
+            f"forbidden text {forbidden_text!r} found in output"
+        )
+
+
+# ===========================================================================
+# D2-4: _get_link_signer_token log format (static AST check)
+# ===========================================================================
+
+
+@pytest.mark.xfail(strict=True, raises=M2T12dPending,
+                    reason="d5: D2-4 _get_link_signer_token log format")
+def test_d5_link_token_log_format_has_no_token_word():
+    """D2-4: AST walk of _get_link_signer_token: no 'token' in log strings,
+    no exc argument in log calls."""
+    import ast
+    import inspect
+    from sandbox.cli.sync_cmds import _get_link_signer_token
+
+    source = inspect.getsource(_get_link_signer_token)
+    tree = ast.parse(source)
+
+    log_methods = {"debug", "info", "warning", "error", "exception"}
+    violations = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            continue
+        if func.attr not in log_methods:
+            continue
+
+        # Check first arg for 'token' word
+        if node.args:
+            first_arg = node.args[0]
+            if isinstance(first_arg, ast.Constant):
+                val = first_arg.value
+                if isinstance(val, str) and "token" in val.lower():
+                    violations.append(
+                        f"line ~{node.lineno}: log string contains 'token'"
+                    )
+
+        # Check for exc_info or exc keyword argument
+        for kw in node.keywords:
+            if kw.arg in ("exc_info", "exc"):
+                violations.append(
+                    f"line ~{node.lineno}: log call has '{kw.arg}' argument"
+                )
+
+    if violations:
+        raise M2T12dPending(
+            f"D2-4: _get_link_signer_token log violations: {violations}"
+        )
+    # The function must also return a reason class, not just None.
+    # Today it returns None on failure with no reason.
+    # Check if the function returns a reason string or just None.
+    # If the function signature lacks the reason class return,
+    # the product has not been updated.
+    sig = inspect.signature(_get_link_signer_token)
+    ret_annotation = sig.return_annotation
+    # Today the function returns str | None (token or None);
+    # d5 changes it to return a reason class.
+    # Detect by checking source for "reason" pattern.
+    if "reason" not in source.lower() or "redirect refused" not in source:
+        raise M2T12dPending(
+            "D2-4: _get_link_signer_token does not return reason classes yet"
+        )
+
+
+# ===========================================================================
+# D2-5: registry verify_failed writes audit
+# ===========================================================================
+
+
+@pytest.mark.xfail(strict=True, raises=M2T12dPending,
+                    reason="d5: D2-5 registry verify_failed audit")
+def test_d5_registry_verify_failed_writes_audit(tmp_path):
+    """D2-5: offer a v4 signed by a stranger key -> refused:verify_failed;
+    exactly one registry_refused audit event with reason_code
+    REGISTRY_VERIFY_FAILED."""
+    lay, sync_dir, fp, chain_v3, admin_sk = _r2_setup_enrolled_workspace(
+        tmp_path,
+    )
+
+    # Build a v4 signed by a stranger key
+    stranger_sk = SigningKey.generate()
+    stranger_kid = hashlib.sha256(
+        bytes(stranger_sk.verify_key)
+    ).hexdigest()
+
+    prev_payload = chain_v3[-1]["payload"]
+    prev_canonical = json.dumps(
+        prev_payload, sort_keys=True, separators=(",", ":"),
+    ).encode()
+    prev_hash = hashlib.sha256(
+        prev_payload["org_id"].encode("utf-8") + b":" + prev_canonical,
+    ).hexdigest()
+
+    v4_payload = dict(prev_payload, version=4, prev_hash=prev_hash)
+    v4_canonical = json.dumps(
+        v4_payload, sort_keys=True, separators=(",", ":"),
+    ).encode()
+    msg = b"agg/registry/v1\x00" + v4_canonical
+    sig = stranger_sk.sign(msg).signature.hex()
+    v4_env = {
+        "kind": "agg/registry/v1", "sig_v": 1,
+        "payload": v4_payload,
+        "signatures": [{"key_id": stranger_kid, "alg": "ed25519", "sig": sig}],
+    }
+
+    bad_chain = chain_v3 + [v4_env]
+
+    from sandbox.connector.sync.registry_chain import apply_registry_chain
+    status = apply_registry_chain(lay, bad_chain)
+    assert status == "refused:verify_failed", f"got {status!r}"
+
+    # Check audit
+    events = _audit_events_from_layout(lay)
+    refused_events = [
+        e for e in events if e.get("event") == "registry_refused"
+    ]
+
+    if not refused_events:
+        raise M2T12dPending("D2-5: no registry_refused audit event")
+
+    assert len(refused_events) == 1
+    ev = refused_events[0]
+    assert ev.get("reason_code") == "REGISTRY_VERIFY_FAILED"
+    assert ev.get("offered_version") == 4
+    assert ev.get("floor") == 3
+
+    # registry.json unchanged
+    reg_data = json.loads(
+        (sync_dir / "registry.json").read_text(encoding="utf-8")
+    )
+    assert reg_data[-1]["payload"]["version"] == 3
+
+
+# ===========================================================================
+# D2-6: registry rollback writes audit
+# ===========================================================================
+
+
+@pytest.mark.xfail(strict=True, raises=M2T12dPending,
+                    reason="d5: D2-6 registry rollback audit")
+def test_d5_registry_rollback_writes_audit(tmp_path):
+    """D2-6: offer chain_v3[:2] -> refused:rollback; one registry_refused
+    event with REGISTRY_ROLLBACK."""
+    lay, sync_dir, fp, chain_v3, admin_sk = _r2_setup_enrolled_workspace(
+        tmp_path,
+    )
+
+    from sandbox.connector.sync.registry_chain import apply_registry_chain
+    status = apply_registry_chain(lay, chain_v3[:2])
+    assert status == "refused:rollback", f"got {status!r}"
+
+    events = _audit_events_from_layout(lay)
+    refused_events = [
+        e for e in events if e.get("event") == "registry_refused"
+    ]
+
+    if not refused_events:
+        raise M2T12dPending("D2-6: no registry_refused audit event")
+
+    assert len(refused_events) == 1
+    ev = refused_events[0]
+    assert ev.get("reason_code") == "REGISTRY_ROLLBACK"
+
+
+# ===========================================================================
+# D2-7: registry update no refusal audit (twin, plain pass)
+# ===========================================================================
+
+
+def test_d5_registry_update_no_refusal_audit(tmp_path):
+    """D2-7 twin: offer a correctly signed v4 -> updated; no registry_refused
+    event."""
+    lay, sync_dir, fp, chain_v3, admin_sk = _r2_setup_enrolled_workspace(
+        tmp_path,
+    )
+
+    # Build a valid v4
+    prev_payload = chain_v3[-1]["payload"]
+    prev_canonical = json.dumps(
+        prev_payload, sort_keys=True, separators=(",", ":"),
+    ).encode()
+    prev_hash = hashlib.sha256(
+        prev_payload["org_id"].encode("utf-8") + b":" + prev_canonical,
+    ).hexdigest()
+
+    admin_kid = hashlib.sha256(bytes(admin_sk.verify_key)).hexdigest()
+    v4_payload = dict(prev_payload, version=4, prev_hash=prev_hash)
+    v4_canonical = json.dumps(
+        v4_payload, sort_keys=True, separators=(",", ":"),
+    ).encode()
+    msg = b"agg/registry/v1\x00" + v4_canonical
+    sig = admin_sk.sign(msg).signature.hex()
+    v4_env = {
+        "kind": "agg/registry/v1", "sig_v": 1,
+        "payload": v4_payload,
+        "signatures": [{"key_id": admin_kid, "alg": "ed25519", "sig": sig}],
+    }
+
+    good_chain = chain_v3 + [v4_env]
+
+    from sandbox.connector.sync.registry_chain import apply_registry_chain
+    status = apply_registry_chain(lay, good_chain)
+    assert status == "updated", f"got {status!r}"
+
+    events = _audit_events_from_layout(lay)
+    refused_events = [
+        e for e in events if e.get("event") == "registry_refused"
+    ]
+    assert len(refused_events) == 0, (
+        f"expected no registry_refused events, got {len(refused_events)}"
+    )
+
+
+# ===========================================================================
+# Audit reader helper (D2-5..7)
+# ===========================================================================
+
+
+def _audit_events_from_layout(layout) -> list[dict]:
+    """Read all audit events from the layout's audit_dir."""
+    out = []
+    if not layout.audit_dir.is_dir():
+        return out
+    for f in layout.audit_dir.rglob("*.jsonl"):
+        for line in f.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                out.append(json.loads(line))
+    return out
