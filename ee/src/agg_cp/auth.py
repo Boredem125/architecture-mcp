@@ -601,10 +601,13 @@ def build_auth_router(
                 conn.rollback()
                 return JSONResponse({"error": "admin_exists"}, status_code=409)
 
-            # Mark setup code as used atomically
+            # Mark setup code as used atomically. Only the admin
+            # bootstrap code (or a legacy NULL-purpose row); the
+            # registry_genesis code stays live for ADR 0011.
             used_row = conn.execute(
                 "UPDATE setup_codes SET used_at = %s "
                 "WHERE org_id = %s AND used_at IS NULL "
+                "AND (purpose IS NULL OR purpose = 'admin_bootstrap') "
                 "RETURNING id",
                 [now, org_id],
             ).fetchone()

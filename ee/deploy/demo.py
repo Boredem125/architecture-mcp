@@ -13,10 +13,12 @@ Exit code: 0 if all steps PASS, non-zero on the first FAIL.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html.parser
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -163,6 +165,166 @@ def _get_setup_code() -> tuple[str, str]:
         "Ensure the demo profile is running."
     )
     return "", ""  # unreachable, for type checker
+
+
+def _get_genesis_code() -> tuple[str, str]:
+    """Read the genesis code from ``docker compose logs migrate-demo``.
+
+    Returns (org_slug, genesis_code).
+    """
+    result = _compose("logs", "migrate-demo", capture=True, check=False)
+    output = result.stdout or ""
+    for line in output.splitlines():
+        for match in re.finditer(r'\{[^}]+\}', line):
+            try:
+                obj = json.loads(match.group())
+                if obj.get("event") == "genesis_code":
+                    return obj["org"], obj["code"]
+            except (json.JSONDecodeError, KeyError):
+                continue
+    _fail(
+        "Could not find genesis_code in migrate-demo logs. "
+        "Ensure the demo profile is running."
+    )
+    return "", ""  # unreachable, for type checker
+
+
+def _get_bundle_signer() -> tuple[str, str]:
+    """Read the bundle_signer public key from ``docker compose logs migrate-demo``.
+
+    Returns (key_id, public_key_hex).
+    """
+    result = _compose("logs", "migrate-demo", capture=True, check=False)
+    output = result.stdout or ""
+    for line in output.splitlines():
+        for match in re.finditer(r'\{[^}]+\}', line):
+            try:
+                obj = json.loads(match.group())
+                if obj.get("event") == "bundle_signer":
+                    return obj["key_id"], obj["public_key"]
+            except (json.JSONDecodeError, KeyError):
+                continue
+    _fail(
+        "Could not find bundle_signer in migrate-demo logs. "
+        "Ensure AGG_BUNDLE_SIGNER_KEY_FILE is set and the demo profile is running."
+    )
+    return "", ""  # unreachable, for type checker
+
+
+def _signer_kid(public_key_bytes: bytes) -> str:
+    """Compute the key_id as sha256(public_key_bytes).hex()."""
+    return hashlib.sha256(public_key_bytes).hexdigest()
+
+
+def _sign_registry_payload(
+    sk: "nacl.signing.SigningKey",
+    kid: str,
+    payload: dict,
+) -> str:
+    """Sign a registry payload and return the signature hex."""
+    tag = b"agg/registry/v1"
+    canonical = json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    ).encode()
+    msg = tag + b"\x00" + canonical
+    return sk.sign(msg).signature.hex()
+
+
+def _get_signer_token(
+    client: httpx.Client,
+    base_url: str,
+    sk: "nacl.signing.SigningKey",
+    kid: str,
+) -> str:
+    """Get a signer token for an already-linked key.
+
+    Uses the agg/signer-assert/v1 protocol.
+    """
+    nonce = secrets.token_hex(16)
+    payload = {
+        "key_id": kid,
+        "nonce": nonce,
+        "aud": base_url,
+        "iat": time.time(),
+    }
+    tag = b"agg/signer-assert/v1"
+    canonical = json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    ).encode()
+    msg = tag + b"\x00" + canonical
+    sig = sk.sign(msg).signature.hex()
+    assertion = {
+        "kind": "agg/signer-assert/v1",
+        "sig_v": 1,
+        "payload": payload,
+        "signatures": [{"key_id": kid, "alg": "ed25519", "sig": sig}],
+    }
+    r = client.post(
+        f"{base_url}/api/v1/sync/signer/token",
+        json=assertion,
+        timeout=15,
+    )
+    if r.status_code != 200:
+        _fail(f"/sync/signer/token failed: {r.status_code} {r.text[:200]}")
+    return r.json()["token"]
+
+
+def _link_cli_key(
+    client: httpx.Client,
+    base_url: str,
+    ca_path,
+    username: str,
+    password: str,
+    csrf: str,
+) -> tuple["nacl.signing.SigningKey", str, str, str, str]:
+    """Create a signer link from a web session, then link a CLI key.
+
+    Returns (sk, kid, user_id, iss, sub).
+    The caller must be logged in on *client* with a valid session.
+    """
+    from nacl.signing import SigningKey
+
+    # POST /api/v1/signer-links (web session) to get a link code
+    link_resp = client.post(
+        f"{base_url}/api/v1/signer-links",
+        json={},
+        headers={"X-CSRF-Token": csrf},
+    )
+    if link_resp.status_code != 200:
+        _fail(
+            f"/signer-links returned {link_resp.status_code} for {username}: "
+            f"{link_resp.text[:200]}"
+        )
+    link_code = link_resp.json().get("code", "")
+    if not link_code:
+        _fail(f"/signer-links did not return a code for {username}")
+
+    # Generate an Ed25519 keypair
+    sk = SigningKey.generate()
+    pub_hex = bytes(sk.verify_key).hex()
+    kid = _signer_kid(bytes(sk.verify_key))
+
+    # POST /api/v1/sync/signer/link (no auth needed, just the code)
+    link_result = client.post(
+        f"{base_url}/api/v1/sync/signer/link",
+        json={
+            "code": link_code,
+            "key_id": kid,
+            "public_key": pub_hex,
+        },
+        timeout=15,
+    )
+    if link_result.status_code != 200:
+        _fail(
+            f"/sync/signer/link failed for {username}: "
+            f"{link_result.status_code} {link_result.text[:200]}"
+        )
+    link_data = link_result.json()
+    user_id = link_data.get("user_id", "")
+    iss = link_data.get("iss", "")
+    sub = link_data.get("sub", "")
+
+    return sk, kid, user_id, iss, sub
 
 
 def _keycloak_login(
@@ -324,10 +486,11 @@ def step1_ready(client: httpx.Client, base_url: str) -> None:
     _pass("/ready returned 200")
 
 
-def step2_setup_and_admin(client: httpx.Client, base_url: str, passwords: dict[str, str]) -> dict:
-    """Step 2: setup code, alice logs in as admin, creates project, adds bob.
+def step2_setup_and_admin(client: httpx.Client, base_url: str, passwords: dict[str, str], ca_path=None) -> dict:
+    """Step 2: setup code, alice admin flow, registry genesis + v2/v3.
 
-    Returns a dict with alice_csrf, project_id, bob_user_id for later steps.
+    Returns a dict with alice_csrf, project_id, bob_user_id, registry_version
+    for later steps.
     """
     print("\n=== Step 2: Setup + admin flow ===", flush=True)
 
@@ -438,10 +601,10 @@ def step2_setup_and_admin(client: httpx.Client, base_url: str, passwords: dict[s
     carol_user_id = carol_user_resp.json().get("id")
     _pass(f"Added carol as org user (id={carol_user_id})")
 
-    # 2l. Set carol as admin (POST /org/users/{id}/roles or PATCH)
+    # 2l. Set carol as admin (POST /org/members)
     carol_admin_resp = client.post(
-        f"{base_url}/api/v1/org/users/{carol_user_id}/role",
-        json={"role": "admin"},
+        f"{base_url}/api/v1/org/members",
+        json={"user_id": carol_user_id, "role": "admin"},
         headers={"X-CSRF-Token": csrf},
     )
     if carol_admin_resp.status_code not in (200, 201):
@@ -451,6 +614,373 @@ def step2_setup_and_admin(client: httpx.Client, base_url: str, passwords: dict[s
         )
     _pass("Set carol as admin (second admin)")
 
+    # ------------------------------------------------------------------
+    # Registry genesis and version chain (2m-2q, ADR 0011 A1.3)
+    # Routes exercised:
+    #   /api/v1/signer-links           (web: create link code)
+    #   /api/v1/sync/signer/genesis    (post genesis v1)
+    #   /api/v1/sync/signer/signatures (post v2, v3)
+    #   /api/v1/sync/signer/registry   (GET full chain)
+    # ------------------------------------------------------------------
+    org_id = me.get("org", {}).get("id", "")
+    alice_user_id = me.get("user_id", "")
+
+    # 2m. Read genesis code and bundle_signer from migrate-demo logs
+    _, genesis_code = _get_genesis_code()
+    _pass("Genesis code read from migrate-demo logs")
+    bs_kid, bs_pub_hex = _get_bundle_signer()
+    _pass(f"Bundle signer public key read (kid={bs_kid[:12]}...)")
+
+    # 2n. alice links her CLI key (she already has a session on client)
+    alice_sk, alice_kid, _alice_uid, alice_iss, alice_sub = _link_cli_key(
+        client, base_url, ca_path, "alice", passwords.get("alice", ""), csrf,
+    )
+    _pass(f"alice linked CLI key (kid={alice_kid[:12]}...)")
+
+    # Get a signer token for alice (pending_link scope initially)
+    alice_token = _get_signer_token(client, base_url, alice_sk, alice_kid)
+
+    # 2o. Build genesis v1 envelope (alice as sole admin, threshold 1)
+    g_payload = {
+        "org_id": org_id,
+        "version": 1,
+        "prev_hash": "",
+        "threshold": 1,
+        "admins": [alice_kid],
+        "keys": [{
+            "key_id": alice_kid,
+            "public_key": bytes(alice_sk.verify_key).hex(),
+            "kind": "cli",
+            "alg": "ed25519",
+            "user_id": alice_user_id,
+            "iss": alice_iss,
+            "sub": alice_sub,
+            "roles": ["admin", "approver"],
+            "added_in": 1,
+        }],
+        "bundle_signer": {"key_id": bs_kid, "public_key": bs_pub_hex},
+        "expires_at": time.time() + 72 * 3600,  # 72 h ceiling (prod project)
+    }
+    g_sig = _sign_registry_payload(alice_sk, alice_kid, g_payload)
+    g_env = {
+        "kind": "agg/registry/v1",
+        "sig_v": 1,
+        "payload": g_payload,
+        "signatures": [{"key_id": alice_kid, "alg": "ed25519", "sig": g_sig}],
+    }
+
+    # POST /api/v1/sync/signer/genesis
+    genesis_resp = client.post(
+        f"{base_url}/api/v1/sync/signer/genesis",
+        json={"genesis_code": genesis_code, "envelope": g_env},
+        headers={"Authorization": f"Bearer {alice_token}"},
+        timeout=15,
+    )
+    if genesis_resp.status_code != 200:
+        _fail(
+            f"/sync/signer/genesis returned {genesis_resp.status_code}: "
+            f"{genesis_resp.text[:300]}"
+        )
+    if genesis_resp.json().get("version") != 1:
+        _fail("genesis response version != 1")
+    _pass("genesis v1 accepted (registry version 1)")
+
+    # 2p. Negatives: second genesis (409) and genesis code reuse
+    neg_genesis_resp = client.post(
+        f"{base_url}/api/v1/sync/signer/genesis",
+        json={"genesis_code": "dummy-code-for-second-genesis", "envelope": g_env},
+        headers={"Authorization": f"Bearer {alice_token}"},
+        timeout=10,
+    )
+    if neg_genesis_resp.status_code != 409:
+        _fail(
+            f"second genesis returned {neg_genesis_resp.status_code} "
+            f"(expected 409): {neg_genesis_resp.text[:200]}"
+        )
+    _pass("second genesis refused")
+
+    # Genesis code reuse (the code was already consumed)
+    reuse_resp = client.post(
+        f"{base_url}/api/v1/sync/signer/genesis",
+        json={"genesis_code": genesis_code, "envelope": g_env},
+        headers={"Authorization": f"Bearer {alice_token}"},
+        timeout=10,
+    )
+    if reuse_resp.status_code not in (400, 409):
+        _fail(
+            f"genesis code reuse returned {reuse_resp.status_code} "
+            f"(expected 4xx): {reuse_resp.text[:200]}"
+        )
+    _pass("genesis code reuse refused")
+
+    # 2q. carol logs in on her own client, links CLI key, co-signs v2
+    verify_arg = ca_path if ca_path is not None else True
+    with httpx.Client(verify=verify_arg, follow_redirects=False) as carol_client:
+        carol_login = carol_client.get(
+            f"{base_url}/api/v1/auth/login",
+            params={"org": org_slug},
+            follow_redirects=False,
+        )
+        if carol_login.status_code != 302:
+            _fail(f"carol /login returned {carol_login.status_code} (expected 302)")
+        carol_auth_url = carol_login.headers.get("location", "")
+        carol_pw = passwords.get("carol", "")
+        if not carol_pw:
+            _fail("carol password not found in the demo realm files")
+        carol_cb = _keycloak_login(carol_client, carol_auth_url, "carol", carol_pw)
+        if carol_cb.status_code not in (200, 302):
+            _fail(f"carol callback returned {carol_cb.status_code}")
+
+        carol_me = _get_me(carol_client, base_url)
+        carol_csrf = carol_me.get("csrf_token", "")
+
+        carol_sk, carol_kid, _carol_uid, carol_iss, carol_sub = _link_cli_key(
+            carol_client, base_url, ca_path, "carol", carol_pw, carol_csrf,
+        )
+        _pass(f"carol linked CLI key (kid={carol_kid[:12]}...)")
+        carol_token = _get_signer_token(carol_client, base_url, carol_sk, carol_kid)
+
+    # Build v2: add carol as admin, threshold 2
+    g_canonical = json.dumps(
+        g_payload, sort_keys=True, separators=(",", ":")
+    ).encode()
+    v2_prev = hashlib.sha256(
+        org_id.encode() + b":" + g_canonical
+    ).hexdigest()
+
+    v2_payload = {
+        "org_id": org_id,
+        "version": 2,
+        "prev_hash": v2_prev,
+        "threshold": 2,
+        "admins": [alice_kid, carol_kid],
+        "keys": g_payload["keys"] + [{
+            "key_id": carol_kid,
+            "public_key": bytes(carol_sk.verify_key).hex(),
+            "kind": "cli",
+            "alg": "ed25519",
+            "user_id": carol_user_id,
+            "iss": carol_iss,
+            "sub": carol_sub,
+            "roles": ["admin", "approver"],
+            "added_in": 2,
+        }],
+        "bundle_signer": g_payload["bundle_signer"],
+        "expires_at": g_payload["expires_at"],
+    }
+
+    alice_sig_v2 = _sign_registry_payload(alice_sk, alice_kid, v2_payload)
+    carol_sig_v2 = _sign_registry_payload(carol_sk, carol_kid, v2_payload)
+
+    v2_env = {
+        "kind": "agg/registry/v1",
+        "sig_v": 1,
+        "payload": v2_payload,
+        "signatures": [
+            {"key_id": alice_kid, "alg": "ed25519", "sig": alice_sig_v2},
+            {"key_id": carol_kid, "alg": "ed25519", "sig": carol_sig_v2},
+        ],
+    }
+
+    # carol's pending_link token posts v2 (adds her own key)
+    v2_resp = client.post(
+        f"{base_url}/api/v1/sync/signer/signatures",
+        json={"type": "registry", "envelope": v2_env, "org_id": org_id},
+        headers={"Authorization": f"Bearer {carol_token}"},
+        timeout=15,
+    )
+    if v2_resp.status_code != 200:
+        _fail(
+            f"v2 publish returned {v2_resp.status_code}: "
+            f"{v2_resp.text[:300]}"
+        )
+    _pass("v2 accepted (registry version 2, carol added)")
+
+    # 2r. Negative: pending_link post without own key (bob)
+    with httpx.Client(verify=verify_arg, follow_redirects=False) as bob_client:
+        bob_login = bob_client.get(
+            f"{base_url}/api/v1/auth/login",
+            params={"org": org_slug},
+            follow_redirects=False,
+        )
+        if bob_login.status_code != 302:
+            _fail(f"bob /login returned {bob_login.status_code} (expected 302)")
+        bob_auth_url = bob_login.headers.get("location", "")
+        bob_pw = passwords.get("bob", "")
+        if not bob_pw:
+            _fail("bob password not found in the demo realm files")
+        bob_cb = _keycloak_login(bob_client, bob_auth_url, "bob", bob_pw)
+        if bob_cb.status_code not in (200, 302):
+            _fail(f"bob callback returned {bob_cb.status_code}")
+
+        bob_me = _get_me(bob_client, base_url)
+        bob_csrf = bob_me.get("csrf_token", "")
+
+        bob_sk, bob_kid, _bob_uid, bob_iss, bob_sub = _link_cli_key(
+            bob_client, base_url, ca_path, "bob", bob_pw, bob_csrf,
+        )
+        _pass(f"bob linked CLI key (kid={bob_kid[:12]}...)")
+        bob_token = _get_signer_token(bob_client, base_url, bob_sk, bob_kid)
+
+    # Negative: bob (pending_link) posts an envelope that does NOT add
+    # his own key -> server must refuse with 403.
+    fake_env = {
+        "kind": "agg/registry/v1",
+        "sig_v": 1,
+        "payload": {"org_id": org_id, "version": 3,
+                     "keys": [{"key_id": "other-key"}]},
+        "signatures": [],
+    }
+    neg_self_key = client.post(
+        f"{base_url}/api/v1/sync/signer/signatures",
+        json={"type": "registry", "envelope": fake_env, "org_id": org_id},
+        headers={"Authorization": f"Bearer {bob_token}"},
+        timeout=10,
+    )
+    if neg_self_key.status_code != 403:
+        _fail(
+            f"pending_link self-key check returned {neg_self_key.status_code} "
+            f"(expected 403): {neg_self_key.text[:200]}"
+        )
+    _pass("pending_link self-key refused")
+
+    # 2s. v3: add bob (approver), carol-approver and alice-approver keys.
+    # Each key comes from that user's own link in their own session
+    # (ADR 0011 A1.3).  alice and carol each create a second CLI link
+    # for their approver key; bob's link was created in step 2r.
+
+    # alice-approver: second link from alice's session
+    alice_apr_sk, alice_apr_kid, _, alice_apr_iss, alice_apr_sub = _link_cli_key(
+        client, base_url, ca_path, "alice",
+        passwords.get("alice", ""), csrf,
+    )
+    _pass(f"alice linked approver key (kid={alice_apr_kid[:12]}...)")
+
+    # carol-approver: second link from carol's session
+    with httpx.Client(verify=verify_arg, follow_redirects=False) as carol_client2:
+        carol_login2 = carol_client2.get(
+            f"{base_url}/api/v1/auth/login",
+            params={"org": org_slug},
+            follow_redirects=False,
+        )
+        if carol_login2.status_code != 302:
+            _fail(f"carol /login (2nd) returned {carol_login2.status_code}")
+        carol_auth2 = carol_login2.headers.get("location", "")
+        carol_cb2 = _keycloak_login(
+            carol_client2, carol_auth2, "carol",
+            passwords.get("carol", ""),
+        )
+        if carol_cb2.status_code not in (200, 302):
+            _fail(f"carol callback (2nd) returned {carol_cb2.status_code}")
+        carol_me2 = _get_me(carol_client2, base_url)
+        carol_csrf2 = carol_me2.get("csrf_token", "")
+
+        carol_apr_sk, carol_apr_kid, _, carol_apr_iss, carol_apr_sub = _link_cli_key(
+            carol_client2, base_url, ca_path, "carol",
+            passwords.get("carol", ""), carol_csrf2,
+        )
+        _pass(f"carol linked approver key (kid={carol_apr_kid[:12]}...)")
+
+    v2_canonical = json.dumps(
+        v2_payload, sort_keys=True, separators=(",", ":")
+    ).encode()
+    v3_prev = hashlib.sha256(
+        org_id.encode() + b":" + v2_canonical
+    ).hexdigest()
+
+    v3_new_keys = [
+        {
+            "key_id": bob_kid,
+            "public_key": bytes(bob_sk.verify_key).hex(),
+            "kind": "cli",
+            "alg": "ed25519",
+            "user_id": bob_user_id,
+            "iss": bob_iss,
+            "sub": bob_sub,
+            "roles": ["approver"],
+            "added_in": 3,
+        },
+        {
+            "key_id": carol_apr_kid,
+            "public_key": bytes(carol_apr_sk.verify_key).hex(),
+            "kind": "cli",
+            "alg": "ed25519",
+            "user_id": carol_user_id,
+            "iss": carol_apr_iss,
+            "sub": carol_apr_sub,
+            "roles": ["approver"],
+            "added_in": 3,
+        },
+        {
+            "key_id": alice_apr_kid,
+            "public_key": bytes(alice_apr_sk.verify_key).hex(),
+            "kind": "cli",
+            "alg": "ed25519",
+            "user_id": alice_user_id,
+            "iss": alice_apr_iss,
+            "sub": alice_apr_sub,
+            "roles": ["approver"],
+            "added_in": 3,
+        },
+    ]
+
+    v3_payload = {
+        "org_id": org_id,
+        "version": 3,
+        "prev_hash": v3_prev,
+        "threshold": 2,
+        "admins": [alice_kid, carol_kid],
+        "keys": v2_payload["keys"] + v3_new_keys,
+        "bundle_signer": g_payload["bundle_signer"],
+        "expires_at": g_payload["expires_at"],
+    }
+
+    # Get confirmed tokens for alice and carol (their keys are in the registry)
+    alice_confirmed = _get_signer_token(client, base_url, alice_sk, alice_kid)
+    carol_confirmed = _get_signer_token(client, base_url, carol_sk, carol_kid)
+
+    alice_sig_v3 = _sign_registry_payload(alice_sk, alice_kid, v3_payload)
+    carol_sig_v3 = _sign_registry_payload(carol_sk, carol_kid, v3_payload)
+
+    v3_env = {
+        "kind": "agg/registry/v1",
+        "sig_v": 1,
+        "payload": v3_payload,
+        "signatures": [
+            {"key_id": alice_kid, "alg": "ed25519", "sig": alice_sig_v3},
+            {"key_id": carol_kid, "alg": "ed25519", "sig": carol_sig_v3},
+        ],
+    }
+
+    v3_resp = client.post(
+        f"{base_url}/api/v1/sync/signer/signatures",
+        json={"type": "registry", "envelope": v3_env, "org_id": org_id},
+        headers={"Authorization": f"Bearer {alice_confirmed}"},
+        timeout=15,
+    )
+    if v3_resp.status_code != 200:
+        _fail(
+            f"v3 publish returned {v3_resp.status_code}: "
+            f"{v3_resp.text[:300]}"
+        )
+    _pass("v3 accepted (registry version 3, bob + approver keys)")
+
+    # 2t. GET /api/v1/sync/signer/registry -> 3-version chain
+    chain_resp = client.get(
+        f"{base_url}/api/v1/sync/signer/registry",
+        headers={"Authorization": f"Bearer {alice_confirmed}"},
+        timeout=10,
+    )
+    if chain_resp.status_code != 200:
+        _fail(
+            f"GET /signer/registry returned {chain_resp.status_code}: "
+            f"{chain_resp.text[:200]}"
+        )
+    chain = chain_resp.json()
+    if not isinstance(chain, list) or len(chain) != 3:
+        _fail(f"expected 3-version chain, got {len(chain) if isinstance(chain, list) else type(chain)}")
+    _pass("GET /signer/registry returned 3-version chain")
+
     return {
         "csrf": csrf,
         "project_id": project_id,
@@ -458,6 +988,7 @@ def step2_setup_and_admin(client: httpx.Client, base_url: str, passwords: dict[s
         "bob_user_id": bob_user_id,
         "carol_user_id": carol_user_id,
         "org_slug": org_slug,
+        "registry_version": 3,
     }
 
 
@@ -986,11 +1517,32 @@ def main(argv: list[str] | None = None) -> int:
         else:
             # Try the caddy data path relative to the deploy dir
             caddy_ca = _COMPOSE_DIR / "caddy-data" / "caddy" / "pki" / "authorities" / "local" / "root.crt"
+            local_dir = _COMPOSE_DIR / ".local"
+            caddy_root = local_dir / "caddy-root.crt"
             if caddy_ca.is_file():
                 ca_path = str(caddy_ca)
             else:
-                # Fall back to system default
-                ca_path = True  # type: ignore[assignment]
+                # Extract from the running proxy container (always fresh)
+                local_dir.mkdir(exist_ok=True)
+                try:
+                    _extract = subprocess.run(
+                        ["docker", "compose", "cp",
+                         "proxy:/root-cert/root.crt",
+                         str(caddy_root)],
+                        cwd=str(_COMPOSE_DIR),
+                        capture_output=True, text=True,
+                        timeout=15, check=True,
+                    )
+                    if caddy_root.is_file():
+                        ca_path = str(caddy_root)
+                    else:
+                        ca_path = True  # type: ignore[assignment]
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    # Fall back to existing file or system default
+                    if caddy_root.is_file():
+                        ca_path = str(caddy_root)
+                    else:
+                        ca_path = True  # type: ignore[assignment]
 
     base_url = args.base_url.rstrip("/")
     passwords = _load_demo_passwords()
@@ -1008,7 +1560,7 @@ def main(argv: list[str] | None = None) -> int:
             step1_ready(client, base_url)
 
         if step is None or step == 2:
-            step2_data = step2_setup_and_admin(client, base_url, passwords)
+            step2_data = step2_setup_and_admin(client, base_url, passwords, ca_path=ca_path)
 
         if step is None or step == 3:
             # Step 3 creates its own clients (bob, eve have separate sessions)
