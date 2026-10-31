@@ -49,3 +49,6 @@ benchmarks/.cache/
 # Windows writes these when a process starts without SYSTEMDRIVE in its env
 # (cwd-relative). The spawner is fixed (T11); this is only a backstop.
 /%SystemDrive%/
+
+# ee/deploy local runtime files (CA certs extracted from Docker, etc.)
+ee/deploy/.local/
