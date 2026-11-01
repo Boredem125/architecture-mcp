@@ -2418,3 +2418,165 @@ def test_d5_d4_1_signatures_version_shapes(
         assert alerts == 0, (
             f"no-chain case should not add sync_alerts, got {alerts}"
         )
+
+
+# ===========================================================================
+# T15b-3 (MEDIUM): genesis admin check must be org-scoped and the token's
+# link must be kind='cli' (T15B_SECURITY_REVIEW.md T15b-3; F-2 in
+# T12D_D5_SPEC.md section 6).  Routes only; seeding per section 0 of the
+# d5 spec (users, role_bindings, projects, web_sessions, setup_codes).
+# Strict xfail on M2T15bPending until the signer.py step-3/3b fix lands.
+# ===========================================================================
+
+
+class M2T15bPending(Exception):
+    """T15b-3: genesis accepts a project-scope admin or a browser link."""
+
+
+def _t15b3_registry_versions(owner_url: str, org_id: str) -> int:
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        return conn.execute(
+            "SELECT count(*) FROM key_registry_versions WHERE org_id = %s::uuid",
+            [org_id],
+        ).fetchone()[0]
+
+
+def _t15b3_cli_link_and_token(base: str, conn_owner_url: str, org_id: str,
+                              uid: str) -> tuple[SigningKey, str, str]:
+    """Seed a signer_links row (section 0 seeding), link a fresh CLI key
+    through the route, return (sk, kid, pending token)."""
+    import httpx
+    with psycopg.connect(_conninfo(conn_owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        link_code = _create_signer_link(conn, org_id, uid)
+    sk = SigningKey.generate()
+    kid = _kid(sk)
+    r = httpx.post(f"{base}/api/v1/sync/signer/link", json={
+        "code": link_code, "key_id": kid,
+        "public_key": bytes(sk.verify_key).hex(),
+    }, timeout=10)
+    assert r.status_code == 200, f"link failed: {r.status_code} {r.text}"
+    token = _get_signer_token_httpx(base, sk, kid)
+    assert token is not None, "pending signer token not obtained"
+    return sk, kid, token
+
+
+@pytest.mark.pg
+def test_t15b3_project_scope_admin_refused_at_genesis(genesis_server):
+    """A user whose only admin binding is project-scoped (not org admin),
+    holding a genesis code and a pending CLI link, is refused with the
+    genesis shape (security ruling 1 Nov): 400 ``{"error": "admin_required"}``; no v1 is written."""
+    import httpx
+    base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, "T15b3 ProjAdmin Org")
+    project_id = str(uuid.uuid4())
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        create_project(conn, org_id, project_id, name="T15b3 Project")
+        uid, iss, sub_val = _seed_user_row(conn, org_id, "projadmin@t15b3.test")
+        _grant_role(conn, org_id, uid, "admin",
+                    scope_type="project", scope_id=project_id)
+        genesis_code = _seed_genesis_code(conn, org_id)
+
+    sk, kid, token = _t15b3_cli_link_and_token(base, owner_url, org_id, uid)
+    env = _build_genesis_envelope(sk, org_id, user_id=uid, iss=iss, sub=sub_val)
+    r = httpx.post(
+        f"{base}/api/v1/sync/signer/genesis",
+        json={"genesis_code": genesis_code, "envelope": env},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10,
+    )
+    if r.status_code == 200:
+        raise M2T15bPending(
+            "T15b-3: a project-scope admin created the org registry root"
+        )
+    assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+    assert r.json() == {"error": "admin_required"}, r.text
+    assert _t15b3_registry_versions(owner_url, org_id) == 0, "v1 was written"
+
+
+@pytest.mark.pg
+def test_t15b3_browser_link_refused_at_genesis(genesis_server):
+    """An org admin whose pending link is ``kind='browser'`` (enrolled via
+    the web route) may not seed the genesis admin key (A1.3): the route
+    refuses with ``pending_link_required`` and writes no v1."""
+    import httpx
+    base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, "T15b3 Browser Org")
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        uid, iss, sub_val = _seed_user_row(conn, org_id, "orgadmin-b@t15b3.test")
+        _grant_role(conn, org_id, uid, "admin")  # org scope
+        genesis_code = _seed_genesis_code(conn, org_id)
+
+    # Browser enrollment through the web route (kind=browser)
+    sk = SigningKey.generate()
+    kid = _kid(sk)
+    cookie, csrf = _make_fresh_session(owner_url, org_id, uid)
+    r0 = httpx.post(
+        f"{base}/api/v1/signer-links",
+        cookies={"__Host-agg_session": cookie},
+        headers={"X-CSRF-Token": csrf},
+        json={"kind": "browser", "key_id": kid,
+              "public_key": bytes(sk.verify_key).hex()},
+        timeout=10,
+    )
+    assert r0.status_code in (200, 201), f"browser enroll: {r0.status_code} {r0.text}"
+
+    token = _get_signer_token_httpx(base, sk, kid)
+    if token is None:
+        # The token route already refuses the browser key: genesis is
+        # unreachable with it, which satisfies the property.  Not a
+        # sentinel case; assert nothing was written and stop.
+        assert _t15b3_registry_versions(owner_url, org_id) == 0
+        pytest.fail(
+            "browser-kind key obtained no signer token; the test cannot "
+            "reach the genesis route -- record this path for security"
+        )
+
+    env = _build_genesis_envelope(sk, org_id, user_id=uid, iss=iss, sub=sub_val)
+    r = httpx.post(
+        f"{base}/api/v1/sync/signer/genesis",
+        json={"genesis_code": genesis_code, "envelope": env},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10,
+    )
+    if r.status_code == 200:
+        raise M2T15bPending(
+            "T15b-3: a browser-kind link seeded the genesis admin key"
+        )
+    assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+    assert r.json().get("error") == "pending_link_required", r.text
+    assert _t15b3_registry_versions(owner_url, org_id) == 0, "v1 was written"
+
+
+@pytest.mark.pg
+def test_t15b3_twin_org_scope_admin_cli_link_accepted(genesis_server):
+    """Positive twin (holds today and after the fix): an org-scope admin
+    with a pending CLI link and a genesis code creates v1 (200)."""
+    import httpx
+    base = genesis_server["base_url"]
+    owner_url = genesis_server["owner_url"]
+
+    org_id = _fresh_org(owner_url, "T15b3 Twin Org")
+    with psycopg.connect(_conninfo(owner_url), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        uid, iss, sub_val = _seed_user_row(conn, org_id, "orgadmin@t15b3.test")
+        _grant_role(conn, org_id, uid, "admin", scope_type="org", scope_id=org_id)
+        genesis_code = _seed_genesis_code(conn, org_id)
+
+    sk, kid, token = _t15b3_cli_link_and_token(base, owner_url, org_id, uid)
+    env = _build_genesis_envelope(sk, org_id, user_id=uid, iss=iss, sub=sub_val)
+    r = httpx.post(
+        f"{base}/api/v1/sync/signer/genesis",
+        json={"genesis_code": genesis_code, "envelope": env},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10,
+    )
+    assert r.status_code == 200, f"twin genesis failed: {r.status_code} {r.text}"
+    assert _t15b3_registry_versions(owner_url, org_id) == 1

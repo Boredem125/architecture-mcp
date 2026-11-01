@@ -64,7 +64,6 @@ def enroll(
     code: str,
     expect_fingerprint: str | None,
     *,
-    ca: str | None = None,
     operator: str | None = None,
 ) -> dict[str, Any]:
     """Enroll this connector with the control plane.
@@ -214,8 +213,6 @@ def request_token(
     server: str,
     device_key: SigningKey,
     device_id: str,
-    *,
-    ca: str | None = None,
 ) -> str:
     """Exchange a device assertion for a bearer token.
 

@@ -98,13 +98,15 @@ def _warn_display_safety(fields: dict[str, str]) -> bool:
 @click.option("--server", required=True, help="Control plane URL")
 @click.option("--code", required=True, help="Enrollment code")
 @click.option("--expect-fingerprint", required=True, help="Expected registry fingerprint")
-@click.option("--ca", default=None, help="CA bundle path")
 @click.option("--operator", default=None, help="Expected operator user_id (must match server)")
-def enroll(server: str, code: str, expect_fingerprint: str, ca: str | None, operator: str | None) -> None:
+def enroll(server: str, code: str, expect_fingerprint: str, operator: str | None) -> None:
     """Enroll this connector with the control plane."""
     from sandbox.connector.sync.enroll import enroll as _enroll
 
-    result = _enroll(server, code, expect_fingerprint, ca=ca, operator=operator)
+    # T15b-2 MUST-2: the one-time code never travels over http:// to a
+    # non-loopback host.
+    _check_transport_safety(server)
+    result = _enroll(server, code, expect_fingerprint, operator=operator)
     click.echo(f"Enrolled: device_id={result.get('device_id', '?')}")
     op = result.get("operator_user_id", "")
     if op:
@@ -192,15 +194,19 @@ def _get_signer_token(server: str, sk, kid: str) -> str | None:
         "signatures": [{"key_id": kid, "alg": "ed25519", "sig": sig}],
     }
     url = server.rstrip("/") + "/api/v1/sync/signer/token"
-    body = json.dumps(assertion).encode()
-    headers: dict[str, str] = {"Content-Type": "application/json"}
-    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    # T15b-2: hardened transport (https-except-loopback, no redirect).
+    # Transport refusals propagate as ClickException; any other failure
+    # is "no token" (the caller reports it without the cause text).
     try:
-        resp = urllib.request.urlopen(req, timeout=30)
-        data = json.loads(resp.read())
-        return data.get("token")
-    except Exception:
+        data = _signer_safe_post(url, assertion, None)
+    except click.ClickException:
+        raise
+    except Exception:  # noqa: BLE001
         return None
+    if isinstance(data, dict):
+        tok = data.get("token")
+        return tok if isinstance(tok, str) else None
+    return None
 
 
 def run_once(lay, server: str | None = None) -> dict:
@@ -221,6 +227,10 @@ def run_once(lay, server: str | None = None) -> dict:
     effective_server = server
     if effective_server is None and enroll_data:
         effective_server = enroll_data.get("server_url", "")
+    # T15b-2: refuse http:// to a non-loopback host before any socket
+    # (device token, upload, decisions and registry all carry a Bearer).
+    if effective_server:
+        _check_transport_safety(effective_server)
 
     # 1. Upload pending escalations (POST /api/v1/sync/escalations, scrubbed,
     # idempotent: the server deduplicates by request_id)
@@ -304,30 +314,26 @@ def run_once(lay, server: str | None = None) -> dict:
 def _fetch_escalation(server: str, request_id: str, token: str | None) -> dict | None:
     """GET /api/v1/sync/escalations/{request_id} and return the record."""
     url = server.rstrip("/") + f"/api/v1/sync/escalations/{request_id}"
-    headers: dict[str, str] = {"Accept": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, headers=headers, method="GET")
+    # T15b-2: hardened transport; transport refusals (scheme, redirect)
+    # propagate, a 4xx/5xx or unreachable server reads as "not found".
     try:
-        resp = urllib.request.urlopen(req, timeout=30)
-        data = json.loads(resp.read())
-        if isinstance(data, dict):
-            return data
+        data = _signer_safe_get(url, token)
+    except click.ClickException as exc:
+        if _is_transport_refusal(exc):
+            raise
+        return None
     except Exception:  # noqa: BLE001
-        pass
+        return None
+    if isinstance(data, dict):
+        return data
     return None
 
 
 def _upload_escalation(server: str, rec: dict, token: str | None) -> None:
     """POST /api/v1/sync/escalations (idempotent by request_id)."""
     url = server.rstrip("/") + "/api/v1/sync/escalations"
-    body = json.dumps(rec).encode()
-    headers: dict[str, str] = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
-        urllib.request.urlopen(req, timeout=30)
+        _signer_safe_post(url, rec, token)
     except Exception:  # noqa: BLE001 -- upload is best-effort
         pass
 
@@ -335,13 +341,8 @@ def _upload_escalation(server: str, rec: dict, token: str | None) -> None:
 def _fetch_decisions(server: str, token: str | None) -> list[dict]:
     """GET /api/v1/sync/decisions and return the rows."""
     url = server.rstrip("/") + "/api/v1/sync/decisions"
-    headers: dict[str, str] = {"Accept": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, headers=headers, method="GET")
     try:
-        resp = urllib.request.urlopen(req, timeout=30)
-        data = json.loads(resp.read())
+        data = _signer_safe_get(url, token)
         if isinstance(data, list):
             return data
         if isinstance(data, dict):
@@ -378,14 +379,11 @@ def _refresh_registry_chain(
 
     # Fetch from server
     url = server.rstrip("/") + "/api/v1/sync/registry"
-    headers: dict[str, str] = {"Accept": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, headers=headers, method="GET")
     try:
-        resp = urllib.request.urlopen(req, timeout=30)
-        body = json.loads(resp.read())
+        body = _signer_safe_get(url, token)
     except Exception:  # noqa: BLE001
+        return "fetch_failed"
+    if not isinstance(body, dict):
         return "fetch_failed"
 
     new_chain = body.get("registry")
@@ -540,17 +538,9 @@ def _load_signer_key(lay, vs):
 def _post_approval(server: str, request_id: str, envelope: dict, token: str | None) -> None:
     """POST the signed envelope to /api/v1/sync/escalations/{id}/approvals."""
     url = server.rstrip("/") + f"/api/v1/sync/escalations/{request_id}/approvals"
-    body = json.dumps(envelope).encode()
-    headers: dict[str, str] = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    try:
-        urllib.request.urlopen(req, timeout=30)
-    except urllib.error.HTTPError as exc:
-        raise click.ClickException(
-            f"server returned {exc.code}: {exc.read().decode('utf-8', 'replace')[:200]}"
-        )
+    # T15b-2: hardened transport (https-except-loopback, no redirect,
+    # Authorization as an unredirected header).
+    _signer_safe_post(url, envelope, token)
 
 
 def _display_script_panel(rec: dict) -> None:
@@ -689,6 +679,8 @@ def signer_approve(escalation_id: str, server: str | None, yes: bool) -> None:
     if not effective_server:
         raise click.ClickException("no server URL; pass --server or enroll first")
 
+    # T15b-2: refuse an unsafe transport before any socket
+    _check_transport_safety(effective_server)
     # T12b-2: use a signer token, not a device token
     signer_token = _get_signer_token(effective_server, sk, kid)
     if signer_token is None:
@@ -852,6 +844,8 @@ def signer_deny(escalation_id: str, server: str | None, yes: bool) -> None:
     if not effective_server:
         raise click.ClickException("no server URL; pass --server or enroll first")
 
+    # T15b-2: refuse an unsafe transport before any socket
+    _check_transport_safety(effective_server)
     # T12b-2: use a signer token, not a device token
     signer_token = _get_signer_token(effective_server, sk, kid)
     if signer_token is None:
@@ -1046,6 +1040,13 @@ def _signer_safe_post(url: str, body: dict, token: str | None) -> dict:
         raise click.ClickException(
             f"cannot reach server: {exc.reason}"
         ) from exc
+
+
+def _is_transport_refusal(exc: click.ClickException) -> bool:
+    """True when *exc* is a scheme or redirect refusal from the hardened
+    transport (never a server status or an unreachable host)."""
+    msg = str(exc.message)
+    return msg.startswith(("refusing http://", "unsupported scheme", "redirect"))
 
 
 # ---------------------------------------------------------------------------
@@ -1264,37 +1265,6 @@ def _load_signer_link_key():
         )
 
     return sk, kid, meta
-
-
-# Keep the old non-safe helpers for the approve/deny paths (pre-d3 code)
-def _signer_http_get(url: str, token: str | None) -> dict | list | None:
-    """GET a JSON resource with optional Bearer auth (legacy, pre-F7)."""
-    headers: dict[str, str] = {"Accept": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, headers=headers, method="GET")
-    try:
-        resp = urllib.request.urlopen(req, timeout=30)
-        return json.loads(resp.read())
-    except Exception:
-        return None
-
-
-def _signer_http_post(url: str, body: dict, token: str | None) -> dict:
-    """POST JSON with optional Bearer auth (legacy, pre-F7)."""
-    data = json.dumps(body).encode()
-    headers: dict[str, str] = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    try:
-        resp = urllib.request.urlopen(req, timeout=30)
-        return json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        raise click.ClickException(
-            f"server returned {exc.code}: "
-            f"{exc.read().decode('utf-8', 'replace')[:200]}"
-        )
 
 
 def _get_link_signer_token(

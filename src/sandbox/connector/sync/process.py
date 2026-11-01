@@ -106,6 +106,25 @@ class SyncError(Exception):
     """Raised when a sync cycle encounters a non-recoverable error."""
 
 
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
+
+
+def _check_url_transport(url: str) -> None:
+    """T15b-2: refuse ``http://`` to a non-loopback host and any scheme
+    other than http/https.  Raises :class:`SyncError` (no token text)."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme == "https":
+        return
+    if parsed.scheme == "http":
+        host = (parsed.hostname or "").lower()
+        if host in _LOOPBACK_HOSTS:
+            return
+        raise SyncError(f"refusing http:// to non-loopback host {host}; use https")
+    raise SyncError(f"unsupported scheme: {parsed.scheme}")
+
+
 # ---------------------------------------------------------------------------
 # Default transport (urllib, TLS on, no socket at import time)
 # ---------------------------------------------------------------------------
@@ -124,9 +143,11 @@ def _default_connect(
     import urllib.request
     import urllib.error
 
+    # T15b-2: https only, except loopback; refused before any socket.
+    # The message never carries the token.
+    _check_url_transport(url)
+
     hdrs = dict(headers or {})
-    if token:
-        hdrs["Authorization"] = f"Bearer {token}"
     hdrs.setdefault("Content-Type", "application/json")
 
     data: bytes | None = None
@@ -134,15 +155,31 @@ def _default_connect(
         data = json.dumps(body).encode() if isinstance(body, dict) else body
 
     req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
+    if token:
+        # Unredirected: never forwarded even if a redirect were followed.
+        req.add_unredirected_header("Authorization", f"Bearer {token}")
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+            raise urllib.error.HTTPError(
+                req.full_url, code, "redirect refused", headers, fp,
+            )
+
+    # Own opener: does not depend on whichever global opener is installed.
+    opener = urllib.request.build_opener(_NoRedirect)
     try:
-        with urllib.request.urlopen(req) as resp:
+        with opener.open(req, timeout=30) as resp:
             resp_body = resp.read()
             status = resp.status
             resp_headers = {k: v for k, v in resp.getheaders()}
+            final_url = resp.geturl()
     except urllib.error.HTTPError as exc:
         resp_body = exc.read()
         status = exc.code
         resp_headers = {k: v for k, v in exc.headers.items()}
+        final_url = url
+    if final_url != url:
+        raise SyncError("redirect refused: final URL differs from request URL")
 
     try:
         body_dict = json.loads(resp_body) if resp_body else {}

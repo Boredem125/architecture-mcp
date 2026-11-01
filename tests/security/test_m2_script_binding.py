@@ -2230,3 +2230,264 @@ def test_r3_done_record_carries_exec_argv(tmp_path, monkeypatch):
         f"exec_argv must be a list, got {type(done['exec_argv'])}"
     )
     assert len(done["exec_argv"]) > 0, "exec_argv must not be empty"
+
+
+# ===================================================================
+# T15b-1 (HIGH, Gate): word 0 must be a bare name or an absolute path
+# outside root.  A relative or under-root "interpreter" is a file the
+# agent can author inside the tree; the resolver must return unbound
+# with ``relative_interpreter`` / ``interpreter_under_root``
+# (T15B_SECURITY_REVIEW.md, T15b-1).  Strict xfail on M2T15bPending
+# until the script_pin.py fix lands.
+# ===================================================================
+
+
+class M2T15bPending(Exception):
+    """T15b-1: relative / under-root interpreter in word 0 is still bound."""
+
+
+def _t15b_root(tmp_path):
+    """A plain root dir with deploy.py plus in-tree fake interpreters."""
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "deploy.py").write_text("print('deploy')\n", encoding="utf-8")
+    (root / "tools").mkdir()
+    (root / "tools" / "python").write_text("# fake\n", encoding="utf-8")
+    (root / "tools" / "python.exe").write_text("# fake\n", encoding="utf-8")
+    (root / "python").write_text("# fake\n", encoding="utf-8")
+    (root / ".venv" / "bin").mkdir(parents=True)
+    (root / ".venv" / "bin" / "python").write_text("# fake\n", encoding="utf-8")
+    return root
+
+
+_T15B_RELATIVE_INTERPRETERS = [
+    ("tools/python deploy.py", "Bash", "tools_slash"),
+    ("./python deploy.py", "Bash", "dot_slash"),
+    (".venv/bin/python deploy.py", "Bash", "venv_bin"),
+    ("tools\\python.exe deploy.py", "Bash", "tools_backslash_exe_bash"),
+    ("tools\\python.exe deploy.py", "PowerShell", "tools_backslash_exe_pwsh"),
+]
+
+
+@pytest.mark.parametrize("command,tool_name,label", _T15B_RELATIVE_INTERPRETERS,
+                         ids=[x[2] for x in _T15B_RELATIVE_INTERPRETERS])
+def test_t15b1_relative_interpreter_unbound(tmp_path, command, tool_name, label):
+    """A word 0 that contains a path separator but is not absolute is a
+    file in the tree, never a trusted interpreter: ``unbound`` with
+    reason ``relative_interpreter``."""
+    from sandbox.connector.script_pin import resolve
+
+    root = _t15b_root(tmp_path)
+    res = resolve(command, tool_name, str(root), str(root))
+    if res.binding == "bound":
+        raise M2T15bPending(
+            f"{command!r} ({tool_name}) resolved bound with "
+            f"rel={res.script.get('rel')!r}; word 0 is an in-tree file"
+        )
+    assert res.binding == "unbound", f"expected unbound, got {res.binding!r}"
+    if res.script_unbound != "relative_interpreter":
+        raise M2T15bPending(
+            f"{command!r}: unbound but reason {res.script_unbound!r}, "
+            f"expected 'relative_interpreter'"
+        )
+    assert res.script is None
+
+
+def test_t15b1_absolute_interpreter_under_root_unbound(tmp_path):
+    """An absolute word 0 that resolves under root is still an in-tree
+    file: ``unbound`` with reason ``interpreter_under_root``."""
+    from sandbox.connector.script_pin import resolve
+
+    root = _t15b_root(tmp_path)
+    abs_interp = str((root / "tools" / "python").resolve()).replace("\\", "/")
+    command = f"{abs_interp} deploy.py"
+    res = resolve(command, "Bash", str(root), str(root))
+    if res.binding == "bound":
+        raise M2T15bPending(
+            f"absolute under-root interpreter {abs_interp!r} resolved bound"
+        )
+    assert res.binding == "unbound", f"expected unbound, got {res.binding!r}"
+    if res.script_unbound != "interpreter_under_root":
+        raise M2T15bPending(
+            f"unbound but reason {res.script_unbound!r}, "
+            f"expected 'interpreter_under_root'"
+        )
+    assert res.script is None
+
+
+@pytest.mark.parametrize("command", [
+    "python deploy.py",
+    "/usr/bin/python3 deploy.py",
+], ids=["bare_name", "absolute_outside_root"])
+def test_t15b1_twin_bare_and_absolute_outside_root_stay_bound(tmp_path, command):
+    """Positive twin (holds today and after the fix): a bare interpreter
+    name and an absolute interpreter outside root stay ``bound`` on the
+    operand ``deploy.py``."""
+    from sandbox.connector.script_pin import resolve
+
+    root = _t15b_root(tmp_path)
+    res = resolve(command, "Bash", str(root), str(root))
+    assert res.binding == "bound", (
+        f"{command!r} should stay bound, got {res.binding!r} "
+        f"({res.script_unbound!r})"
+    )
+    assert res.script["rel"] == "deploy.py"
+    assert res.script_unbound == ""
+
+
+def test_t15b1_drive_relative_interpreter_unbound(tmp_path, monkeypatch):
+    """T15b re-review MUST-1: a drive-relative Windows word 0 such as
+    ``E:tools\\python.exe`` is not absolute. With the resolver process cwd
+    outside root it must still be ``unbound`` / ``relative_interpreter``,
+    never ``bound`` (pwsh would run the in-tree file from exec_cwd)."""
+    from sandbox.connector.script_pin import resolve
+
+    root = _t15b_root(tmp_path)
+    (root / "tools").mkdir(exist_ok=True)
+    (root / "tools" / "python.exe").write_bytes(b"MZ")
+    drive = str(root.resolve())[0] if str(root.resolve())[1:2] == ":" else "C"
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+    command = f"{drive}:tools\\python.exe deploy.py"
+    res = resolve(command, "pwsh", str(root), str(root))
+    assert res.binding == "unbound", (
+        f"drive-relative interpreter {command!r} resolved {res.binding!r}"
+    )
+    assert res.script_unbound == "relative_interpreter", res.script_unbound
+    assert res.script is None
+
+
+def test_t15b1_floor_in_tree_interpreter_denied_script_unpinnable(
+    tmp_path, monkeypatch,
+):
+    """Under the enrolled floor the hook must deny ``tools/python deploy.py``
+    with SCRIPT_UNPINNABLE naming ``relative_interpreter``, not escalate
+    it as a bound ``python deploy.py``."""
+    _need_t12c()
+
+    bob, carol = _keygen(), _keygen()
+    ctx = _setup_managed_workspace(
+        tmp_path, monkeypatch,
+        approver_sks=[
+            (bob[0], bob[1], bob[2], "user-bob", "cli"),
+            (carol[0], carol[1], carol[2], "user-carol", "cli"),
+        ],
+    )
+    lay = ctx["lay"]
+    (lay.root / "deploy.py").write_text("print('deploy')\n", encoding="utf-8")
+    (lay.root / "tools").mkdir()
+    (lay.root / "tools" / "python").write_text("# fake\n", encoding="utf-8")
+
+    from sandbox.connector.queue import EscalationQueue
+    monkeypatch.setattr(EscalationQueue, "wait", _async_none)
+    from sandbox.connector.hook_eval import pre_tool_use
+
+    result = asyncio.run(pre_tool_use(
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": "tools/python deploy.py"},
+            "cwd": str(lay.root),
+            "session_id": "sb-t15b1-floor",
+        },
+        lay,
+    ))
+
+    hso = result.get("hookSpecificOutput", {})
+    decision = hso.get("permissionDecision")
+    reason = hso.get("permissionDecisionReason", "")
+    if decision != "deny" or "SCRIPT_UNPINNABLE" not in reason:
+        raise M2T15bPending(
+            f"in-tree interpreter not denied under the floor: "
+            f"decision={decision!r} reason={reason[:160]!r}"
+        )
+    assert "relative_interpreter" in reason, (
+        f"deny reason should name relative_interpreter: {reason!r}"
+    )
+    # Nothing may be pending for it
+    assert not list(lay.pending_dir.glob("*.json")), (
+        "a denied in-tree interpreter command left a pending record"
+    )
+
+
+def test_t15b1_broker_refuses_bound_record_with_relative_interpreter(
+    tmp_path, monkeypatch,
+):
+    """Broker level: a pending record that claims ``bound`` for
+    ``tools/python deploy.py`` (operand pinned, word 0 an in-tree file)
+    must be refused at re-resolve, never executed.  ``tools/python`` is
+    a shell script that writes a marker; the marker must not appear."""
+    _need_t12c()
+    import hashlib as _hashlib
+    import stat as _stat
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
+    lay = _ws(tmp_path / "ws")
+
+    marker = tmp_path / "marker_in_tree_interp.txt"
+    marker_posix = str(marker).replace("\\", "/")
+    deploy = lay.root / "deploy.py"
+    deploy_bytes = b"print('benign operand')\n"
+    deploy.write_bytes(deploy_bytes)
+    tools = lay.root / "tools"
+    tools.mkdir()
+    fake = tools / "python"
+    fake.write_text(
+        f"#!/bin/sh\necho PWNED > '{marker_posix}'\n", encoding="utf-8",
+    )
+    fake.chmod(fake.stat().st_mode | _stat.S_IXUSR | _stat.S_IXGRP | _stat.S_IXOTH)
+
+    preview_text = deploy_bytes.decode("utf-8")
+    rec = {
+        "request_id": "req-t15b1-broker",
+        "command": "tools/python deploy.py",
+        "kind": "command",
+        "tool_name": "Bash",
+        "exec_cwd": str(lay.root),
+        "root": str(lay.root),
+        "requires_dual": False,
+        "bundle_sequence": 0,
+        "fp_v": 2,
+        "script": {
+            "rel": "deploy.py",
+            "sha256": _hashlib.sha256(deploy_bytes).hexdigest(),
+            "size": len(deploy_bytes),
+            "family": "python",
+            "argv": ["tools/python", "deploy.py"],
+            "script_index": 1,
+        },
+        "script_unbound": "",
+        "script_preview": {
+            "text": preview_text,
+            "sha256": _hashlib.sha256(preview_text.encode("utf-8")).hexdigest(),
+            "shown": True,
+            "why": "",
+        },
+    }
+    from sandbox.connector.approval import _binding_fingerprint, approve
+    from sandbox.connector.queue import EscalationQueue
+    rec["fingerprint"] = _binding_fingerprint(rec)
+    EscalationQueue(lay).submit(rec)
+
+    result = asyncio.run(approve(lay, "req-t15b1-broker", "test-reviewer"))
+    if result.get("status") == "awaiting_second":
+        result = asyncio.run(approve(lay, "req-t15b1-broker", "test-reviewer-2"))
+
+    _ran = marker.exists() or "executed" in (
+        result.get("state"), result.get("status"),
+    )
+    if _ran:
+        raise M2T15bPending(
+            f"broker executed an in-tree interpreter from a bound record: "
+            f"marker={marker.exists()} result={result.get('state')!r}/"
+            f"{result.get('status')!r}"
+        )
+    assert not marker.exists(), "in-tree interpreter ran"
+    assert "executed" not in (result.get("state"), result.get("status")), (
+        f"executed: {result}"
+    )
+    done = _done_record(lay, "req-t15b1-broker")
+    assert done is not None, "no done-record for the refusal"
+    assert done.get("state") == "refused", f"done-record not refused: {done}"

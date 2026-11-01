@@ -951,7 +951,7 @@ def build_signer_router(db_url: str, clock: Any = None) -> APIRouter:
                 # Step 7: pass -- consume links and write audit
                 identity_plan = result_or_plan
                 for ak in identity_plan.added:
-                    conn.execute(
+                    cur = conn.execute(
                         "UPDATE signer_links "
                         "SET status = 'consumed' "
                         "WHERE org_id = %s::uuid "
@@ -962,6 +962,47 @@ def build_signer_router(db_url: str, clock: Any = None) -> APIRouter:
                         "AND public_key IS NOT NULL",
                         [org_id, ak.key_id, ak.user_id],
                     )
+                    if cur.rowcount != 1:
+                        # T15b-5: exactly one pending link must be consumed
+                        # per added key; anything else is refused and
+                        # audited like a step-6 refusal.  Fail closed.
+                        ps256 = hashlib.sha256(
+                            json.dumps(
+                                env_payload, sort_keys=True,
+                                separators=(",", ":"),
+                            ).encode()
+                        ).hexdigest()
+                        conn.rollback()
+                        conn.execute(
+                            "SELECT set_config('app.org_id', %s, false)",
+                            [org_id],
+                        )
+                        conn.execute(
+                            "INSERT INTO admin_audit "
+                            "(id, org_id, action, detail) "
+                            "VALUES (%s, %s, "
+                            "'registry_identity_refused', %s)",
+                            [
+                                str(uuid.uuid4()), org_id,
+                                json.dumps({
+                                    "version": env_version,
+                                    "payload_sha256": ps256,
+                                    "reason": "link_consume_rowcount",
+                                    "key_id": ak.key_id,
+                                    "rowcount": cur.rowcount,
+                                    "posted_by": info["user_id"],
+                                }),
+                            ],
+                        )
+                        conn.commit()
+                        return JSONResponse(
+                            {
+                                "error": "identity_unbound",
+                                "reason": "link_consume_rowcount",
+                                "key_id": ak.key_id,
+                            },
+                            status_code=400,
+                        )
 
                 ps256 = hashlib.sha256(
                     json.dumps(
@@ -1197,12 +1238,16 @@ def build_signer_router(db_url: str, clock: Any = None) -> APIRouter:
                     {"error": "invalid_code"}, status_code=400
                 )
 
-            # Step 3: token user must hold org admin role
+            # Step 3: token user must hold the org-scoped admin role
+            # (T15b-3: same three clauses as registry_identity rule 8;
+            # a project-scoped admin binding does not reach genesis).
             admin_row = conn.execute(
                 "SELECT 1 FROM role_bindings "
                 "WHERE org_id = %s::uuid AND user_id = %s::uuid "
-                "AND role = 'admin' LIMIT 1",
-                [org_id, user_id],
+                "AND role = 'admin' "
+                "AND scope_type = 'org' AND scope_id = %s::uuid "
+                "LIMIT 1",
+                [org_id, user_id, org_id],
             ).fetchone()
             if admin_row is None:
                 conn.rollback()
@@ -1210,12 +1255,13 @@ def build_signer_router(db_url: str, clock: Any = None) -> APIRouter:
                     {"error": "admin_required"}, status_code=400
                 )
 
-            # Step 3b: token's key must be that user's pending link
+            # Step 3b: token's key must be that user's pending CLI link
+            # (T15b-3 / A1.3: a browser-kind link may not seed genesis).
             link_row = conn.execute(
                 "SELECT key_id, public_key FROM signer_links "
                 "WHERE org_id = %s::uuid AND user_id = %s::uuid "
                 "AND key_id = %s AND public_key IS NOT NULL "
-                "AND status = 'pending' LIMIT 1",
+                "AND status = 'pending' AND kind = 'cli' LIMIT 1",
                 [org_id, user_id, key_id],
             ).fetchone()
             if link_row is None:

@@ -112,8 +112,9 @@ def _base_name(word: str) -> str:
 
 def _is_abs_path(word: str) -> bool:
     """True if the word looks like an absolute path."""
-    if len(word) >= 2 and word[1] == ':' and word[0].isalpha():
-        return True  # Windows: C:\...
+    if (len(word) >= 3 and word[0].isalpha() and word[1] == ':'
+            and word[2] in ('\\', '/')):
+        return True  # Windows: C:\... (drive-relative C:tools\x is not absolute)
     if word.startswith('/'):
         return True  # POSIX
     return False
@@ -426,6 +427,27 @@ def resolve(
         return ScriptResolution(binding="none")
 
     interp_family, _ = interp
+
+    # T15b-1: word 0 is a trusted interpreter only as a bare base name
+    # (resolved via PATH) or an absolute path outside root.  A relative
+    # path with a separator is a file in the tree the agent can author;
+    # an absolute path under root is the same thing spelled out.
+    if "/" in cmd_word or "\\" in cmd_word:
+        if not _is_abs_path(cmd_word):
+            return ScriptResolution(
+                binding="unbound", script_unbound="relative_interpreter",
+            )
+        try:
+            _interp_resolved = Path(cmd_word).resolve()
+            _root_resolved = Path(root).resolve()
+        except (OSError, ValueError):
+            return ScriptResolution(
+                binding="unbound", script_unbound="interpreter_under_root",
+            )
+        if _interp_resolved == _root_resolved or _root_resolved in _interp_resolved.parents:
+            return ScriptResolution(
+                binding="unbound", script_unbound="interpreter_under_root",
+            )
 
     # Deferred interpreters are unbound
     if interp_family == "deferred":

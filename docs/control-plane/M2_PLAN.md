@@ -33,7 +33,7 @@ Status: Revised (21 Oct 2026, lead-architect) after `REVIEW_M2.md`. Security: AP
 
 ### D1. Enrollment and connector auth (ADR 0001 section 1)
 1. **Code:** an admin issues a code **to a named operator user** for one project. Only that operator sees it, in a fresh session (`max_age` 15 min). It is single use, valid 15 min, at least 128 bits, stored as a SHA-256 hash and rate-limited. The operator is the device's excluded requester (D6.4).
-2. **Enroll:** `sandbox enroll --server URL --code X --expect-fingerprint FP [--ca FILE]` generates an Ed25519 device key in the key home (D1.6). It sends the public key with a proof of possession: the device signs `{code_hash, public_key, aud, iat}` with tag `agg/device-enroll/v1`. The code is consumed by an atomic `UPDATE ... WHERE used_at IS NULL RETURNING`.
+2. **Enroll:** `sandbox enroll --server URL --code X --expect-fingerprint FP` (`--ca` removed 1 Nov 2026: named limit C-L1 in `docs/control-plane/T15B_SECURITY_REVIEW.md`; TLS is verified against the OS trust store or `SSL_CERT_FILE`; CA pinning is M3) generates an Ed25519 device key in the key home (D1.6). It sends the public key with a proof of possession: the device signs `{code_hash, public_key, aud, iat}` with tag `agg/device-enroll/v1`. The code is consumed by an atomic `UPDATE ... WHERE used_at IS NULL RETURNING`.
 3. **Fingerprint out of band (S2):** the admin's CLI signer computes and prints the registry root fingerprint locally (D5.2). The operator gets it from the admin out of band. `sandbox enroll` refuses to run without `--expect-fingerprint`, and with no TTY there is no interactive accept. A mismatch aborts and writes nothing.
 4. **Token exchange:** the device signs `{device_id, aud, iat, nonce}` (`agg/device-assert/v1`). The server accepts `iat` within 2 min and a nonce unique per `(device_id, nonce)`. It returns an opaque 256-bit token, valid 10 min, stored as a hash.
 5. **Revocation:** a revoked device gets 401 on its next call (revocation is checked on every call). The connector alerts `device_revoked` and keeps enforcing its last valid bundle.
@@ -90,7 +90,7 @@ Status: Revised (21 Oct 2026, lead-architect) after `REVIEW_M2.md`. Security: AP
 
 ### D7. Protocol (`connector/sync/`, MIT; routes under `/api/v1/sync` in `agg_cp`)
 1. **Envelope:** `{kind, sig_v: 1, payload, signatures[{key_id, alg: "ed25519", sig}]}`. The signed bytes are `tag || 0x00 || canonical JSON(payload)`. The tag and field set come from `kind` in code (SEC-24 rule). `key_id` = SHA-256 of the raw public key.
-2. **Routes:** `POST enroll`, `POST token`, `GET registry?after=`, `GET bundle?after=` (204 if none), `POST escalations`, `GET decisions?cursor=`, `POST audit`, and the signer routes `link`, `pending` and `signatures`. HTTPS only. `--ca` pins a private CA.
+2. **Routes:** `POST enroll`, `POST token`, `GET registry?after=`, `GET bundle?after=` (204 if none), `POST escalations`, `GET decisions?cursor=`, `POST audit`, and the signer routes `link`, `pending` and `signatures`. HTTPS only. No CA pinning in M2 (C-L1, `T15B_SECURITY_REVIEW.md`); the OS trust store or `SSL_CERT_FILE` applies.
 3. **`sandbox sync`** is one process and the only network user. It polls decisions every 10 s and the registry and bundles every 60 s. Offline, it backs off exponentially with jitter, capped at 5 min. The hook path is unchanged, and a socket guard proves that `pre_tool_use` opens no socket.
 4. An unenrolled workspace with no `managed` marker behaves exactly as today.
 
