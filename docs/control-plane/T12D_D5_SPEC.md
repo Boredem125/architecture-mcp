@@ -215,3 +215,122 @@ There is **no pending browser-key enrollment table**: `browser_keys.py:79-90` wr
 3. The pins P1-P10 and D2-1..D2-10 pass. Root (`.venv\Scripts\python -m pytest -q -p no:logging`) and `ee/tests` (pg) suites are green, and every pre-existing test edited for A1.1 is listed by node id with security's sign-off.
 4. Semgrep (p/python, p/secrets) gives 0 ERROR on the changed files, and the `sync_cmds.py` logger warning is gone. gitleaks and trivy are clean. CI is green. Security's leader review is APPROVE.
 5. G-L4 is removed from `docs/control-plane/HANDOFF.md` (line 73 today) in the d5 commit; G-L5 stays in ADR 0011. F-3 has a lead-architect ruling recorded before the M2 security sign-off.
+
+## 8. Rulings 31 Oct (build round 1)
+
+Author: security-engineer (leader tier). Read-only on code and tests; this section is the only edit.
+
+**(1) B4a: ruling (a).** `other_org` means "a live signed approver key in another org": 0013 (F7) narrowed `check_key_id_cross_org` to other orgs' live `approver_keys`, an unverified link must never block, and 5.6 keeps the function. (b) would duplicate B1a under a misleading name and leave `other_org` untested. Signed-off edit, `ee/tests/test_m2_t12d_identity.py::test_b4_key_linked_in_other_org` (lines ~818-824): replace the `people_b` dict and the `_route_cli_link(srv, org_b, dave_uid)` call with
+```
+people_b = {"alice": {"uid": dave_uid, "iss": dave_iss, "sub": dave_sub}}
+ctx_b = _genesis(srv, org_b, people_b)   # dave is org B's genesis admin; K_d is live in org B
+sk_d, kid_d = ctx_b["alice_sk"], ctx_b["alice_kid"]
+```
+Nothing else changes (dave already holds the org-B admin binding `_genesis` needs). Optional: `_snap(srv, org_b, [kid_d])` before and after, asserted equal.
+
+**(2) R3: yes.** 0.2 R3 now reads: "`signer_links` status rows for the offending kid are identical before and after (a refusal never consumes; a link consumed by an earlier accepted version stays consumed)". Signed-off edit, `::_assert_refused` lines ~401-403:
+```
+# R3: link status rows unchanged (a refusal never consumes)
+assert sorted(snap_after["link_status"].get(kid, [])) == sorted(snap_before["link_status"].get(kid, []))
+```
+`sorted` because `_snap`'s query has no ORDER BY (B10 has two rows). Not weaker for B1-B4/B10: `snap_before` is taken after the route link, so the rows are `pending` before, and a refusal that consumed would differ and fail. B1a/B2a (never linked) were vacuous before and stay vacuous.
+
+**(3) `ee/tests/test_m2_t12b_e2e.py`: APPROVE both node ids.** `::test_e2e_remote_approval_path`: admin1, admin2, bob, carol and alice-approver come from `_e2e_route_cli_link` (seeded session -> `/api/v1/signer-links` -> `/sync/signer/link`, both asserted 200); bob/carol iss/sub read from `users`; genesis code via `setup_codes` (allowed seeding); no assertion removed or relaxed. `::test_d4_e2e_step2_genesis_v2_v3_through_routes`: the 403 negative keeps its assertion on a separate link; bob's v3 key comes from `_e2e_route_browser_enroll`, which posts `kind:"browser"` to `/api/v1/signer-links` -> `signer.py:427` -> `link_browser_key` -> row `kind='browser'`, 201. One condition: `_e2e_route_browser_enroll` asserts `in (200, 201)`; make it `== 201` (the route returns 201; 0.1 says 201). The `test_m2_t12d_genesis.py` and `test_m2_t12d_signer_cli.py` diffs are xfail-marker removals on d5 tests (D2-2..D2-6, D2-8), not A1.1 edits.
+
+**(4) Conformance (5.1-5.4, 5.6).**
+MUST (blocks d5):
+- M1 `ee/src/agg_cp/sync/signer.py` step 4a (`cur_bs = env_payload.get("bundle_signer") or {}`): `verify_chain` (`src/sandbox/protocol/registry.py:322`) accepts a non-dict `bundle_signer`, so a string reaches `.get` -> AttributeError -> 500 `str(exc)` and no refusal row. Spec: "must be a dict" -> `bundle_signer_mismatch` refusal with audit. Fix: `if not isinstance(cur_bs, dict): cur_bs = {}`.
+- M2 `ee/src/agg_cp/web/browser_keys.py:71` `if session_row is not None:` skips the freshness check when the row is missing; the CLI path (`signer.py:442`) returns 401 `session_not_found`. Match it, and use `_LINK_CODE_MAX_AGE` instead of the literal 900.
+
+SHOULD (leader review):
+- S1 `signer.py` step 7 store failure returns `{"error":"envelope_rejected"}`; before d5 the shape was `{"error": str(exc)}` via `except RegistryError`. Acceptable; record the change.
+- S2 `ee/src/agg_cp/sync/registry_identity.py:141,175` `entry["user_id"]` raises KeyError (500) on a carried entry without `user_id`; use `.get("user_id", "")`.
+- S3 `registry_identity.py:120-127` the `::uuid` cast on `entry["user_id"]` is reached only after rule 5 matched a link's user_id (always a uuid); safe, note it in the module docstring.
+
+Conformant: order lock -> version -> chain -> pre-verify -> 4a -> A1.1 -> refusal (rollback, session `set_config`, audit, commit) -> consume -> audit -> `store_registry_version`; `_REGISTRY_LOCK_KEY` shared with genesis; bodies and audit rows carry key ids, user ids, roles, kind and sha256 only (no public_key, iss, sub, tokens, codes); `/candidates` query equals 5.3 with `kind` from `sl.kind`; migration 0016 ids `000000000010` / `00000000000f` correct and the backfill expression equals `browser_keys.py:88-90` (lowercase uuid text, UTF-8, lowercase hex); D4-4 label logic equals 5.5; `_load_bundle_signer_key` never raises, so 4a's `None` branch is the only failure path.
+
+**(5) D2-3: switch to `sign-registry`.** `signer link` never calls `_get_link_signer_token` (`sync_cmds.py`: only `signer_genesis` ~1429 and `signer_sign_registry` ~1575 do). `sign-registry` calls it right after `_load_signer_link_key` and `_check_transport_safety`, before any registry fetch, so the test's two-route mock (`/signer/link`, `/signer/token`) is enough and the key home from `_make_key_home` is already what sign-registry loads. Signed-off edit, `tests/security/test_m2_t12d_signer_cli.py::test_d5_link_token_failure_reason_class` (CliRunner at ~4567): replace the argv with
+```
+["signer", "sign-registry", "--out", str(tmp_path / "v2.json"), "--yes",
+ "--server", "http://localhost:9000"]
+```
+and drop the `/signer/link` route and its comment (the `_signreg_tracker` routes are not needed: the token call fails first). Add `assert not (tmp_path / "v2.json").exists()`. Nothing else changes; the strict xfail stays until green. Not `genesis`: it needs a code and a genesis route mock, more surface for no gain.
+
+**(6) `_get_link_signer_token` (sync_cmds.py ~1300-1360): APPROVE.** Classification is on the `__cause__` type set by `_signer_safe_post` (`HTTPError` -> `HTTP <code>`, 3xx -> `redirect refused`; `URLError` -> `transport refused`), `_check_transport_safety` -> `transport refused`, raw `OSError`/`TimeoutError` -> `unreachable`, JSON/shape -> `bad response`; the cause-less branch matches only our own `_safe_urlopen` message, never server text. Response bodies and exception text never reach the return value, the log (`"signer auth request failed: %s", reason`, D2-4) or the `ClickException`. Callers print `failed to obtain signer token (<class>)`. Spec 5.5 conformant. **D4-6 bound (~1845-1868): APPROVE.** One unconditional check `threshold <= |{user_id of keys in new_admins}|`, old `max(len(new_keys)+1, 2)` gone; it also applies to a carried threshold, which is correct (a drop that leaves one admin user cannot keep threshold 2). **`registry_chain._audit_refusal`: APPROVE.** Best effort, never raises, return values unchanged; `REGISTRY_VERIFY_FAILED`, `REGISTRY_ROLLBACK` (both rollback branches), `REGISTRY_SAME_VERSION_DIFFERENT_BYTES`, with `offered_version`, `floor`, `ts`. Note for the review: offered_version for a verify failure is read from the unverified envelope, which is intended (it names what was offered).
+
+## 9. Leader review 1 Nov (d5)
+
+Author: security-engineer (leader tier). Exit check 4. Scope: the whole uncommitted diff on top of `cd0bab3` (`git diff` plus the untracked `ee/src/agg_cp/sync/registry_identity.py` and `ee/src/agg_cp/migrations/versions/0016_signer_links_kind.py`). Code read-only; this section and nothing else was written (no ADR edit, see 9.2).
+
+### 9.1 Verdict: CHANGES, one MUST (LOW severity, 3 lines, fix text pre-approved)
+
+- **M3** `src/sandbox/connector/sync/registry_chain.py::apply_registry_chain`, the `except (RegistryError, EnvelopeError)` branch (lines ~124-131). `offered = new_chain[-1].get("payload", {}).get("version", 0)` runs on the **unverified** chain. A last envelope with a wrong `kind` and a non-dict `payload` (for example `{"kind": "x", "payload": null}`) makes `verify_chain` raise `RegistryError` at the D0-4 kind check before it touches the payload, and the new line then raises `AttributeError` out of `apply_registry_chain`. At HEAD this input returned `refused:verify_failed`; in the diff the CLI `sync` tracebacks and `process.py::run_once` falls into its generic `except Exception` and skips the rest of that cycle. That breaks spec 5.5 ("return values and decisions do not change") on hostile server input, in the OSS connector. Nothing is written, so enforcement stays fail closed; severity LOW. **Fix (approved as written, no further leader round):**
+  ```python
+  offered = 0
+  last = new_chain[-1]
+  if isinstance(last, dict):
+      p = last.get("payload")
+      if isinstance(p, dict):
+          offered = p.get("version", 0)
+  _audit_refusal(layout, "REGISTRY_VERIFY_FAILED", offered, floor)
+  ```
+  A qa twin next to D2-5 (`tests/security/test_m2_t12d_signer_cli.py`: chain `[v1, {"kind": "x", "payload": None}]` -> `refused:verify_failed`, one `REGISTRY_VERIFY_FAILED` event with `offered_version == 0`) is welcome but not required for the commit. After M3: rerun `tests/security/test_m2_t12d_signer_cli.py` and the root suite; then this review is APPROVE.
+
+SHOULD (may ride with M3 without a new round; otherwise T15b):
+- **S4** `ee/src/agg_cp/sync/signer.py` step 4a: `offered_kid = cur_bs.get("key_id", "")` is written into `admin_audit.detail` unnormalised. `verify_chain` validates `bundle_signer.key_id` only when `public_key` is non-empty, so a dict `{"key_id": <any JSON value>}` passes pre-verify and lands in the audit row as is. Add `if not isinstance(offered_kid, str): offered_kid = ""` (and optionally `offered_kid[:64]`). Bounded by the request size; LOW.
+- **S5** step 7 consume `UPDATE` does not check `rowcount == 1` per added key. Under the lock the only way to get 0 rows is an operator `DELETE` on `signer_links` between rule 2 and step 7; refusing on `rowcount != 1` would make the link-consumption invariant explicit. T15b.
+- **S6** `registry_identity.py` docstring: the S3 note from ruling (4) is not in the module; add one line at rule 6 ("`::uuid` is safe only because rule 5 already matched `link_user_id`, a DB uuid").
+
+### 9.2 Ruling (4) follow-ups: M1, M2, S2 confirmed; S1, S3 recorded; ADR 0011 unchanged
+
+- **M1 fixed** (`signer.py` step 4a): `if not isinstance(cur_bs, dict): cur_bs = {}`, so a non-dict `bundle_signer` is `bundle_signer_mismatch` with a refusal row. Note: `verify_chain` (`registry.py:321`) guards `latest_bs` with `isinstance(dict)`, so a string reaches 4a and the M1 branch is the live path.
+- **M2 fixed** (`browser_keys.py:66-82`): `session_row is None` -> 401 `session_not_found`, then `age > _LINK_CODE_MAX_AGE` -> 403 `session_too_old` (lazy import of the constant to avoid the import cycle). Same order as the CLI path (`signer.py:438-450`): CSRF 403, body 400, then 401, then 403, then the cross-org 409. `validate_session` already ran, so the 401 is defence in depth.
+- **S2 fixed**: `.get("user_id", "")` at rules 8 and 10 and in the Plan. Both S2 and S3 are in fact unreachable after R-1: `verify_chain` calls `_validate_key_entries` on every version (`registry.py:168, 236`) and requires `user_id` to be a non-empty `str` for every entry, so `entry["user_id"]` cannot `KeyError` after step 4. Keep the `.get`s as defence in depth.
+- **S1 (recorded)**: a `store_registry_version` failure at step 7 now returns 400 `{"error": "envelope_rejected"}`; before d5 the same failure returned `{"error": str(exc)}` through `except RegistryError`. Narrower body; accepted. The step 4 pre-verify keeps the old `str(exc)` shape (R-1): those messages carry key ids, user ids and `expected_kid`, never `public_key`, `iss`, `sub`, tokens or codes.
+- **S3 (recorded)**: `registry_identity.py` rule 6 casts `entry["user_id"]::uuid`. It is safe only because rule 5 (`entry.get("user_id") != link_user_id`) runs first and `link_user_id` is `signer_links.user_id::text`, always a uuid. Reordering rules 5 and 6 would turn a non-uuid `user_id` into a psycopg `DataError` (500, no leak beyond the caller's own string). See S6.
+- **F-3 rule 8 wording**: no ADR edit. ADR 0011 A1.1 rule 8 already states the pin position (after pre-verify, before rules 1-7), both bodies, "nothing stored", the audit row only on mismatch, "exact strings" (which makes a non-dict or partial `bundle_signer` a mismatch, so M1 needs no new sentence), the rotation order and the G-L1 placement; the R-5 note is in rule 7. The build matches it line for line.
+
+### 9.3 A1.4 static gate: holds
+
+`ee/tests/test_m2_t12d_identity.py`: no `store_registry_version` call or import (the only occurrences are the gate's own strings at 2076-2088 and the docstring at line 7). Every reference to `key_registry_versions`, `approver_keys` and `signer_links` (lines 350, 358, 366, 1709, 1734, 1890, 2008) is a `SELECT`. The only DML in the file is `UPDATE users SET status='disabled'` (770, 1807), allowed seeding under section 0. The file's own AST gate `::test_a1_4_no_store_registry_version_or_raw_writes` passes in the 45. Limit noted: the text gate matches DML and table name on one line only; the manual grep above covers the multi-line case for this commit.
+
+### 9.4 Pre-existing tests edited for A1.1: signed off by node id
+
+| Node id | Edit | Sign-off |
+|---|---|---|
+| `ee/tests/test_m2_t12b_e2e.py::test_e2e_remote_approval_path` | admin1, admin2, bob, carol, alice-approver from `_e2e_route_cli_link` (session -> `/api/v1/signer-links` 200 -> `/sync/signer/link` 200); bob/carol iss/sub read from `users`; no assertion removed | APPROVE (ruling 3) |
+| `ee/tests/test_m2_t12b_e2e.py::test_d4_e2e_step2_genesis_v2_v3_through_routes` | the 403 negative keeps its own link; bob's v3 key from `_e2e_route_browser_enroll`, asserted `== 201` | APPROVE (ruling 3 condition met) |
+| helpers `_e2e_route_cli_link`, `_e2e_route_browser_enroll` | `verify=False` on httpx against the plain-http test server | APPROVE, test code only; never in product or `demo.py` |
+| `ee/tests/test_m2_t12d_identity.py::_assert_refused` | R3 compares the link-status rows before and after | APPROVE (ruling 2) |
+| `ee/tests/test_m2_t12d_identity.py::test_b4_key_linked_in_other_org` | real genesis in org B; K_d live there | APPROVE (ruling 1) |
+| `tests/security/test_m2_t12d_signer_cli.py::test_d5_link_token_failure_reason_class` | `signer sign-registry --out v2.json --yes --server ...`; `/signer/link` route dropped; `v2.json` must not exist | APPROVE (ruling 5) |
+| `ee/tests/m2_sync_server.py::make_sync_server` | `extra_env` (`None` pops the variable) | APPROVE; harness only, default env unchanged |
+| `ee/tests/test_m2_t12d_identity.py::test_b12c_bundle_signer_not_configured` | second uvicorn via `_second_server` with `AGG_BUNDLE_SIGNER_KEY_FILE` unset; genesis on the shared server; marker removed | APPROVE; a true route test, no product change |
+| `ee/tests/test_m2_t12d_identity.py::test_b12_twin_rotation_after_server_key_change` | second server on the new key; v3 adds `ver_count`, `ak_rows`, `rv_count` unchanged and `refused_count + 1` | APPROVE; strictly more asserted |
+
+Marker-only removals (`test_m2_t12d_genesis.py::test_d5_d4_4_unreadable_label`, D2-2..D2-6 in the CLI file) are not A1.1 edits. No frozen-manifest file is touched.
+
+### 9.5 Threat focus
+
+- **TOCTOU, pre-verify vs A1.1.** The chain cannot move between step 3 and `store_registry_version`: every writer of `key_registry_versions` holds `pg_advisory_xact_lock(hashtext('agg-genesis:' || org))` (genesis route, the d5 branch; `store_signer_signatures`' registry arm is unreachable for a non-empty registry envelope and can only raise), and `UNIQUE (org_id, version)` (0007:154) backs the lock. The enrollment tables are not locked, by design: rules 1-10 and the consume `UPDATE` run in one READ COMMITTED transaction and the `UPDATE` re-asserts `status='pending' AND user_id=<matched>`, so a concurrent link of the same key by another user can neither be consumed on the victim's behalf nor change who the key binds to (R-5 would have refused it had it been visible). Residual window: a user disabled or demoted between rule 6/8 and commit is accepted into vN; bounded by one transaction and visible as adjacent `admin_audit` rows. Accepted. Two concurrent v2 posts serialise; the loser pre-verifies against `[v1, v2]` and gets 400 (C3 passes).
+- **Refusal path.** `conn.rollback()` ends the transaction (lock released, transaction-local `app.org_id` gone); `SET ROLE agg_app` is session-scoped and survives; `set_config(..., false)` is session-scoped but `conn` is a per-request `psycopg.connect` closed in `finally`, so nothing leaks to another request. The audit row commits in its own transaction; nothing of the version is stored (R1-R5 hold in every B test). If that `INSERT` itself failed the route would return 500 with the exception text and the refusal would be unaudited: LOW, same as the `second_genesis` precedent.
+- **Leaks.** Bodies: `identity_unbound {reason, key_id}`, `bundle_signer_mismatch`, `bundle_signer_not_configured`, `invalid_version`, `no_chain`, `envelope_rejected`, and the pre-existing step-4 `str(exc)`. Audit rows: `version`, `payload_sha256`, `reason`, `key_id`, `posted_by`, `added[{key_id,user_id,roles,kind}]`, `promoted`, `removed`. No `public_key`, `iss`, `sub`, token or link code anywhere, and the d5 server diff adds no log call. CLI: the debug log is `"signer auth request failed: %s", reason` (D2-4 test), the `ClickException` carries only the reason class. `migrate.py` prints only `event`/`reason` or the public key material.
+- **Migration 0016.** Ids `000000000010` / `00000000000f` correct. Column added `NOT NULL DEFAULT 'cli'`, CHECK added before the backfill (both values satisfy it), backfill `encode(sha256(convert_to('browser-' || key_id || '-' || id::text,'UTF8')),'hex')` equals `browser_keys.py:88-90` (`f"browser-{key_id}-{link_id}"`, lowercase uuid4 text, UTF-8, lowercase hex); `key_id IS NOT NULL` excludes code-flow rows, whose `code_hash` is the sha256 of a 128-bit random code and cannot collide. Downgrade drops the constraint then the column; a later re-upgrade recovers the browser rows from the placeholder hash, so no fact is lost. Grants are table-level (0007); `signer_link_consume` does not touch `kind`.
+- **`/candidates`.** `kind` from `sl.kind`; filters `public_key IS NOT NULL AND used_at IS NOT NULL AND status='pending' AND u.status='active' AND u.org_id = sl.org_id`; confirmed token and org admin unchanged (C1, C2 pass).
+- **`browser_keys` 401/403 order**: see M2 above; correct.
+- **D4-6 bound**: one unconditional `threshold <= |{user_id : key in new_admins, user_id truthy}|`; an empty admin set yields 0 and refuses any threshold; applies to a carried threshold too. APPROVE (ruling 6 stands).
+- **`_get_link_signer_token` reason classes**: classification on `__cause__` type (`HTTPError` 3xx -> `redirect refused`, else `HTTP <code>`; `URLError` -> `transport refused`; raw `OSError`/`TimeoutError` -> `unreachable`; JSON/shape -> `bad response`; `_check_transport_safety` -> `transport refused`); the cause-less branch matches only our own `_safe_urlopen` message. No server text reaches the return value, the log or the exception. APPROVE (ruling 6 stands).
+- **Semgrep WARNINGs** `tests/security/test_m2_t12d_signer_cli.py:112` and `:989` (`os.chmod(signer_dir, 0o700)`, insecure-file-permissions): false positives (owner-only mode), present at HEAD; CI gates Semgrep at ERROR. **Leave them, no `# nosemgrep`**: an annotation would silence future real findings on those lines for no gain.
+
+### 9.6 Scanners (this review, 1 Nov)
+
+Semgrep p/python + p/secrets on `signer.py`, `registry_identity.py`, `browser_keys.py`, `migrate.py`, `0016_signer_links_kind.py`, `sync_cmds.py`, `registry_chain.py`, `m2_sync_server.py`: 0 ERROR, 0 WARNING (the two WARNINGs above are in the CLI test file; the old `sync_cmds.py:1323` WARNING is gone). gitleaks `protect` on the uncommitted diff and `detect --no-git` on the two untracked files: no leaks. trivy `fs --scanners secret,misconfig`: nothing in the diff; two pre-existing items outside it, `ee/deploy/keycloak/Dockerfile` DS-0026 LOW (no HEALTHCHECK) and a Stripe-pattern hit in the gitignored `demo/__pycache__/call_demo.cpython-312.pyc` (the constant-folded fake key from `demo/call_demo.py:44`, allowlisted in source by `trivy-secret.yaml`; not in the repo, CI scans a clean checkout). No dependency file changes, so the trivy vuln result equals HEAD.
+
+### 9.7 G-L4 (ADR 0011 A1.5)
+
+Condition: "G-L4 closes when d5 is committed with the A1.4 tests green and security's leader review APPROVE." Status: the A1.4 tests are green (identity file 45 passed, 0 xfail/xpass; ee 888 passed; root 2370 passed); this review becomes APPROVE when M3 is applied and the signer-cli file and root suite rerun green. **Met pending the M3 fix and the d5 commit** (remove the G-L4 line from HANDOFF in that commit; G-L5 stays in ADR 0011). Until then no demo, pitch or doc may claim "two humans".
+
+### 9.8 Close-out (1 Nov, orchestrator, after the review)
+
+M3 applied as written (`registry_chain.py::apply_registry_chain`, the verify-failed branch now guards `isinstance(last, dict)` and `isinstance(p, dict)`). S4 applied (`signer.py` step 4a: a non-str `offered_kid` becomes `""`, then `[:64]`). S6 applied (S3 note at rule 6 in `registry_identity.py`). S5 goes to T15b. Reruns after the fixes: `tests/security/test_m2_t12d_signer_cli.py` 85 passed, 1 skipped; root 2370 passed, 7 skipped, 1 xfailed; `ee/tests/test_m2_t12d_identity.py` + `test_m2_t7_signer.py` + `test_m2_t12d_genesis.py` 152 passed, 0 failed. Per 9.1 the review is therefore APPROVE; G-L4 closes with this commit.
+

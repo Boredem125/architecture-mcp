@@ -86,6 +86,17 @@ def identity_server(pg_url, app_url, owner_url, pg_roles,
     )
 
 
+def _second_server(pg_url, app_url, owner_url, key_file):
+    """Generator: a separate server whose AGG_BUNDLE_SIGNER_KEY_FILE is
+    ``key_file`` (None = unset). Caller does ``srv2 = next(gen)`` and
+    ``gen.close()`` in ``finally``."""
+    return make_sync_server(
+        pg_url, app_url, owner_url,
+        org_names=["Identity Tmp"],
+        extra_env={"AGG_BUNDLE_SIGNER_KEY_FILE": key_file},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -397,10 +408,8 @@ def _assert_refused(r, reason_class, kid, snap_before, snap_after):
     assert snap_after["ver_count"] == snap_before["ver_count"]
     assert snap_after["ver_max"] == snap_before["ver_max"]
     assert snap_after["ak_rows"] == snap_before["ak_rows"]
-    # R3: link status unchanged (pending)
-    if kid in snap_after["link_status"]:
-        for s in snap_after["link_status"][kid]:
-            assert s == "pending", f"link status for {kid} is {s!r}, expected 'pending'"
+    # R3: link status rows unchanged (a refusal never consumes)
+    assert sorted(snap_after["link_status"].get(kid, [])) == sorted(snap_before["link_status"].get(kid, []))
     # R4: exactly one new refused row
     assert snap_after["refused_count"] == snap_before["refused_count"] + 1
     # R5: registry_version count unchanged
@@ -512,8 +521,6 @@ def _base_V3B(srv):
 # ===========================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B1a identity binding not built")
 def test_b1_probe_b_unlinked_key_invented_user(identity_server):
     """B1a: v2 adds an unlinked key with an invented user_id -> R unknown_key."""
     srv = identity_server
@@ -543,8 +550,6 @@ def test_b1_probe_b_unlinked_key_invented_user(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B1b identity binding not built")
 def test_b1b_own_linked_key_invented_user(identity_server):
     """B1b: alice's linked key K_x with invented ids -> R user_mismatch."""
     srv = identity_server
@@ -574,8 +579,6 @@ def test_b1b_own_linked_key_invented_user(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B1+ twin A asserts consumption and audit")
 def test_b1_twin_carol_route_linked(identity_server):
     """B1+ twin: carol's route-linked key with carol's exact ids -> A."""
     srv = identity_server
@@ -615,8 +618,6 @@ def test_b1_twin_carol_route_linked(identity_server):
 # ===========================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B2a identity binding not built")
 def test_b2_carol_ids_unlinked_key(identity_server):
     """B2a: unlinked K_x with carol's user_id/iss/sub -> R unknown_key."""
     srv = identity_server
@@ -644,8 +645,6 @@ def test_b2_carol_ids_unlinked_key(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B2b identity binding not built")
 def test_b2b_alice_linked_key_carol_ids(identity_server):
     """B2b: alice's linked K_x labelled with carol's ids -> R user_mismatch."""
     srv = identity_server
@@ -677,8 +676,6 @@ def test_b2b_alice_linked_key_carol_ids(identity_server):
 # ===========================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B3a identity binding not built")
 def test_b3_carol_key_bob_user_id(identity_server):
     """B3a: carol's key labelled with bob's user_id/iss/sub -> R user_mismatch."""
     srv = identity_server
@@ -706,8 +703,6 @@ def test_b3_carol_key_bob_user_id(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B3b identity binding not built")
 def test_b3b_carol_key_forged_iss_sub(identity_server):
     """B3b: carol's key with carol's user_id but forged iss/sub -> R identity_mismatch."""
     srv = identity_server
@@ -734,8 +729,6 @@ def test_b3b_carol_key_forged_iss_sub(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B3c identity binding not built")
 def test_b3c_user_id_case_variant(identity_server):
     """B3c: carol's key with user_id = upper case -> R user_mismatch."""
     srv = identity_server
@@ -762,8 +755,6 @@ def test_b3c_user_id_case_variant(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B3d identity binding not built")
 def test_b3d_inactive_user(identity_server):
     """B3d: carol links, then disabled; v2 adds K_c honestly -> R user_mismatch."""
     srv = identity_server
@@ -801,8 +792,6 @@ def test_b3d_inactive_user(identity_server):
 # ===========================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B4a identity binding not built")
 def test_b4_key_linked_in_other_org(identity_server):
     """B4a: dave_B links in org B; alice's v2 in org A adds that key -> R other_org."""
     srv = identity_server
@@ -818,10 +807,9 @@ def test_b4_key_linked_in_other_org(identity_server):
         _grant_role(conn, org_b, dave_uid, "admin")
 
     # Genesis in org B
-    people_b = {"dave": {"uid": dave_uid, "iss": dave_iss, "sub": dave_sub}}
-
-    # dave links in org B
-    sk_d, kid_d = _route_cli_link(srv, org_b, dave_uid)
+    people_b = {"alice": {"uid": dave_uid, "iss": dave_iss, "sub": dave_sub}}
+    ctx_b = _genesis(srv, org_b, people_b)   # dave is org B's genesis admin; K_d is live in org B
+    sk_d, kid_d = ctx_b["alice_sk"], ctx_b["alice_kid"]
 
     # alice's v2 in org A adds K_d
     e_d = _entry(sk_d, dave_uid, dave_iss, dave_sub,
@@ -842,8 +830,6 @@ def test_b4_key_linked_in_other_org(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B4b identity binding not built")
 def test_b4b_other_org_user_on_own_org_link(identity_server):
     """B4b: K_c from carol's org-A link, labelled with dave_B's ids -> R user_mismatch."""
     srv = identity_server
@@ -914,8 +900,6 @@ def test_b4c_other_org_token(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B4+ twin A asserts consumption and audit")
 def test_b4_twin_same_org_user(identity_server):
     """B4+ twin: dave (org A) route-links; v2 adds it, approver -> A."""
     srv = identity_server
@@ -948,8 +932,6 @@ def test_b4_twin_same_org_user(identity_server):
 # ===========================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B5a identity binding not built")
 def test_b5_new_admin_key_no_binding(identity_server):
     """B5a: bob route-linked, added as admin, no admin role binding -> R not_admin."""
     srv = identity_server
@@ -979,8 +961,6 @@ def test_b5_new_admin_key_no_binding(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B5b identity binding not built")
 def test_b5b_promotion_no_binding(identity_server):
     """B5b: V3B bob promoted to admin without binding -> R not_admin."""
     srv = identity_server
@@ -1015,8 +995,6 @@ def test_b5b_promotion_no_binding(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B5c identity binding not built")
 def test_b5c_project_scope_admin_only(identity_server):
     """B5c: bob has project-scope admin, not org-scope -> R not_admin."""
     srv = identity_server
@@ -1055,8 +1033,6 @@ def test_b5c_project_scope_admin_only(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B5d identity binding not built")
 def test_b5d_admin_role_not_in_admins(identity_server):
     """B5d: bob added with roles=["admin"] but not in admins list -> R not_admin."""
     srv = identity_server
@@ -1087,8 +1063,6 @@ def test_b5d_admin_role_not_in_admins(identity_server):
 # B5 twins
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B5+a twin A asserts consumption and audit")
 def test_b5_twin_org_admin_binding(identity_server):
     """B5+a: grant bob admin first, then B5a's v3 -> A."""
     srv = identity_server
@@ -1122,8 +1096,6 @@ def test_b5_twin_org_admin_binding(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B5+b twin A asserts promotion audit")
 def test_b5b_twin_promotion_with_binding(identity_server):
     """B5+b: grant bob admin, then promote -> A with detail.promoted."""
     srv = identity_server
@@ -1161,8 +1133,6 @@ def test_b5b_twin_promotion_with_binding(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B5+c twin approver needs no binding")
 def test_b5_twin_approver_needs_no_binding(identity_server):
     """B5+c: bob as approver (no admin binding needed) -> A."""
     srv = identity_server
@@ -1206,8 +1176,6 @@ def _grant_role_direct(srv, org_id, user_id, role):
 # ===========================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B6a identity binding not built")
 def test_b6_carried_user_id_changed(identity_server):
     """B6a: v4 replaces bob's user_id with dave's -> R identity_changed."""
     srv = identity_server
@@ -1241,8 +1209,6 @@ def test_b6_carried_user_id_changed(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B6b identity binding not built")
 def test_b6b_carried_iss_sub_changed(identity_server):
     """B6b: v4 changes bob's sub -> R identity_changed."""
     srv = identity_server
@@ -1272,8 +1238,6 @@ def test_b6b_carried_iss_sub_changed(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B6c identity binding not built")
 def test_b6c_carried_kind_changed(identity_server):
     """B6c: v4 changes bob's kind cli -> browser -> R identity_changed."""
     srv = identity_server
@@ -1343,8 +1307,6 @@ def test_b6d_carried_public_key_changed_upstream(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B6+ twin A with added==[]")
 def test_b6_twin_carried_unchanged(identity_server):
     """B6+ twin: v4 only changes expires_at -> A with added==[]."""
     srv = identity_server
@@ -1373,8 +1335,6 @@ def test_b6_twin_carried_unchanged(identity_server):
 # ===========================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B7a identity binding not built")
 def test_b7_consumed_link_readd(identity_server):
     """B7a: v4 drops K_b (200); v5 re-adds same K_b -> R unknown_key."""
     srv = identity_server
@@ -1415,8 +1375,6 @@ def test_b7_consumed_link_readd(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B7b identity binding not built")
 def test_b7b_removed_key_readd_other_user(identity_server):
     """B7b: v4 drops K_b; v5 re-adds K_b with dave's ids -> R unknown_key."""
     srv = identity_server
@@ -1457,8 +1415,6 @@ def test_b7b_removed_key_readd_other_user(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B7+ twin A asserts fresh link consumption")
 def test_b7_twin_fresh_link_readd(identity_server):
     """B7+ twin: v4 drops K_b; bob re-links K_b2; v5 adds K_b2 -> A."""
     srv = identity_server
@@ -1545,8 +1501,6 @@ def test_b8_two_own_keys_threshold2(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B8b counts_for_dual assertion needs A blocks")
 def test_b8b_two_own_keys_threshold1_not_dual(identity_server):
     """B8b: two alice keys thr 1 -> A; add dave, erin -> A;
     counts_for_dual False for K_d, K_e, K_a2."""
@@ -1613,8 +1567,6 @@ def test_b8b_two_own_keys_threshold1_not_dual(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B8+ twin counts_for_dual True for both")
 def test_b8_twin_two_people_dual(identity_server):
     """B8+ twin: V2C; dave, erin route-link; v3 adds both signed K_a1+K_c -> A;
     counts_for_dual True for both, False for K_c."""
@@ -1663,8 +1615,6 @@ def test_b8_twin_two_people_dual(identity_server):
 # ===========================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B10 identity binding not built")
 def test_b10_key_linked_by_two_users(identity_server):
     """B10: carol links K_c; bob uses his own code with K_c's pub key;
     v2 adds K_c with carol's ids -> R unknown_key (ruling R-5)."""
@@ -1713,8 +1663,6 @@ def test_b10_key_linked_by_two_users(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B11 browser enroll stale session")
 def test_b11_browser_enroll_stale_session(identity_server):
     """B11: stale session (> 15 min) -> 403 session_too_old; no signer_links row."""
     srv = identity_server
@@ -1765,8 +1713,6 @@ def test_b11_browser_enroll_stale_session(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B11+ twin kind=browser assertion")
 def test_b11_twin_fresh_browser_enroll(identity_server):
     """B11+ twin: fresh browser enroll -> 201; kind=browser, status=pending."""
     srv = identity_server
@@ -1810,8 +1756,6 @@ def test_b11_twin_fresh_browser_enroll(identity_server):
 # ===========================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: C1 candidates kind field")
 def test_candidates_lists_browser_and_cli_kind(identity_server):
     """C1: bob browser-enrolls, carol CLI-links; /candidates shows kind."""
     import httpx
@@ -1847,8 +1791,6 @@ def test_candidates_lists_browser_and_cli_kind(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: C2 candidates exclusion")
 def test_candidates_excludes_consumed_and_inactive(identity_server):
     """C2: V2C; dave links then disabled; erin links. Candidates = erin only."""
     import httpx
@@ -1890,8 +1832,6 @@ def test_candidates_excludes_consumed_and_inactive(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: C3 concurrent v2")
 def test_concurrent_v2_one_wins(identity_server):
     """C3: two concurrent v2 posts; exactly one wins."""
     import httpx
@@ -1973,8 +1913,6 @@ def test_concurrent_v2_one_wins(identity_server):
 # ===========================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: E1 frozen step 2 route-linked keys")
 def test_e2e_frozen_step2_route_linked_keys(identity_server):
     """E1: full frozen step 2 with route-linked keys."""
     import httpx
@@ -2091,8 +2029,6 @@ def test_e2e_frozen_step2_route_linked_keys(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: E2 probe B refused then honest v2")
 def test_e2e_probe_b_refused_at_v2(identity_server):
     """E2: B1a's v2 -> R unknown_key; then honest v2 (B1+) -> A."""
     srv = identity_server
@@ -2203,8 +2139,6 @@ def test_a1_4_no_store_registry_version_or_raw_writes():
 # ===========================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B12a bundle_signer_mismatch not built")
 def test_b12a_bundle_signer_rotated_to_admin_key(identity_server):
     """B12a: G; v2 swaps bundle_signer to a fresh test key -> 400
     bundle_signer_mismatch; R items 1,2,5 hold; one new refusal row."""
@@ -2265,8 +2199,6 @@ def test_b12a_bundle_signer_rotated_to_admin_key(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B12b bundle_signer_mismatch threshold 2")
 def test_b12b_bundle_signer_swap_threshold_2(identity_server):
     """B12b: V2C; v3 swaps bundle_signer; signed K_a1+K_c -> same refusal."""
     srv = identity_server
@@ -2326,9 +2258,8 @@ def test_b12b_bundle_signer_swap_threshold_2(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B12c bundle_signer_not_configured")
-def test_b12c_bundle_signer_not_configured(identity_server, monkeypatch):
+def test_b12c_bundle_signer_not_configured(identity_server, pg_url, app_url,
+                                           owner_url):
     """B12c: G; AGG_BUNDLE_SIGNER_KEY_FILE unset -> 400
     bundle_signer_not_configured; R 1,2,5 hold; no new refusal row."""
     srv = identity_server
@@ -2339,15 +2270,17 @@ def test_b12c_bundle_signer_not_configured(identity_server, monkeypatch):
     env = _next(ctx, threshold=1, signers=[ctx["alice_sk"]])
     _local_ok(ctx, env)
 
-    snap_before = _snap(srv, org_id, [])
-    token = _get_signer_token_httpx(
-        srv["base_url"], ctx["alice_sk"], ctx["alice_kid"])
-
-    # Unset the bundle signer key file for this request
-    monkeypatch.delenv("AGG_BUNDLE_SIGNER_KEY_FILE", raising=False)
-
-    r = _post(srv, token, org_id, env)
-    snap_after = _snap(srv, org_id, [])
+    # Second server process with the bundle signer key file unset
+    gen = _second_server(pg_url, app_url, owner_url, None)
+    srv2 = next(gen)
+    try:
+        token = _get_signer_token_httpx(
+            srv2["base_url"], ctx["alice_sk"], ctx["alice_kid"])
+        snap_before = _snap(srv2, org_id, [])
+        r = _post(srv2, token, org_id, env)
+        snap_after = _snap(srv2, org_id, [])
+    finally:
+        gen.close()
 
     if r.status_code == 200:
         raise M2T12dIdentityPending(
@@ -2364,8 +2297,6 @@ def test_b12c_bundle_signer_not_configured(identity_server, monkeypatch):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B12 twin bundle_signer carried -> A")
 def test_b12_twin_bundle_signer_carried(identity_server):
     """B12 twin: G; v2 with bundle_signer unchanged -> accepted."""
     srv = identity_server
@@ -2390,12 +2321,11 @@ def test_b12_twin_bundle_signer_carried(identity_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dIdentityPending,
-                    reason="d5: B12 twin rotation after server key change")
-def test_b12_twin_rotation_after_server_key_change(identity_server, tmp_path):
-    """B12 twin: G; monkeypatch server key; v2 carrying new key -> accepted;
+def test_b12_twin_rotation_after_server_key_change(identity_server, tmp_path,
+                                                   pg_url, app_url,
+                                                   owner_url):
+    """B12 twin: G; second server with a new key; v2 carrying new key -> accepted;
     v3 carrying old key -> 400 bundle_signer_mismatch."""
-    import os as _os
     srv = identity_server
     ctx = _base_G(srv)
     org_id = ctx["org_id"]
@@ -2434,15 +2364,15 @@ def test_b12_twin_rotation_after_server_key_change(identity_server, tmp_path):
     }
     _local_ok(ctx, env_v2)
 
-    # Switch server to new key
-    old_key_file = _os.environ.get("AGG_BUNDLE_SIGNER_KEY_FILE")
-    _os.environ["AGG_BUNDLE_SIGNER_KEY_FILE"] = str(new_key_file)
+    # Second server process configured with the new key
+    gen = _second_server(pg_url, app_url, owner_url, str(new_key_file))
+    srv2 = next(gen)
     try:
-        snap_before = _snap(srv, org_id, [])
+        snap_before = _snap(srv2, org_id, [])
         token = _get_signer_token_httpx(
-            srv["base_url"], ctx["alice_sk"], ctx["alice_kid"])
-        r_v2 = _post(srv, token, org_id, env_v2)
-        snap_after = _snap(srv, org_id, [])
+            srv2["base_url"], ctx["alice_sk"], ctx["alice_kid"])
+        r_v2 = _post(srv2, token, org_id, env_v2)
+        snap_after = _snap(srv2, org_id, [])
 
         if r_v2.status_code != 200:
             raise M2T12dIdentityPending(
@@ -2470,9 +2400,9 @@ def test_b12_twin_rotation_after_server_key_change(identity_server, tmp_path):
         }
         _local_ok(ctx, env_v3)
 
-        snap_before_v3 = _snap(srv, org_id, [])
-        r_v3 = _post(srv, token, org_id, env_v3)
-        snap_after_v3 = _snap(srv, org_id, [])
+        snap_before_v3 = _snap(srv2, org_id, [])
+        r_v3 = _post(srv2, token, org_id, env_v3)
+        snap_after_v3 = _snap(srv2, org_id, [])
 
         if r_v3.status_code == 200:
             raise M2T12dIdentityPending(
@@ -2481,8 +2411,10 @@ def test_b12_twin_rotation_after_server_key_change(identity_server, tmp_path):
         assert r_v3.status_code == 400
         body = r_v3.json()
         assert body.get("error") == "bundle_signer_mismatch"
+        assert snap_after_v3["ver_count"] == snap_before_v3["ver_count"]
+        assert snap_after_v3["ak_rows"] == snap_before_v3["ak_rows"]
+        assert snap_after_v3["rv_count"] == snap_before_v3["rv_count"]
+        assert (snap_after_v3["refused_count"]
+                == snap_before_v3["refused_count"] + 1)
     finally:
-        if old_key_file is not None:
-            _os.environ["AGG_BUNDLE_SIGNER_KEY_FILE"] = old_key_file
-        else:
-            _os.environ.pop("AGG_BUNDLE_SIGNER_KEY_FILE", None)
+        gen.close()

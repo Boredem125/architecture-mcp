@@ -106,6 +106,61 @@ def _make_fresh_session(owner_url: str, org_id: str, user_id: str):
     return cookie, csrf
 
 
+def _e2e_route_cli_link(srv, org_id, user_id):
+    """Route-linked CLI key: web session -> /signer-links -> /signer/link.
+
+    Returns (sk, kid).  A1.1: every registry key must come from a route link.
+    """
+    import httpx
+    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, user_id)
+    r = httpx.post(
+        f"{srv['base_url']}/api/v1/signer-links",
+        cookies={"__Host-agg_session": cookie},
+        headers={"X-CSRF-Token": csrf},
+        json={},
+        timeout=10,
+        verify=False,
+    )
+    assert r.status_code == 200, (
+        f"signer-links failed: {r.status_code} {r.text}"
+    )
+    code = r.json()["code"]
+
+    sk = SigningKey.generate()
+    kid = hashlib.sha256(bytes(sk.verify_key)).hexdigest()
+    r2 = httpx.post(f"{srv['base_url']}/api/v1/sync/signer/link", json={
+        "code": code, "key_id": kid,
+        "public_key": bytes(sk.verify_key).hex(),
+    }, timeout=10, verify=False)
+    assert r2.status_code == 200, f"link failed: {r2.status_code} {r2.text}"
+    return sk, kid
+
+
+def _e2e_route_browser_enroll(srv, org_id, user_id):
+    """Route-enrolled browser key: web session -> /signer-links kind=browser.
+
+    Returns (sk, kid).  A1.1: browser keys must come from this route.
+    """
+    import httpx
+    sk = SigningKey.generate()
+    kid = hashlib.sha256(bytes(sk.verify_key)).hexdigest()
+    pub_hex = bytes(sk.verify_key).hex()
+
+    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, user_id)
+    r = httpx.post(
+        f"{srv['base_url']}/api/v1/signer-links",
+        cookies={"__Host-agg_session": cookie},
+        headers={"X-CSRF-Token": csrf},
+        json={"kind": "browser", "key_id": kid, "public_key": pub_hex},
+        timeout=10,
+        verify=False,
+    )
+    assert r.status_code == 201, (
+        f"browser enroll failed: {r.status_code} {r.text}"
+    )
+    return sk, kid
+
+
 def _issue_code_ready(conn, org_id: str, project_id: str,
                       operator_user_id: str) -> tuple[str, str, str]:
     """Seed an enrollment code that the operator has already read.
@@ -359,16 +414,12 @@ def test_e2e_remote_approval_path(e2e_server, tmp_path, monkeypatch):
     bob_id = srv["bob_id"]
     carol_id = srv["carol_id"]
 
-    # --- Key material ---
-    admin1 = keygen()
-    admin2 = keygen()
+    # --- Key material (A1.1: all keys route-linked) ---
+    import httpx
     bundle_signer_sk = srv["bundle_signer_sk"]
     bundle_signer_pub = srv["bundle_signer_pub"]
     bundle_signer = (bundle_signer_sk, bundle_signer_pub,
                      hashlib.sha256(bundle_signer_pub).hexdigest())
-    bob_sk, bob_pub, bob_kid = keygen()
-    carol_sk, carol_pub, carol_kid = keygen()
-    alice_sk, alice_pub, alice_kid = keygen()
 
     # Create the project on the server
     project_id = str(uuid.uuid4())
@@ -381,22 +432,13 @@ def test_e2e_remote_approval_path(e2e_server, tmp_path, monkeypatch):
     # Frozen step 2: single-key genesis via POST /signer/genesis, then v2
     # (admin2 only, threshold 2) and v3 (approver keys) via /signatures.
     # No direct store_registry_version calls.
-    import httpx
-    admin1_sk, admin1_pub, admin1_kid = admin1
 
-    # Step A: link admin1 as alice's CLI key, get a pending_link signer token
+    # Step A: link admin1 as alice's CLI key via route, get pending_link token
+    admin1_sk, admin1_kid = _e2e_route_cli_link(srv, org_id, alice_id)
+    admin1_pub = bytes(admin1_sk.verify_key)
     with psycopg.connect(_conninfo(srv["owner_url"]), autocommit=True) as conn:
         conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
-        link_code = _d4_create_signer_link(conn, org_id, alice_id)
         genesis_code = _d4_seed_genesis_code(conn, org_id)
-    r_link = httpx.post(f"{srv['base_url']}/api/v1/sync/signer/link", json={
-        "code": link_code,
-        "key_id": admin1_kid,
-        "public_key": admin1_pub.hex(),
-    }, timeout=10)
-    assert r_link.status_code == 200, (
-        f"link failed: {r_link.status_code} {r_link.text}"
-    )
     admin1_token = _d4_get_signer_token(srv["base_url"], admin1_sk, admin1_kid)
 
     # Step B: build and POST single-key genesis (alice/admin1 only)
@@ -447,7 +489,9 @@ def test_e2e_remote_approval_path(e2e_server, tmp_path, monkeypatch):
 
     # Step C: v2 adds admin2 only (real user), threshold 2, signed by
     # admin1 and admin2.  admin2 is a real seeded users row.
-    admin2_sk, admin2_pub, admin2_kid = admin2
+    # A1.1: admin2 key comes from route link
+    admin2_sk, admin2_kid = _e2e_route_cli_link(srv, org_id, admin2_id)
+    admin2_pub = bytes(admin2_sk.verify_key)
     v2_prev_hash = hashlib.sha256(
         org_id.encode("utf-8") + b":" + g_canonical
     ).hexdigest()
@@ -492,6 +536,20 @@ def test_e2e_remote_approval_path(e2e_server, tmp_path, monkeypatch):
     )
 
     # Step D: v3 adds bob, carol and alice-approver, signed by both admins
+    # A1.1: all v3 keys from route links in each user's session
+    bob_sk, bob_kid = _e2e_route_cli_link(srv, org_id, bob_id)
+    bob_pub = bytes(bob_sk.verify_key)
+    carol_sk, carol_kid = _e2e_route_cli_link(srv, org_id, carol_id)
+    carol_pub = bytes(carol_sk.verify_key)
+    alice_sk, alice_kid = _e2e_route_cli_link(srv, org_id, alice_id)
+    alice_pub = bytes(alice_sk.verify_key)
+
+    # Look up real iss/sub for each user
+    with psycopg.connect(_conninfo(srv["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        bob_iss, bob_sub = _d4_user_oidc(conn, bob_id)
+        carol_iss, carol_sub = _d4_user_oidc(conn, carol_id)
+
     v3_prev_hash = hashlib.sha256(
         org_id.encode("utf-8") + b":" + v2_canonical
     ).hexdigest()
@@ -499,11 +557,11 @@ def test_e2e_remote_approval_path(e2e_server, tmp_path, monkeypatch):
     v3_keys = v2_keys + [
         {"key_id": bob_kid, "public_key": bob_pub.hex(),
          "kind": "cli", "alg": "ed25519", "user_id": bob_id,
-         "iss": "https://idp.test", "sub": bob_id,
+         "iss": bob_iss, "sub": bob_sub,
          "roles": ["approver"], "added_in": 3},
         {"key_id": carol_kid, "public_key": carol_pub.hex(),
          "kind": "cli", "alg": "ed25519", "user_id": carol_id,
-         "iss": "https://idp.test", "sub": carol_id,
+         "iss": carol_iss, "sub": carol_sub,
          "roles": ["approver"], "added_in": 3},
         {"key_id": alice_kid, "public_key": alice_pub.hex(),
          "kind": "cli", "alg": "ed25519", "user_id": alice_id,
@@ -1358,7 +1416,8 @@ def test_d4_e2e_step2_genesis_v2_v3_through_routes(d4_e2e_server, tmp_path):
     )
 
     # ---- Step 2 negative: pending_link post without own key -> 403 ----
-    bob_sk, bob_kid, bob_token = _d4_link_and_token(
+    # Use a separate CLI link just for this negative test
+    _neg_sk, _neg_kid, _neg_token = _d4_link_and_token(
         base, owner_url, org_id, bob_id,
     )
     fake_env = {
@@ -1370,7 +1429,7 @@ def test_d4_e2e_step2_genesis_v2_v3_through_routes(d4_e2e_server, tmp_path):
     r_neg = httpx.post(
         f"{base}/api/v1/sync/signer/signatures",
         json={"type": "registry", "envelope": fake_env, "org_id": org_id},
-        headers={"Authorization": f"Bearer {bob_token}"},
+        headers={"Authorization": f"Bearer {_neg_token}"},
         timeout=10,
     )
     assert r_neg.status_code == 403, (
@@ -1379,6 +1438,10 @@ def test_d4_e2e_step2_genesis_v2_v3_through_routes(d4_e2e_server, tmp_path):
     )
 
     # ---- v3: add bob browser key, signed by alice and carol (admins) ----
+    # A1.1: bob's key from browser enrollment (kind=browser)
+    bob_sk, bob_kid = _e2e_route_browser_enroll(
+        {"base_url": base, "owner_url": owner_url}, org_id, bob_id,
+    )
     v2_canonical = json.dumps(v2_payload, sort_keys=True,
                               separators=(",", ":")).encode()
     v3_prev = hashlib.sha256(

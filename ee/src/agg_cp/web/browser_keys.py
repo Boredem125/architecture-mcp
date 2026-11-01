@@ -62,6 +62,25 @@ def link_browser_key(
             status_code=400,
         )
 
+    # Stale session check (B11): browser enrollment needs a fresh session
+    # (created_at within 15 min, same check as the CLI path signer.py:436-446)
+    session_row = conn.execute(
+        "SELECT created_at FROM web_sessions WHERE id = %s",
+        [session_id],
+    ).fetchone()
+    if session_row is None:
+        return JSONResponse(
+            {"error": "session_not_found"}, status_code=401,
+        )
+    # Lazy import: signer.py imports this module, so a top-level import
+    # would be circular.
+    from ..sync.signer import _LINK_CODE_MAX_AGE
+    age = (clock.now() - session_row[0]).total_seconds()
+    if age > _LINK_CODE_MAX_AGE:
+        return JSONResponse(
+            {"error": "session_too_old"}, status_code=403,
+        )
+
     # F7(b): cross-org check -- refuse if key_id is already a live
     # approver key in another org (uses SECURITY DEFINER function).
     cross_org = conn.execute(
@@ -84,9 +103,9 @@ def link_browser_key(
     conn.execute(
         "INSERT INTO signer_links "
         "(id, org_id, user_id, code_hash, key_id, public_key, "
-        "expires_at, used_at, status, created_at) "
+        "expires_at, used_at, status, kind, created_at) "
         "VALUES (%s, %s::uuid, %s::uuid, %s, %s, %s, "
-        "now() + interval '15 minutes', now(), 'pending', now())",
+        "now() + interval '15 minutes', now(), 'pending', 'browser', now())",
         [link_id, str(org_id), str(user_id), code_hash,
          key_id, public_key],
     )

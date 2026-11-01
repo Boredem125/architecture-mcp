@@ -38,6 +38,7 @@ from ..sync.registry import store_registry_version
 # -- Constants -------------------------------------------------------------
 
 SIGNER_TOKEN_MAX_AGE: int = 600  # 10 minutes
+_REGISTRY_LOCK_KEY: str = "agg-genesis:"  # + org_id; shared by genesis and /signatures
 
 
 # -- Exceptions ------------------------------------------------------------
@@ -789,6 +790,238 @@ def build_signer_router(db_url: str, clock: Any = None) -> APIRouter:
                         status_code=409,
                     )
 
+                # --- d5: identity binding for registry v >= 2 ---
+                org_id = info["org_id"]
+
+                # Step 1: advisory lock (same key as genesis)
+                conn.execute(
+                    "SELECT set_config('app.org_id', %s, true)",
+                    [org_id],
+                )
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                    [f"{_REGISTRY_LOCK_KEY}{org_id}"],
+                )
+
+                # Step 2: version must be int (not bool), >= 2
+                if (isinstance(env_version, bool)
+                        or not isinstance(env_version, int)
+                        or env_version < 2):
+                    conn.rollback()
+                    return JSONResponse(
+                        {"error": "invalid_version"}, status_code=400
+                    )
+
+                # Step 3: load stored chain
+                existing_rows = conn.execute(
+                    "SELECT registry_blob "
+                    "FROM key_registry_versions "
+                    "WHERE org_id = %s::uuid ORDER BY version",
+                    [org_id],
+                ).fetchall()
+                if not existing_rows:
+                    conn.rollback()
+                    return JSONResponse(
+                        {"error": "no_chain"}, status_code=400
+                    )
+
+                stored_chain = [
+                    json.loads(bytes(r[0])) for r in existing_rows
+                ]
+
+                # Step 4: pre-verify
+                from sandbox.protocol.registry import verify_chain
+                genesis_payload = stored_chain[0]["payload"]
+                from ..sync.registry import _payload_hash
+                fp = _payload_hash(genesis_payload)
+                try:
+                    verify_chain(stored_chain + [envelope], fp)
+                except Exception as exc:
+                    conn.rollback()
+                    return JSONResponse(
+                        {"error": str(exc)}, status_code=400
+                    )
+
+                # Step 4a: bundle signer pin (F-3, A1.1 rule 8)
+                from ..sync.bundles import _load_bundle_signer_key
+                server_bs = _load_bundle_signer_key()
+                if server_bs is None:
+                    conn.rollback()
+                    return JSONResponse(
+                        {"error": "bundle_signer_not_configured"},
+                        status_code=400,
+                    )
+                server_pub_hex = bytes(server_bs.verify_key).hex()
+                server_pub_kid = hashlib.sha256(
+                    bytes(server_bs.verify_key)
+                ).hexdigest()
+                cur_bs = env_payload.get("bundle_signer")
+                if not isinstance(cur_bs, dict):
+                    # M1: a non-dict bundle_signer is a mismatch, never a 500
+                    cur_bs = {}
+                offered_kid = cur_bs.get("key_id", "")
+                if not isinstance(offered_kid, str):
+                    # S4: only a str key id reaches the audit row
+                    offered_kid = ""
+                offered_kid = offered_kid[:64]
+                if (cur_bs.get("public_key") != server_pub_hex
+                        or offered_kid != server_pub_kid):
+                    # Write refusal audit
+                    ps256 = hashlib.sha256(
+                        json.dumps(
+                            env_payload, sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode()
+                    ).hexdigest()
+                    conn.rollback()
+                    conn.execute(
+                        "SELECT set_config('app.org_id', %s, false)",
+                        [org_id],
+                    )
+                    conn.execute(
+                        "INSERT INTO admin_audit "
+                        "(id, org_id, action, detail) "
+                        "VALUES (%s, %s, "
+                        "'registry_identity_refused', %s)",
+                        [
+                            str(uuid.uuid4()), org_id,
+                            json.dumps({
+                                "version": env_version,
+                                "payload_sha256": ps256,
+                                "reason": "bundle_signer_mismatch",
+                                "key_id": offered_kid,
+                                "posted_by": info["user_id"],
+                            }),
+                        ],
+                    )
+                    conn.commit()
+                    return JSONResponse(
+                        {"error": "bundle_signer_mismatch"},
+                        status_code=400,
+                    )
+
+                # Step 5: A1.1 identity rules
+                from ..sync.registry_identity import (
+                    check_registry_identity, Refusal as _Refusal,
+                )
+                prev_payload = stored_chain[-1]["payload"]
+                result_or_plan = check_registry_identity(
+                    conn, org_id, prev_payload, env_payload,
+                )
+
+                if isinstance(result_or_plan, _Refusal):
+                    # Step 6: refusal
+                    ps256 = hashlib.sha256(
+                        json.dumps(
+                            env_payload, sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode()
+                    ).hexdigest()
+                    conn.rollback()
+                    conn.execute(
+                        "SELECT set_config('app.org_id', %s, false)",
+                        [org_id],
+                    )
+                    conn.execute(
+                        "INSERT INTO admin_audit "
+                        "(id, org_id, action, detail) "
+                        "VALUES (%s, %s, "
+                        "'registry_identity_refused', %s)",
+                        [
+                            str(uuid.uuid4()), org_id,
+                            json.dumps({
+                                "version": env_version,
+                                "payload_sha256": ps256,
+                                "reason": result_or_plan.reason,
+                                "key_id": result_or_plan.key_id,
+                                "posted_by": info["user_id"],
+                            }),
+                        ],
+                    )
+                    conn.commit()
+                    return JSONResponse(
+                        {
+                            "error": "identity_unbound",
+                            "reason": result_or_plan.reason,
+                            "key_id": result_or_plan.key_id,
+                        },
+                        status_code=400,
+                    )
+
+                # Step 7: pass -- consume links and write audit
+                identity_plan = result_or_plan
+                for ak in identity_plan.added:
+                    conn.execute(
+                        "UPDATE signer_links "
+                        "SET status = 'consumed' "
+                        "WHERE org_id = %s::uuid "
+                        "AND key_id = %s "
+                        "AND user_id = %s::uuid "
+                        "AND status = 'pending' "
+                        "AND used_at IS NOT NULL "
+                        "AND public_key IS NOT NULL",
+                        [org_id, ak.key_id, ak.user_id],
+                    )
+
+                ps256 = hashlib.sha256(
+                    json.dumps(
+                        env_payload, sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode()
+                ).hexdigest()
+                added_detail = sorted(
+                    [
+                        {
+                            "key_id": ak.key_id,
+                            "user_id": ak.user_id,
+                            "roles": ak.roles,
+                            "kind": ak.kind,
+                        }
+                        for ak in identity_plan.added
+                    ],
+                    key=lambda x: x["key_id"],
+                )
+                promoted_detail = sorted(
+                    [
+                        {"key_id": p.key_id, "user_id": p.user_id}
+                        for p in identity_plan.promoted
+                    ],
+                    key=lambda x: x["key_id"],
+                )
+                conn.execute(
+                    "INSERT INTO admin_audit "
+                    "(id, org_id, action, detail) "
+                    "VALUES (%s, %s, 'registry_version', %s)",
+                    [
+                        str(uuid.uuid4()), org_id,
+                        json.dumps({
+                            "version": env_version,
+                            "payload_sha256": ps256,
+                            "posted_by": info["user_id"],
+                            "added": added_detail,
+                            "promoted": promoted_detail,
+                            "removed": identity_plan.removed,
+                        }),
+                    ],
+                )
+
+                # store_registry_version re-verifies, writes and commits
+                try:
+                    store_registry_version(
+                        conn, org_id, envelope,
+                    )
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    return JSONResponse(
+                        {"error": "envelope_rejected"},
+                        status_code=400,
+                    )
+
+                return JSONResponse({"version": env_version})
+
             result = store_signer_signatures(conn, info["org_id"], body)
             return JSONResponse(result)
         except SignerScopeError:
@@ -867,7 +1100,7 @@ def build_signer_router(db_url: str, clock: Any = None) -> APIRouter:
             )
             conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtext(%s))",
-                [f"agg-genesis:{org_id}"],
+                [f"{_REGISTRY_LOCK_KEY}{org_id}"],
             )
 
             # Step 1 (ADR 0011 2.2): if any key_registry_versions
@@ -1349,16 +1582,20 @@ def build_signer_router(db_url: str, clock: Any = None) -> APIRouter:
                     {"error": "not found"}, status_code=404
                 )
 
-            # List pending CLI links (with public_key set)
+            # List pending CLI links and browser enrollments
+            # (public_key set, used_at set, status pending, user active)
             rows = conn.execute(
                 "SELECT sl.key_id, sl.public_key, "
                 "sl.user_id::text, u.oidc_issuer, u.oidc_subject, "
-                "'cli'::text AS kind "
+                "sl.kind "
                 "FROM signer_links sl "
                 "JOIN users u ON u.id = sl.user_id "
                 "WHERE sl.org_id = %s::uuid "
                 "AND sl.public_key IS NOT NULL "
-                "AND sl.status = 'pending'",
+                "AND sl.used_at IS NOT NULL "
+                "AND sl.status = 'pending' "
+                "AND u.status = 'active' "
+                "AND u.org_id = sl.org_id",
                 [info["org_id"]],
             ).fetchall()
 
@@ -1372,11 +1609,6 @@ def build_signer_router(db_url: str, clock: Any = None) -> APIRouter:
                     "sub": r[4],
                     "kind": r[5],
                 })
-
-            # Also list pending browser keys (approver_keys with
-            # kind='browser' and status not yet in the registry)
-            # For now, browser keys are not yet implemented in candidates
-            # but the route structure is ready.
 
             return JSONResponse(candidates)
         except Exception as exc:

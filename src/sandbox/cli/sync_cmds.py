@@ -1297,9 +1297,21 @@ def _signer_http_post(url: str, body: dict, token: str | None) -> dict:
         )
 
 
-def _get_link_signer_token(server: str, sk, kid: str) -> str | None:
-    """Obtain a signer token using the linked key (F7 safe)."""
-    _check_transport_safety(server)
+def _get_link_signer_token(
+    server: str, sk, kid: str,
+) -> tuple[str | None, str | None]:
+    """Obtain a signer token using the linked key (F7 safe).
+
+    Returns ``(token, None)`` on success or ``(None, reason)`` on failure,
+    where ``reason`` is one of the d5 reason classes: ``HTTP <code>``,
+    ``redirect refused``, ``transport refused``, ``unreachable`` or
+    ``bad response``.  Response bodies and exception text never leave
+    this function (D4-6 / D2-3).
+    """
+    try:
+        _check_transport_safety(server)
+    except click.ClickException:
+        return None, "transport refused"
     nonce = secrets.token_hex(16)
     aud = server.rstrip("/")
     payload = {"key_id": kid, "nonce": nonce, "aud": aud, "iat": time.time()}
@@ -1314,16 +1326,38 @@ def _get_link_signer_token(server: str, sk, kid: str) -> str | None:
         "signatures": [{"key_id": kid, "alg": "ed25519", "sig": sig}],
     }
     url = server.rstrip("/") + "/api/v1/sync/signer/token"
+    reason: str
     try:
         data = _signer_safe_post(url, assertion, None)
-        return data.get("token")
-    except Exception as exc:
-        # D4-6: keep the reason for debugging (do not swallow silently)
-        import logging
-        logging.getLogger("sandbox.cli.sync_cmds").debug(
-            "signer token request failed: %s", exc
-        )
-        return None
+        value = data.get("token") if isinstance(data, dict) else None
+        if isinstance(value, str) and value:
+            return value, None
+        reason = "bad response"
+    except click.ClickException as exc:
+        # _signer_safe_post chains the urllib error as __cause__; classify
+        # on the cause type, never on response text.
+        cause = exc.__cause__
+        if isinstance(cause, urllib.error.HTTPError):
+            if 300 <= cause.code < 400:
+                reason = "redirect refused"
+            else:
+                reason = f"HTTP {cause.code}"
+        elif isinstance(cause, urllib.error.URLError):
+            reason = "transport refused"
+        elif cause is None and "redirect" in exc.message:
+            # _safe_urlopen belt-and-suspenders redirect refusal (no cause)
+            reason = "redirect refused"
+        else:
+            reason = "transport refused"
+    except (OSError, TimeoutError):
+        reason = "unreachable"
+    except (ValueError, TypeError, AttributeError):
+        reason = "bad response"
+    import logging
+    logging.getLogger("sandbox.cli.sync_cmds").debug(
+        "signer auth request failed: %s", reason
+    )
+    return None, reason
 
 
 @click.command("genesis")
@@ -1392,9 +1426,11 @@ def signer_genesis(genesis_code: str, server: str | None, approver: bool,
         )
 
     # Get a signer token (F7 safe)
-    token = _get_link_signer_token(effective_server, sk, kid)
+    token, token_reason = _get_link_signer_token(effective_server, sk, kid)
     if token is None:
-        raise click.ClickException("failed to obtain signer token")
+        raise click.ClickException(
+            f"failed to obtain signer token ({token_reason})"
+        )
 
     user_id = meta.get("user_id", "")
     org_id = meta.get("org_id", "")
@@ -1536,9 +1572,11 @@ def signer_sign_registry(in_file: str | None, out_file: str | None,
     # F7: transport safety
     _check_transport_safety(effective_server)
 
-    token = _get_link_signer_token(effective_server, sk, kid)
+    token, token_reason = _get_link_signer_token(effective_server, sk, kid)
     if token is None:
-        raise click.ClickException("failed to obtain signer token")
+        raise click.ClickException(
+            f"failed to obtain signer token ({token_reason})"
+        )
 
     confirmed_set = set(confirm_key_ids_opt)
 
@@ -1807,11 +1845,10 @@ def signer_sign_registry(in_file: str | None, out_file: str | None,
             if admin:
                 new_admins.append(cand["key_id"])
 
-        # F10 / D4-6 / R2-7: --threshold N in build mode with bounds check.
-        # General upper bound: max(keys+1, 2) (R2-7: cannot set threshold
-        # wildly above current key count).
-        # D4-6 bound (admin --add only): threshold must not exceed
-        # distinct admin user_ids (prevents same-person dual control).
+        # F10 / D4-6 (d5): --threshold N in build mode.  One unconditional
+        # bound: the threshold may never exceed the number of distinct
+        # admin user_ids in the new registry (prevents same-person dual
+        # control and unreachable thresholds).
         new_threshold = prev_payload.get("threshold", 1)
         if threshold_opt is not None:
             new_threshold = threshold_opt
@@ -1819,29 +1856,16 @@ def signer_sign_registry(in_file: str | None, out_file: str | None,
             raise click.ClickException(
                 f"threshold must be >= 1, got {new_threshold}"
             )
-        # R2-7: general upper bound
-        general_bound = max(len(new_keys) + 1, 2)
-        if new_threshold > general_bound:
+        admin_kid_set = set(new_admins)
+        admin_user_ids = {
+            k["user_id"] for k in new_keys
+            if k.get("key_id") in admin_kid_set and k.get("user_id")
+        }
+        if new_threshold > len(admin_user_ids):
             raise click.ClickException(
-                f"threshold {new_threshold} exceeds upper bound "
-                f"({general_bound}); refusing"
+                f"threshold {new_threshold} exceeds distinct admin "
+                f"user count ({len(admin_user_ids)}); refusing"
             )
-        # D4-6: when adding admin keys, refuse threshold that exceeds
-        # distinct admin user_ids (prevents same-person dual control).
-        if admin and add_key_ids:
-            admin_user_ids: set[str] = set()
-            admin_kid_set = set(new_admins)
-            for k in new_keys:
-                if k.get("key_id") in admin_kid_set:
-                    uid = k.get("user_id", "")
-                    if uid:
-                        admin_user_ids.add(uid)
-            max_threshold = max(len(admin_user_ids), 1)
-            if new_threshold > max_threshold:
-                raise click.ClickException(
-                    f"threshold {new_threshold} exceeds distinct admin "
-                    f"user count ({max_threshold}); refusing"
-                )
 
         payload = {
             "org_id": org_id,

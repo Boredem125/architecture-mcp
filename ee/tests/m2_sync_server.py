@@ -118,7 +118,8 @@ def keygen():
 
 def make_sync_server(pg_url: str, app_url: str, owner_url: str,
                      *, org_names: list[str] | None = None,
-                     extra_orgs: int = 0):
+                     extra_orgs: int = 0,
+                     extra_env: dict[str, str | None] | None = None):
     """Generator that starts a 4-worker agg_cp server and yields info.
 
     Use as ``yield from make_sync_server(...)`` in a module-scoped fixture.
@@ -157,6 +158,11 @@ def make_sync_server(pg_url: str, app_url: str, owner_url: str,
         "AGG_PUBLIC_URL": base_url,
         "PYTHONPATH": pythonpath,
     }
+    for k, v in (extra_env or {}).items():
+        if v is None:
+            env.pop(k, None)
+        else:
+            env[k] = v
 
     cmd = [
         sys.executable, "-m", "uvicorn",

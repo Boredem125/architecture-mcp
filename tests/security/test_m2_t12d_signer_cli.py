@@ -4438,8 +4438,6 @@ def test_r2_2_shared_verify_persist_helper(tmp_path):
 # ===========================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                    reason="d5: D2-2 threshold bound unconditional")
 def test_d5_threshold_bound_unconditional(tmp_path):
     """D2-2: v1 one admin u1; sign-registry --threshold 2 with no --add
     -> exit 1; message names 'distinct admin'; v2.json not written."""
@@ -4493,8 +4491,6 @@ def test_d5_threshold_bound_unconditional(tmp_path):
 # ===========================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                    reason="d5: D2-3 link token failure reason class")
 @pytest.mark.parametrize("scenario,mock_response,expected_reason,forbidden_text", [
     (
         "http_401",
@@ -4551,14 +4547,10 @@ def test_d5_link_token_failure_reason_class(
         # Use example.com (transport error)
         token_resp = URLError("connection refused")
 
-    # The link command first POSTs to /signer/link (must succeed),
-    # then calls _get_link_signer_token which hits /signer/token.
-    link_response = {
-        "status": "linked", "key_id": _kid(admin_sk),
-        "iss": "https://idp", "sub": "sub-1",
-    }
+    # sign-registry calls _get_link_signer_token (hits /signer/token)
+    # right after loading the linked key, before any registry fetch
+    # (d5 spec section 8, ruling 5).
     routes = {
-        "/signer/link": link_response,
         "/signer/token": token_resp,
     }
     tracker = _MockTracker(routes)
@@ -4566,12 +4558,15 @@ def test_d5_link_token_failure_reason_class(
     with patch.dict(os.environ, {"SANDBOX_KEY_HOME": str(kh)}):
         with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
             result = CliRunner().invoke(cli, [
-                "signer", "link",
-                "--code", "test-code",
+                "signer", "sign-registry",
+                "--out", str(tmp_path / "v2.json"),
+                "--yes",
                 "--server", "http://localhost:9000",
             ])
 
-    # Today the link command does not print the reason class from
+    assert not (tmp_path / "v2.json").exists()
+
+    # Today sign-registry does not print the reason class from
     # _get_link_signer_token; d5 adds that.
     if expected_reason not in (result.output or ""):
         raise M2T12dPending(
@@ -4592,8 +4587,6 @@ def test_d5_link_token_failure_reason_class(
 # ===========================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                    reason="d5: D2-4 _get_link_signer_token log format")
 def test_d5_link_token_log_format_has_no_token_word():
     """D2-4: AST walk of _get_link_signer_token: no 'token' in log strings,
     no exc argument in log calls."""
@@ -4658,8 +4651,6 @@ def test_d5_link_token_log_format_has_no_token_word():
 # ===========================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                    reason="d5: D2-5 registry verify_failed audit")
 def test_d5_registry_verify_failed_writes_audit(tmp_path):
     """D2-5: offer a v4 signed by a stranger key -> refused:verify_failed;
     exactly one registry_refused audit event with reason_code
@@ -4727,8 +4718,6 @@ def test_d5_registry_verify_failed_writes_audit(tmp_path):
 # ===========================================================================
 
 
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                    reason="d5: D2-6 registry rollback audit")
 def test_d5_registry_rollback_writes_audit(tmp_path):
     """D2-6: offer chain_v3[:2] -> refused:rollback; one registry_refused
     event with REGISTRY_ROLLBACK."""

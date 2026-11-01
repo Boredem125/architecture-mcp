@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -46,6 +47,22 @@ def _load_high_water(sync_dir: Path) -> dict | None:
         return None  # malformed
     except (OSError, ValueError):
         return None
+
+
+def _audit_refusal(layout, reason_code: str, offered_version, floor) -> None:
+    """Best-effort local audit of a registry refusal (d5).  Never raises."""
+    try:
+        from sandbox.connector.policy_versions import audit as _audit
+
+        _audit(layout, {
+            "event": "registry_refused",
+            "reason_code": reason_code,
+            "offered_version": offered_version,
+            "floor": floor,
+            "ts": time.time(),
+        })
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def apply_registry_chain(
@@ -107,6 +124,13 @@ def apply_registry_chain(
     try:
         verify_chain(new_chain, fp)
     except (RegistryError, EnvelopeError):
+        offered = 0
+        last = new_chain[-1]
+        if isinstance(last, dict):
+            p = last.get("payload")
+            if isinstance(p, dict):
+                offered = p.get("version", 0)
+        _audit_refusal(layout, "REGISTRY_VERIFY_FAILED", offered, floor)
         return "refused:verify_failed"
 
     # New version
@@ -114,6 +138,7 @@ def apply_registry_chain(
 
     # Anti-rollback: new version must be >= floor
     if new_version < floor:
+        _audit_refusal(layout, "REGISTRY_ROLLBACK", new_version, floor)
         return "refused:rollback"
 
     # Serialize for comparison and writing
@@ -129,8 +154,13 @@ def apply_registry_chain(
             if new_blob == old_blob:
                 return "unchanged"
             # Same version, different bytes => refuse
+            _audit_refusal(
+                layout, "REGISTRY_SAME_VERSION_DIFFERENT_BYTES",
+                new_version, floor,
+            )
             return "refused:same_version_different_bytes"
         # No local file but same version as floor from hwm => refuse
+        _audit_refusal(layout, "REGISTRY_ROLLBACK", new_version, floor)
         return "refused:rollback"
 
     # new_version > floor (or > local_version): persist atomically

@@ -2223,8 +2223,6 @@ def test_e2e_does_not_call_store_registry_version():
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T12dPending,
-                    reason="d5: D2-8 unreadable bundle_signer label")
 @pytest.mark.parametrize("kind", ["missing", "directory"],
                          ids=["missing_path", "directory_path"])
 def test_d5_d4_4_unreadable_label(genesis_server, tmp_path, kind):
