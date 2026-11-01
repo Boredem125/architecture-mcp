@@ -343,3 +343,11 @@ Path: 1 + 1.75 + 1 + 1.5 + 1 + 1 = about **7 days**, so the gate lands **Wed 11 
 5. **Commit the gate driver as `ee/deploy/m2_gate.py`?** Recommend yes. A gate nobody can rerun is not a gate, and T17's quickstart points at it.
 6. **Half a day of your time (Fri 6 or Mon 9) for the SCRIPT_UNPINNABLE measure and one `--live` run?** Recommend yes; the numbers are published as measured.
 7. **Gate date: hold 13 Nov, and if a second review or rerun round is needed move to 17 Nov rather than trim the frozen list?** Recommend hold; the frozen list is never trimmed.
+
+### Founder rulings on the T16 triage (1 Nov 2026, late)
+
+1. T16a and T16b approved: one sync cycle in `connector/sync/process.py` with `sandbox sync` as the wrapper; `change_approvals` stored server-side and served beside the signed envelope (ADR 0001 amendment).
+2. Browser keys for bob and carol in the demo v3 (T16d-3): approved, 0.5 d.
+3. Keycloak subjects: fixed realm user ids in the realm import. Never match users by email.
+4. Founder measures (T16e): the founder asked whether the Claude Code desktop app can be used; yes, it runs the same hooks, so the recipe gains a desktop variant. Date to be fixed (Fri 6 or Mon 9 Nov).
+5. Gate driver committed as `ee/deploy/m2_gate.py` (recommendation accepted by default). The 13 Nov date holds; the frozen list is never trimmed.
