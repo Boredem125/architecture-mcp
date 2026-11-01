@@ -1799,3 +1799,387 @@ def test_d4_5_n1_substituted_key_id_refused(d4_e2e_server):
     assert rv2.status_code == 400, (
         f"expected 400 for substituted key_id, got {rv2.status_code} {rv2.text}"
     )
+
+
+# ===========================================================================
+# T12c c6 e2e: script swap after a web (browser-key) approval and a CLI
+# approval.  The broker refuses with a signed SCRIPT_CHANGED done-record,
+# the swapped bytes never run, and the evidence pack verifies offline.
+# (T12B_PLAN c6; M2_BASELINE section 6 steps 3, 5 and 11, T16 scene 5(d).)
+# ===========================================================================
+
+
+def _c6_bootstrap_org(srv, *, label: str):
+    """A fresh org on the shared module server with the frozen step 2 chain.
+
+    Mirrors the first e2e test's step 2 (genesis = alice alone, v2 adds
+    admin2 with threshold 2, v3 adds the approvers) but with **bob's key
+    enrolled through the browser route** (``/signer-links`` kind=browser)
+    so the web inbox approval is a real browser-key approval.  carol and the
+    alice-approver key are CLI keys from ``/signer/link``.
+
+    A new org is used because the first test's admin keys are local to it;
+    nothing in that test's state is reused or changed.
+    Returns a dict with ids, keys and the root fingerprint.
+    """
+    import httpx
+
+    org_id = str(uuid.uuid4())
+    with psycopg.connect(_conninfo(srv["owner_url"]), autocommit=True) as conn:
+        # RLS: the org row is visible only under its own app.org_id
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        create_org(conn, org_id, name=f"C6 {label} Org")
+        alice_id = _seed_user_row(conn, org_id, f"alice@{label}.c6.test")
+        admin2_id = _seed_user_row(conn, org_id, f"admin2@{label}.c6.test")
+        bob_id = _seed_user_row(conn, org_id, f"bob@{label}.c6.test")
+        carol_id = _seed_user_row(conn, org_id, f"carol@{label}.c6.test")
+        for uid in (alice_id, admin2_id):
+            conn.execute(
+                "INSERT INTO role_bindings "
+                "(id, org_id, user_id, scope_type, scope_id, role, created_at) "
+                "VALUES (%s, %s, %s, 'org', %s, 'admin', now())",
+                [str(uuid.uuid4()), org_id, uid, org_id],
+            )
+        alice_iss, alice_sub = _d4_user_oidc(conn, alice_id)
+        admin2_iss, admin2_sub = _d4_user_oidc(conn, admin2_id)
+        bob_iss, bob_sub = _d4_user_oidc(conn, bob_id)
+        carol_iss, carol_sub = _d4_user_oidc(conn, carol_id)
+        genesis_code = _d4_seed_genesis_code(conn, org_id)
+
+    base = srv["base_url"]
+    bundle_signer_pub = srv["bundle_signer_pub"]
+    bs_kid = hashlib.sha256(bundle_signer_pub).hexdigest()
+    tag = b"agg/registry/v1\x00"
+
+    def _post_registry(env, token, what):
+        r = httpx.post(
+            f"{base}/api/v1/sync/signer/signatures",
+            json={"type": "registry", "envelope": env, "org_id": org_id},
+            headers={"Authorization": f"Bearer {token}"}, timeout=15,
+        )
+        assert r.status_code == 200, f"c6 {what} failed: {r.status_code} {r.text}"
+
+    # v1: alice alone through /signer/genesis
+    admin1_sk, admin1_kid = _e2e_route_cli_link(srv, org_id, alice_id)
+    admin1_token = _d4_get_signer_token(base, admin1_sk, admin1_kid)
+    expires_at = time.time() + 7 * 24 * 3600
+    g_payload = {
+        "org_id": org_id, "version": 1, "prev_hash": "", "threshold": 1,
+        "admins": [admin1_kid],
+        "keys": [{"key_id": admin1_kid,
+                  "public_key": bytes(admin1_sk.verify_key).hex(),
+                  "kind": "cli", "alg": "ed25519", "user_id": alice_id,
+                  "iss": alice_iss, "sub": alice_sub,
+                  "roles": ["admin", "approver"], "added_in": 1}],
+        "bundle_signer": {"key_id": bs_kid, "public_key": bundle_signer_pub.hex()},
+        "expires_at": expires_at,
+    }
+    g_canonical = canonical_json(g_payload)
+    g_env = {
+        "kind": "agg/registry/v1", "sig_v": 1, "payload": g_payload,
+        "signatures": [{"key_id": admin1_kid, "alg": "ed25519",
+                        "sig": admin1_sk.sign(tag + g_canonical).signature.hex()}],
+    }
+    r = httpx.post(
+        f"{base}/api/v1/sync/signer/genesis",
+        json={"genesis_code": genesis_code, "envelope": g_env},
+        headers={"Authorization": f"Bearer {admin1_token}"}, timeout=15,
+    )
+    assert r.status_code == 200, f"c6 genesis failed: {r.status_code} {r.text}"
+    root_fp = hashlib.sha256(org_id.encode("utf-8") + b":" + g_canonical).hexdigest()
+
+    # v2: admin2, threshold 2, both admins sign
+    admin2_sk, admin2_kid = _e2e_route_cli_link(srv, org_id, admin2_id)
+    v2_keys = g_payload["keys"] + [
+        {"key_id": admin2_kid, "public_key": bytes(admin2_sk.verify_key).hex(),
+         "kind": "cli", "alg": "ed25519", "user_id": admin2_id,
+         "iss": admin2_iss, "sub": admin2_sub,
+         "roles": ["admin", "approver"], "added_in": 2},
+    ]
+    v2_payload = {
+        "org_id": org_id, "version": 2, "prev_hash": root_fp,
+        "threshold": 2, "admins": [admin1_kid, admin2_kid], "keys": v2_keys,
+        "bundle_signer": g_payload["bundle_signer"], "expires_at": expires_at,
+    }
+    v2_canonical = canonical_json(v2_payload)
+    v2_env = {
+        "kind": "agg/registry/v1", "sig_v": 1, "payload": v2_payload,
+        "signatures": [
+            {"key_id": admin1_kid, "alg": "ed25519",
+             "sig": admin1_sk.sign(tag + v2_canonical).signature.hex()},
+            {"key_id": admin2_kid, "alg": "ed25519",
+             "sig": admin2_sk.sign(tag + v2_canonical).signature.hex()},
+        ],
+    }
+    admin1_confirmed = _d4_get_signer_token(base, admin1_sk, admin1_kid)
+    _post_registry(v2_env, admin1_confirmed, "v2")
+
+    # v3: bob BROWSER key, carol CLI key, alice approver CLI key
+    bob_sk, bob_kid = _e2e_route_browser_enroll(srv, org_id, bob_id)
+    carol_sk, carol_kid = _e2e_route_cli_link(srv, org_id, carol_id)
+    alice_sk, alice_kid = _e2e_route_cli_link(srv, org_id, alice_id)
+    v3_keys = v2_keys + [
+        {"key_id": bob_kid, "public_key": bytes(bob_sk.verify_key).hex(),
+         "kind": "browser", "alg": "ed25519", "user_id": bob_id,
+         "iss": bob_iss, "sub": bob_sub, "roles": ["approver"], "added_in": 3},
+        {"key_id": carol_kid, "public_key": bytes(carol_sk.verify_key).hex(),
+         "kind": "cli", "alg": "ed25519", "user_id": carol_id,
+         "iss": carol_iss, "sub": carol_sub, "roles": ["approver"], "added_in": 3},
+        {"key_id": alice_kid, "public_key": bytes(alice_sk.verify_key).hex(),
+         "kind": "cli", "alg": "ed25519", "user_id": alice_id,
+         "iss": alice_iss, "sub": alice_sub, "roles": ["approver"], "added_in": 3},
+    ]
+    v3_payload = {
+        "org_id": org_id, "version": 3,
+        "prev_hash": hashlib.sha256(org_id.encode("utf-8") + b":" + v2_canonical).hexdigest(),
+        "threshold": 2, "admins": [admin1_kid, admin2_kid], "keys": v3_keys,
+        "bundle_signer": g_payload["bundle_signer"], "expires_at": expires_at,
+    }
+    v3_canonical = canonical_json(v3_payload)
+    v3_env = {
+        "kind": "agg/registry/v1", "sig_v": 1, "payload": v3_payload,
+        "signatures": [
+            {"key_id": admin1_kid, "alg": "ed25519",
+             "sig": admin1_sk.sign(tag + v3_canonical).signature.hex()},
+            {"key_id": admin2_kid, "alg": "ed25519",
+             "sig": admin2_sk.sign(tag + v3_canonical).signature.hex()},
+        ],
+    }
+    _post_registry(v3_env, admin1_confirmed, "v3")
+
+    return {
+        "org_id": org_id, "alice_id": alice_id, "bob_id": bob_id,
+        "carol_id": carol_id, "root_fp": root_fp,
+        "bob_sk": bob_sk, "bob_kid": bob_kid, "carol_sk": carol_sk,
+        "registry_version": 3,
+    }
+
+
+def _c6_web_approval_envelope(sk, kid, *, rec, user_id, org_id, project_id,
+                              device_id, registry_version, decision="approve"):
+    """The envelope the web inbox signs with a browser key.
+
+    Same field set as the CLI signer (``sync_cmds._build_and_sign_envelope``):
+    the server's canonical fields plus ``script_rel``, ``script_sha256`` and
+    ``preview_sha256`` taken from the record as rendered (what you see is
+    what you sign).
+    """
+    script = rec.get("script") or {}
+    preview = rec.get("script_preview") or {}
+    payload = {
+        "request_id": rec["request_id"],
+        "command": rec.get("command", ""),
+        "fingerprint": rec.get("fingerprint", ""),
+        "reviewer_id": user_id,
+        "decision": decision,
+        "approved_at": time.time(),
+        "org_id": org_id,
+        "project_id": project_id,
+        "device_id": device_id,
+        "registry_version": registry_version,
+        "policy_sequence": rec.get("policy_sequence", 1),
+        "user_id": user_id,
+        "key_id": kid,
+        "nonce": secrets.token_hex(16),
+        "not_after": time.time() + 900,
+        "script_rel": script.get("rel", ""),
+        "script_sha256": script.get("sha256", ""),
+        "preview_sha256": preview.get("sha256", ""),
+    }
+    return sign_envelope("agg/remote-approval/v1", payload, sk)
+
+
+@pytest.mark.pg
+def test_e2e_c6_script_swap_after_web_and_cli_approvals(e2e_server, tmp_path, monkeypatch):
+    """c6: enroll, escalate ``bash deploy.sh`` (content-bound), upload, bob
+    approves in the web inbox with his browser key, carol approves in the
+    CLI, the agent swaps ``deploy.sh``, sync applies the decisions.
+
+    PASS: the broker refuses with a terminal, signed ``SCRIPT_CHANGED``
+    done-record that names the expected and actual sha256; the swapped
+    bytes never run (no marker); the evidence pack holds that refusal and
+    verifies offline against the pinned root; a later sync does not run it.
+    """
+    import httpx
+    srv = e2e_server
+    org = _c6_bootstrap_org(srv, label="swap")
+    org_id, alice_id, bob_id, carol_id = (
+        org["org_id"], org["alice_id"], org["bob_id"], org["carol_id"])
+    root_fp = org["root_fp"]
+    bundle_signer = (srv["bundle_signer_sk"], srv["bundle_signer_pub"],
+                     hashlib.sha256(srv["bundle_signer_pub"]).hexdigest())
+
+    project_id = str(uuid.uuid4())
+    with psycopg.connect(_conninfo(srv["owner_url"]), autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        create_project(conn, org_id, project_id,
+                       name="payments-staging-c6", environment="staging")
+        enroll_code, _, _ = _issue_code_ready(conn, org_id, project_id, alice_id)
+
+    # ---- Step 3: enroll (real enroll()) ----
+    from sandbox.connector.install import init as sandbox_init
+    from sandbox.connector.layout import FolderLayout
+    from sandbox.connector.sync.enroll import enroll as real_enroll
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
+    ws_root = tmp_path / "ws"
+    ws_root.mkdir()
+    sandbox_init(ws_root, claude=False, mcp=False)
+    lay = FolderLayout(ws_root)
+    real_enroll(srv["base_url"], enroll_code, root_fp, operator=alice_id)
+
+    sync_dir = lay.root / ".sandbox" / "state" / "sync"
+    device_id = (sync_dir / "device_id").read_text(encoding="utf-8").strip()
+    ws_id = (lay.base / "workspace_id").read_text(encoding="utf-8").strip()
+    (sync_dir / "bundle.json").write_text(json.dumps(_build_signed_bundle(
+        bundle_signer, org_id=org_id, project_id=project_id,
+        environment="staging", policy_sequence=1, registry_version=3,
+    )), encoding="utf-8")
+    lay.policy_file.write_text(json.dumps({"escalation_timeout_seconds": 0}),
+                               encoding="utf-8")
+    (sync_dir / "server_time_state.json").write_text(json.dumps({
+        "server_time": time.time(), "local_time": time.time()}), encoding="utf-8")
+    enrollment = json.loads((sync_dir / "enrollment.json").read_text(encoding="utf-8"))
+    enrollment["server_url"] = srv["base_url"]
+    (sync_dir / "enrollment.json").write_text(json.dumps(enrollment), encoding="utf-8")
+
+    # ---- Step 5 setup: a content-bound script and its escalation ----
+    marker = tmp_path / "c6_swapped_ran.txt"
+    script = lay.root / "deploy.sh"
+    # Exact bytes (no newline translation): the hook hashes the file bytes.
+    original = b"#!/bin/sh\necho deploy-staging\n"
+    script.write_bytes(original)
+    original_sha = hashlib.sha256(original).hexdigest()
+
+    from sandbox.connector.hook_eval import pre_tool_use
+    hook_result = asyncio.run(pre_tool_use(
+        {"tool_name": "Bash", "tool_input": {"command": "bash deploy.sh"},
+         "cwd": str(lay.root), "session_id": "e2e-c6"}, lay,
+    ))
+    hso = hook_result.get("hookSpecificOutput", {})
+    assert hso.get("permissionDecision") == "deny", f"c6: hook: {hso}"
+    pending = list(lay.pending_dir.glob("*.json"))
+    assert len(pending) == 1, (
+        f"c6: expected one pending record, got {len(pending)}: "
+        f"{hso.get('permissionDecisionReason', '')[:300]}"
+    )
+    rec = json.loads(pending[0].read_text(encoding="utf-8"))
+    request_id = rec["request_id"]
+    assert rec.get("fp_v") == 2, rec.get("fp_v")
+    assert rec.get("script", {}).get("sha256") == original_sha, (
+        "c6: pending record is not bound to deploy.sh's original bytes"
+    )
+    assert rec.get("script_preview", {}).get("shown") is True
+
+    # ---- Upload ----
+    from sandbox.cli.sync_cmds import run_once, signer_approve
+    monkeypatch.chdir(str(lay.root))
+    up = run_once(lay, server=srv["base_url"])
+    assert up.get("uploaded", 0) >= 1, f"c6: upload: {up}"
+    with psycopg.connect(_conninfo(srv["owner_url"])) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        row = conn.execute(
+            "SELECT id, script, script_preview FROM escalations "
+            "WHERE org_id = %s::uuid AND request_id = %s", [org_id, request_id],
+        ).fetchone()
+    assert row is not None, "c6: escalation not on server"
+    esc_id = str(row[0])
+    assert isinstance(row[1], dict) and row[1].get("sha256") == original_sha, (
+        "c6: server did not store the script binding"
+    )
+
+    # ---- Web approval: bob, browser key, session cookie + CSRF ----
+    srv_rec = {**rec, "policy_sequence": 1}
+    bob_env = _c6_web_approval_envelope(
+        org["bob_sk"], org["bob_kid"], rec=srv_rec, user_id=bob_id,
+        org_id=org_id, project_id=project_id, device_id=device_id,
+        registry_version=org["registry_version"],
+    )
+    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, bob_id)
+    r_web = httpx.post(
+        f"{srv['base_url']}/api/v1/sync/escalations/{esc_id}/approvals",
+        cookies={"__Host-agg_session": cookie},
+        headers={"X-CSRF-Token": csrf},
+        json=bob_env, timeout=15,
+    )
+    assert r_web.status_code == 200, (
+        f"c6: bob's web approval refused: {r_web.status_code} {r_web.text}"
+    )
+
+    # ---- CLI approval: carol ----
+    from click.testing import CliRunner
+    carol_kh = tmp_path / "carol_keyhome"
+    (carol_kh / ws_id).mkdir(parents=True)
+    (carol_kh / ws_id / "managed").write_text("1", encoding="utf-8")
+    (carol_kh / ws_id / "carol.seed").write_bytes(bytes(org["carol_sk"]))
+    carol_ws = tmp_path / "carol_ws"
+    shutil.copytree(str(lay.root), str(carol_ws))
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(carol_kh))
+    monkeypatch.chdir(str(carol_ws))
+    carol_result = CliRunner().invoke(
+        signer_approve, [esc_id, "--server", srv["base_url"], "--yes"])
+    assert carol_result.exit_code == 0, f"c6: carol approve: {carol_result.output}"
+
+    with psycopg.connect(_conninfo(srv["owner_url"])) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)", [org_id])
+        n_appr = conn.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM approvals WHERE escalation_id = %s::uuid",
+            [esc_id],
+        ).fetchone()[0]
+    assert n_appr == 2, f"c6: expected bob and carol stored, got {n_appr}"
+
+    # ---- The swap: the agent edits deploy.sh after both approvals ----
+    swapped = f"#!/bin/sh\necho pwned > '{marker.as_posix()}'\n".encode("utf-8")
+    script.write_bytes(swapped)
+    swapped_sha = hashlib.sha256(swapped).hexdigest()
+    assert swapped_sha != original_sha
+
+    # ---- Apply decisions: refused, nothing runs ----
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
+    monkeypatch.chdir(str(lay.root))
+    applied = run_once(lay, server=srv["base_url"]).get("applied", {})
+    assert applied.get(request_id) == "refused", (
+        f"c6: expected the broker to refuse the swapped script, got "
+        f"{applied.get(request_id)!r} (applied={applied})"
+    )
+    assert not marker.exists(), "c6: the SWAPPED script ran"
+
+    done_file = lay.done_dir / f"{request_id}.json"
+    assert done_file.exists(), "c6: no terminal done-record for the refusal"
+    done = json.loads(done_file.read_text(encoding="utf-8"))
+    assert done.get("state") == "refused", done.get("state")
+    assert done.get("reason_code") == "SCRIPT_CHANGED", done.get("reason_code")
+    assert done.get("expected_sha256") == original_sha
+    assert done.get("actual_sha256") == swapped_sha
+    assert done.get("script", {}).get("rel") == "deploy.sh"
+    assert done.get("exit_code") is None and done.get("stdout") == ""
+    assert done.get("signature") and done.get("sig_v") == 1, (
+        "c6: refusal done-record is not signed"
+    )
+    approver_ids = {a.get("user_id") for a in done.get("approved_by", [])}
+    assert approver_ids == {bob_id, carol_id}, approver_ids
+    assert {a.get("key_kind") for a in done.get("approved_by", [])} == {"browser", "cli"}
+    assert not list(lay.pending_dir.glob("*.json")), "c6: refusal left the record pending"
+
+    # ---- Step 11: evidence verifies offline and holds the refusal ----
+    from sandbox.connector.evidence import export_evidence, verify_evidence
+    evidence_out = tmp_path / "evidence_c6"
+    export_evidence(lay, str(evidence_out))
+    verified = verify_evidence(str(evidence_out), expected_root=root_fp)
+    assert verified.get("ok"), f"c6: evidence: {verified.get('failures')}"
+    packed = json.loads((evidence_out / "decisions" / f"{request_id}.json")
+                        .read_text(encoding="utf-8"))
+    assert packed.get("reason_code") == "SCRIPT_CHANGED"
+    assert packed.get("expected_sha256") == original_sha
+    assert packed.get("actual_sha256") == swapped_sha
+    index = json.loads((evidence_out / "decisions" / "index.json").read_text(encoding="utf-8"))
+    entry = next(i for i in index if i.get("request_id") == request_id)
+    assert entry.get("state") == "refused" and entry.get("reason_code") == "SCRIPT_CHANGED"
+    assert entry.get("ok") is True, entry.get("checks")
+
+    # ---- Re-delivery: the refusal is terminal ----
+    again = run_once(lay, server=srv["base_url"]).get("applied", {})
+    assert request_id not in again, f"c6: re-applied after refusal: {again}"
+    assert not marker.exists()
