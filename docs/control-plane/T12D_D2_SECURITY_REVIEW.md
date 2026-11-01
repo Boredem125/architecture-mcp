@@ -1,7 +1,7 @@
 # T12d d2 security review -- registry genesis server side
 
 Reviewer: security-engineer (leader tier, Opus 4.6).
-Scope: uncommitted d2 diff at main c51d0f0.
+Scope: uncommitted d2 diff at main 5d83cdc.
 Verdict: **CHANGES REQUIRED** (R1 is HIGH).
 Scanners: Semgrep clean, gitleaks clean.
 

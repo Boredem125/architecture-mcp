@@ -260,7 +260,7 @@ and drop the `/signer/link` route and its comment (the `_signreg_tracker` routes
 
 ## 9. Leader review 1 Nov (d5)
 
-Author: security-engineer (leader tier). Exit check 4. Scope: the whole uncommitted diff on top of `cd0bab3` (`git diff` plus the untracked `ee/src/agg_cp/sync/registry_identity.py` and `ee/src/agg_cp/migrations/versions/0016_signer_links_kind.py`). Code read-only; this section and nothing else was written (no ADR edit, see 9.2).
+Author: security-engineer (leader tier). Exit check 4. Scope: the whole uncommitted diff on top of `70002a1` (`git diff` plus the untracked `ee/src/agg_cp/sync/registry_identity.py` and `ee/src/agg_cp/migrations/versions/0016_signer_links_kind.py`). Code read-only; this section and nothing else was written (no ADR edit, see 9.2).
 
 ### 9.1 Verdict: CHANGES, one MUST (LOW severity, 3 lines, fix text pre-approved)
 

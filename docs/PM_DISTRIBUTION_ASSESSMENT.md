@@ -121,7 +121,7 @@ Security as the moat keeps us on the wedge (runtime authorization plus signed mu
 
 ## Sources
 
-Repo (E:\architecture-mcp): STARTUP.md; RESUME.md; TEAM.md; RESEARCH.md; docs\BYPASS_SUITE.md; docs\TCB.md; docs\THREAT_MODEL.md; docs\BRIEF.md; docs\ROADMAP.md; docs\control-plane\HANDOFF.md; docs\control-plane\T12B_PLAN.md; docs\control-plane\SENTRY_IDEAS.md; docs\adr\0010-remote-approval-binding.md (s9); docs\adr\0011-registry-genesis-bootstrap.md; tests\security\test_m2_t12c_nf1.py; git log a6f09c7 back to c1def07.
+Repo (E:\architecture-mcp): STARTUP.md; RESUME.md; TEAM.md; RESEARCH.md; docs\BYPASS_SUITE.md; docs\TCB.md; docs\THREAT_MODEL.md; docs\BRIEF.md; docs\ROADMAP.md; docs\control-plane\HANDOFF.md; docs\control-plane\T12B_PLAN.md; docs\control-plane\SENTRY_IDEAS.md; docs\adr\0010-remote-approval-binding.md (s9); docs\adr\0011-registry-genesis-bootstrap.md; tests\security\test_m2_t12c_nf1.py; git log e364a0c back to 8f001a7.
 
 Web (read 28 Oct 2026):
 - Cursor hook CVE: https://fieldguide.lutrasecurity.com/CVE-2026-48124/ ; https://mondoo.com/vulnerability-intelligence/vulnerability/CVE-2026-48124

@@ -1,7 +1,7 @@
 # T12c c4 Security Review (server side)
 
 **Reviewer:** senior-security (leader tier, Opus 4.6)
-**Commit base:** c51d0f0 (main) + uncommitted working tree
+**Commit base:** 5d83cdc (main) + uncommitted working tree
 **Verdict:** CHANGES (one Medium must be fixed before commit)
 
 ## Findings

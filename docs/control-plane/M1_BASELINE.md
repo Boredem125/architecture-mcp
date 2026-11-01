@@ -512,7 +512,7 @@ ee/tests/test_t10_multiworker.py::test_module_state_lint_scans_key_files
 
 ### M1 gate readings (founder ruling, 21 Oct 2026)
 
-Measured in CI `tests` run 39497686931 at `e5d6665` (JUnit artifacts). The same counts and skip ids were already there at `29ed27d` (run 39461845755), so nothing in the cloud range `29ed27d..e5d6665` caused them. The founder chose option A: both gate items below count as met for the reasons given. The gate text itself is unchanged.
+Measured in CI `tests` run 39497686931 at `883d8b1` (JUnit artifacts). The same counts and skip ids were already there at `fc18237` (run 39461845755), so nothing in the cloud range `fc18237..883d8b1` caused them. The founder chose option A: both gate items below count as met for the reasons given. The gate text itself is unchanged.
 
 **Gate item 1 ("CI `windows-latest` 679 + N passed, 0 skipped"; Linux "skip set equal to the frozen node-id list").** CI Windows: 1761 test cases, 3 skipped, 0 failed. The 3 skips are all in `tests/security/test_sec27_28_hook_hardening.py`, reason "needs an interpreter without the dependencies (system python)":
 - `test_sec27_shadow_package_in_project_cannot_allow`
@@ -523,19 +523,19 @@ They need a Python without the project dependencies, which the CI runner image d
 
 **Gate item 3 ("with `ee/` removed, the connector suite gives the same count").** CI `connector` jobs: Windows 1737 vs 1761, Linux 1732 vs 1756, a gap of 24 on both. The connector set is a strict subset of the full set. The 24 ids are the four Class B files that `.github/scripts/c_tests.py` (`CLASS_B`) leaves out by design: `tests/integration/test_api_connector.py` (6), `tests/security/test_api_auth.py` (7), `tests/security/test_api_robustness.py` (5), `tests/unit/test_recorder_scan.py` (6). None imports `agg_cp` or reads `ee/`; removing `ee/` is not the cause. "Same count" is read as the same count for the C-class set the connector job runs. Not covered by CI: the second clause (`pip install .` in a fresh E: venv running M0 E2E steps 1-7); it stays a laptop check for the gate run.
 
-### Audit of the cloud range `29ed27d..e5d6665` (21 Oct 2026)
+### Audit of the cloud range `fc18237..883d8b1` (21 Oct 2026)
 
 Lead-architect audit (read-only): OK WITH ISSUES, no Critical or High. No frozen file changed, gitleaks 0, no `Co-Authored-By` lines, CI green. Recorded here as named exceptions (orchestrator sign-off, no assertion removed):
-- **T8 part 1 build (`eee3ebd`):** `ee/tests/fake_idp.py` rewrites the `kid` header when a test requests a kid (fixture edit, not an assertion).
-- **T8 part 2 build (`b0a708d`):** three CSRF tests in `ee/tests/test_t8p2_session.py` take the expected token from `agg_cp.auth.csrf_token_for`. Open (Low): they compare the code with itself; compute the HMAC in the test or read `csrf_token` from `GET /me`.
-- **T9 build (`2a543fa`):** the frozen route set gained `DELETE /org/members/{user_id}/{role}` (orchestrator ruling in `T9_DESIGN.md`); lead-architect acknowledges it, no ADR needed.
-- **T10 (`211151a`):** tests, product changes and revision `0005` landed in one commit, with no strict-xfail stage. Tests-first is waived for T10 only; T13 reviewed the same tree. Future tasks keep a separate tests commit.
-- **T11 (`5de6f49`, `df75fed`), T13/T14 (`68a924d`):** static config and review tests landed with their build. Allowed exception: they test config files and review findings, not product behaviour that could be built against them.
+- **T8 part 1 build (`463fe99`):** `ee/tests/fake_idp.py` rewrites the `kid` header when a test requests a kid (fixture edit, not an assertion).
+- **T8 part 2 build (`832f5b2`):** three CSRF tests in `ee/tests/test_t8p2_session.py` take the expected token from `agg_cp.auth.csrf_token_for`. Open (Low): they compare the code with itself; compute the HMAC in the test or read `csrf_token` from `GET /me`.
+- **T9 build (`25b1827`):** the frozen route set gained `DELETE /org/members/{user_id}/{role}` (orchestrator ruling in `T9_DESIGN.md`); lead-architect acknowledges it, no ADR needed.
+- **T10 (`7dc71da`):** tests, product changes and revision `0005` landed in one commit, with no strict-xfail stage. Tests-first is waived for T10 only; T13 reviewed the same tree. Future tasks keep a separate tests commit.
+- **T11 (`7cfcfa7`, `9a9f4ef`), T13/T14 (`3e8b2ed`):** static config and review tests landed with their build. Allowed exception: they test config files and review findings, not product behaviour that could be built against them.
 - **Sign-off evidence:** the per-task security sign-offs for T8, T9 and T11 are recorded only in commit messages and this file; the 12 PRs have no GitHub reviews and no transcript is in the repo. The T13 F1/F2 fixes were re-reviewed on the laptop on 21 Oct 2026 (see `M1_SECURITY_SIGNOFF.md`).
 
 ### Gate item 4 reading (founder ruling, 21 Oct 2026)
 
-Gate text: "Semgrep 0 error, Gitleaks 0, Trivy 0 HIGH/CRITICAL (fs and `api` image), ZAP no High on the compose proxy". Measured on the laptop, on a fresh clone of `b1dcb1a` where a clone applies:
+Gate text: "Semgrep 0 error, Gitleaks 0, Trivy 0 HIGH/CRITICAL (fs and `api` image), ZAP no High on the compose proxy". Measured on the laptop, on a fresh clone of `6f4827b` where a clone applies:
 - Semgrep (`semgrep/semgrep:1.178.0`, the CI configs): 0 ERROR, 6 WARNING (`unsafe-add-mask-workflow-command` in `image.yml` and `security.yml`; `insecure-file-permissions` at `src/sandbox/connector/keyhome.py:198,200`). Met.
 - Gitleaks (`git` mode, full history): no leaks. Met.
 - Trivy fs (vuln, secret, misconfig; HIGH/CRITICAL): 0. Met. A working-tree scan also flagged a Stripe `sk_test_` pattern in the git-ignored `demo/__pycache__/call_demo.cpython-312.pyc`; that file is not in a clone.
@@ -546,10 +546,10 @@ Gate text: "Semgrep 0 error, Gitleaks 0, Trivy 0 HIGH/CRITICAL (fs and `api` ima
 
 ### Gate items 3 (second clause) and 5, fresh clone (21 Oct 2026)
 
-Run by qa-engineer (worker tier) on a fresh clone at `2f71036` on the founder's Windows laptop.
+Run by qa-engineer (worker tier) on a fresh clone at `f0070ea` on the founder's Windows laptop.
 
 **Item 3, second clause** ("`pip install .` in a fresh E: venv runs the M0 E2E steps 1-7 headless"): a new Python 3.12 venv, `pip install <clone>` (not editable, no `ee/`), then the M0 steps in a scratch folder. 16 of 16 checks pass: CLI surface (step 1); demo folder with hooks (2); `WRITE_PROTECTED`, `WRITE_OUTSIDE` and fail-closed on unreadable hook input (3); escalate then `sandbox approve <id> --reviewer alice` runs it through the broker, and `sandbox deny` stops it (4); `/health` 200, approver 200, agent token 403, no token 401, `/api/v1/launch` 404 (6, with `--root`); `sandbox verify` 1/1 chains, evidence export verifies (manifest signature, 12 file hashes), one flipped byte fails `verify` (7). **Step 5 is partial:** the `move-more-money` call now escalates with `GOVERNANCE_UNEVALUATED` (at M0 it was allowed outright) and alice approves it, but `requires_dual` is false, so a second reviewer is not exercised. Cause: the same as at the M0 gate (Stripe allowlisted, semantic service not running in the demo folder). Reading: met for steps 1-4, 6, 7; step 5 dual control stays an open item, as at M0.
 
 **Item 5** ("Demo runs on a fresh clone, recorded"): from the clone, `init-secrets`, `npm ci && npm run build`, demo profile up (all services healthy), Caddy root CA copied, `demo.py --ca <ca>`: 27 PASS, 0 FAIL, exit 0. Met. Same 27 checks as `M1_DEMO.md`.
 
-CI at `2f71036`: tests, image and security green (the `zap-api` job failed once with `BindException: Address already in use` on the runner and passed on re-run).
+CI at `f0070ea`: tests, image and security green (the `zap-api` job failed once with `BindException: Address already in use` on the runner and passed on re-run).

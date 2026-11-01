@@ -1,6 +1,6 @@
 # T12c c2 security review (leader tier)
 
-**Scope:** uncommitted diff under `src/` and `tests/` at HEAD eb50920 (branch main).
+**Scope:** uncommitted diff under `src/` and `tests/` at HEAD 1cb9835 (branch main).
 **Files:** `src/sandbox/connector/script_pin.py` (new), `broker.py`, `hook_eval.py`, `approval.py`, `install.py`, `mcp_server.py`, `src/sandbox/broker/privilege_broker.py`; 15 test files (named test-setup edits and xfail flips).
 **Design authority:** ADR 0010 section 9 (9.1--9.6, C-c0-1 to C-c0-7), T12B_PLAN T12c table.
 **Scanners:** Semgrep 320 rules 0 findings; gitleaks 0 findings on all changed files.

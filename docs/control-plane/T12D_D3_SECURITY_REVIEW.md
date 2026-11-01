@@ -1,7 +1,7 @@
 # T12d d3 security review -- signer CLI (link, genesis, sign-registry)
 
 Reviewer: security-engineer (leader tier, Opus 5.5).
-Scope: uncommitted d3 diff at main 1eedeb4: `src/sandbox/connector/sync/signer.py`, `src/sandbox/cli/sync_cmds.py` (lines 779-1300), `tests/security/test_m2_t12d_signer_cli.py`. Design: ADR 0011, T12B_PLAN T12d table, server side from d2 (`ee/src/agg_cp/sync/signer.py`, `registry.py`).
+Scope: uncommitted d3 diff at main fea0d99: `src/sandbox/connector/sync/signer.py`, `src/sandbox/cli/sync_cmds.py` (lines 779-1300), `tests/security/test_m2_t12d_signer_cli.py`. Design: ADR 0011, T12B_PLAN T12d table, server side from d2 (`ee/src/agg_cp/sync/signer.py`, `registry.py`).
 Verdict: **CHANGES REQUIRED** (F1 CRITICAL; F2-F6 HIGH).
 Scanners on the three files: Semgrep (p/python, p/secrets) no findings; gitleaks dir no leaks; trivy fs secret scanner clean.
 Measured: `tests/security/test_m2_t12d_signer_cli.py` 19 passed; with `tests/security/test_m2_script_binding.py` 95 passed, 3 skipped (the 3 skips are platform skips in script_binding: Windows symlink privilege, POSIX-only check, no 8.3 names).

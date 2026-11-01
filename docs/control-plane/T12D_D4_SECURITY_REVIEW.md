@@ -1,7 +1,7 @@
 # T12d d4 security review -- registry read route, link iss/sub, bundle_signer line, CLI d3 residue
 
 Reviewer: security-engineer (leader tier, Opus 5.5).
-Scope: uncommitted d4 diff on top of `ed26bff`: `ee/src/agg_cp/sync/signer.py`, `ee/src/agg_cp/migrate.py`, `src/sandbox/cli/sync_cmds.py`, and the test edits in `tests/security/test_m2_t12d_signer_cli.py`, `ee/tests/test_m2_t12b_e2e.py`, `ee/tests/test_m2_t12d_genesis.py`, `ee/tests/test_m2_t12d_d0.py`, `ee/tests/test_t9_routes.py`. Spec: the d4 row and the T12d exit check in `T12B_PLAN.md`, ADR 0011, rounds 1-3 of `T12D_D3_SECURITY_REVIEW.md`.
+Scope: uncommitted d4 diff on top of `6905635`: `ee/src/agg_cp/sync/signer.py`, `ee/src/agg_cp/migrate.py`, `src/sandbox/cli/sync_cmds.py`, and the test edits in `tests/security/test_m2_t12d_signer_cli.py`, `ee/tests/test_m2_t12b_e2e.py`, `ee/tests/test_m2_t12d_genesis.py`, `ee/tests/test_m2_t12d_d0.py`, `ee/tests/test_t9_routes.py`. Spec: the d4 row and the T12d exit check in `T12B_PLAN.md`, ADR 0011, rounds 1-3 of `T12D_D3_SECURITY_REVIEW.md`.
 Verdict: **CHANGES REQUIRED** (D4-1 CRITICAL, D4-2 HIGH; the rest MEDIUM or LOW).
 Read-only review: no product or test file was edited, stashed or reset.
 
@@ -18,7 +18,7 @@ Scanners on the 8 changed files:
 
 ## What holds
 
-- **Orchestrator reverts are complete.** `git diff ed26bff -- src/sandbox/cli/sync_cmds.py` has no hunk in `_fetch_escalation` (`:293-307`, dict only, any list gives None and "not found") or in the `fp_v` refusal and binding-fingerprint check of `signer_approve` (`:617-623`, `:675-682`). Both are byte-identical to `ed26bff`. The only `signer_approve` change is the key loading (D4-2).
+- **Orchestrator reverts are complete.** `git diff 6905635 -- src/sandbox/cli/sync_cmds.py` has no hunk in `_fetch_escalation` (`:293-307`, dict only, any list gives None and "not found") or in the `fp_v` refusal and binding-fingerprint check of `signer_approve` (`:617-623`, `:675-682`). Both are byte-identical to `6905635`. The only `signer_approve` change is the key loading (D4-2).
 - **No other check is relaxed in the CLI.** R2-4 (the typed set check is now unconditional in both modes), R2-5 (`--add` of an existing key refused), R2-6 (co-sign trust set is `prev_admins | cur_admins`, as in `verify_chain`), R2-7 (`--yes` needs `--confirm-identity`; genesis stores the locally computed root fingerprint, never a server value), F11 (`-` reads stdin) and F14 (`--admin` with more than one `--add` refused) all tighten. Residue in D4-6.
 - **`GET /api/v1/sync/signer/registry`** (`ee/src/agg_cp/sync/signer.py:1345-1398`): the org comes only from the token row (`signer_token_lookup`); there is no org parameter, so no IDOR. No Bearer gives 401, a scope error gives 403. It is GET only and writes nothing, so the `pending_link` widening in `check_signer_token_scope` (`:126`) is read-only. `get_chain` also filters `WHERE org_id = %s` (defence in depth under RLS).
 - **The RLS `set_config(..., false)` cannot leak across requests.** Every route opens its own `psycopg.connect` and closes it in `finally`; there is no pool in `ee/src` or `ee/deploy` (no `ConnectionPool`, `psycopg_pool` or pgbouncer). The session value dies with the connection. It is the same pattern as `:195`, `:331`, `:354` and the candidates route. Named limit: if a transaction-mode pooler is ever added, every session-level `set_config` in this file must become transaction-local first.
@@ -37,7 +37,7 @@ Scanners on the 8 changed files:
 
 That is option A, which ADR 0011 rejected ("any org admin who links a key can race to publish the root first"). It is worse than A, because `POST /api/v1/signer-links` needs only a session (`role="session"`), not admin.
 Evidence: `ee/tests/test_m2_t12b_e2e.py:336-362` now does exactly this. The fixture user `alice` has no role binding. The test gets a `pending_link` token and POSTs a three-key genesis to `/signer/signatures` with no genesis code, and asserts 200. It passes.
-The hole was latent since d2 (`c786c5f`; the d2 review did not test v1 on `/signatures`). d4 turns it into the tested path.
+The hole was latent since d2 (`0163363`; the d2 review did not test v1 on `/signatures`). d4 turns it into the tested path.
 Fix (backend, tests first by qa):
 - In the `/signatures` route, refuse any registry envelope with `payload.version == 1`, and any post for an org with no stored version, with 409 `genesis_only_via_genesis_route`. Keep the `second_genesis` alert for a v1 when v1 exists.
 - Do not touch `store_registry_version`; the genesis route uses it.
@@ -120,7 +120,7 @@ Fix: mount the `bundle_signer_key` secret read-only into the job or jobs that pr
 ## Round 2 (30 Oct 2026)
 
 Reviewer: security-engineer (leader tier, Opus 5.5). Read-only: no product or test file was edited, stashed or reset.
-Scope: the uncommitted fix diff on top of `ed26bff` (`ee/src/agg_cp/sync/signer.py`, `ee/src/agg_cp/migrate.py`, `ee/deploy/compose.yml`, `src/sandbox/cli/sync_cmds.py` and the 3 test files), with qa removing XPASS markers in parallel.
+Scope: the uncommitted fix diff on top of `6905635` (`ee/src/agg_cp/sync/signer.py`, `ee/src/agg_cp/migrate.py`, `ee/deploy/compose.yml`, `src/sandbox/cli/sync_cmds.py` and the 3 test files), with qa removing XPASS markers in parallel.
 Verdict: **CHANGES REQUIRED.** **D4-1 is CLOSED** (this file may be pushed). Three items block the commit:
 - R2-1: a frozen-era test is red, and the `/signatures` second-genesis alert is lost.
 - R2-2: the new `_refresh_registry_chain` recreates a missing or corrupt high-water mark.
@@ -242,7 +242,7 @@ The guard (`signer.py:754-767`) refuses `type == "registry"` with a truthy envel
 
 - **(a) Floor.** See R2-2. The downstream refusal holds only while `high_water.json` is intact, and the function's own write can remove that condition.
 - **(b) Silent failures.**
-  - No fail-open is added relative to `ed26bff`, where `run_once` never refreshed.
+  - No fail-open is added relative to `6905635`, where `run_once` never refreshed.
   - An unapplied revocation stays bounded by the registry `expires_at` (7 days, or 72 h with prod), which is the existing design.
   - Required in this commit: add a status to the `run_once` result: `registry: updated | current | fetch_failed | verify_failed | rollback_refused`.
   - d5: write an audit record for `verify_failed` and `rollback_refused`, since a forged or rolled-back chain is a security event.
@@ -257,7 +257,7 @@ The guard (`signer.py:754-767`) refuses `type == "registry"` with a truthy envel
 - **Cause.**
   - The ruling-2 v2 (`test_m2_t12b_e2e.py:458-478`) is signed by admin1 and admin2, but only admin1 is a previous admin, so `prev_signer_users` is 1.
   - bob, carol and alice-approver are therefore added with count 1, and `counts_for_dual` is False for all of them (probe A).
-  - The `ed26bff` test used a two-admin, threshold-2 genesis, so its keys counted.
+  - The `6905635` test used a two-admin, threshold-2 genesis, so its keys counted.
 - **A co-signed v3 does not re-ratify.** `admin_sigs_at_add` is set only for keys that are new in that version, so keys already present stay at count 1 (probe A': False, False).
 - **Correct under ADR 0011 and frozen step 2.** Probe "Frozen step2": carol's v2 CLI key gives False, and the v3 bob and carol keys give True.
   - v2 adds the second admin only, with `threshold 2`, signed by admin1 and admin2. This also fixes D4-5's v2 threshold point.
@@ -269,7 +269,7 @@ The guard (`signer.py:754-767`) refuses `type == "registry"` with a truthy envel
 
 ### Item 6: relaxed checks in the CLI -- none
 
-- An AST comparison with `ed26bff` shows these functions unchanged: `_fetch_escalation`, `_check_body_hash`, `_check_display_safety`, `_rebuild_envelope`, `_post_approval`, `_get_signer_token`, `_signer_safe_post`, `_check_transport_safety` and `_load_signer_key`.
+- An AST comparison with `6905635` shows these functions unchanged: `_fetch_escalation`, `_check_body_hash`, `_check_display_safety`, `_rebuild_envelope`, `_post_approval`, `_get_signer_token`, `_signer_safe_post`, `_check_transport_safety` and `_load_signer_key`.
 - The `signer_approve` block from the `fp_v` refusal to the binding-fingerprint check is byte-identical. No list fallback was added.
 - Signature checks only tighten (R2-4, R2-5, R2-6 and F14, as in round 1).
 - The one new raw `registry.json` writer is `_refresh_registry_chain`. It writes only after `verify_chain` against the pinned root; its floor defect is R2-2.
@@ -315,7 +315,7 @@ R2-4 goes to lead-architect now: an ADR 0011 amendment or a named limit G-L4. Th
 ## Round 3 (30 Oct 2026)
 
 Reviewer: security-engineer (worker tier, Opus 4.6). Read-only: no product or test file was edited, stashed or reset.
-Scope: uncommitted round-2 fixes on top of `ed26bff` (signer.py, sync_cmds.py, process.py, new registry_chain.py, test files), plus the fixture sign-off.
+Scope: uncommitted round-2 fixes on top of `6905635` (signer.py, sync_cmds.py, process.py, new registry_chain.py, test files), plus the fixture sign-off.
 Verdict: **APPROVE** (all items pass; no property weakened).
 
 Measured (from qa): connector 2352 passed, 7 skipped, 1 xfailed; ee 826 passed, 2 skipped, 0 failed.
@@ -359,7 +359,7 @@ Tests (markers removed, all pass):
 - No list fallbacks added (all dict-only patterns preserved in `_fetch_escalation`).
 - No raw `registry.json` writes outside `registry_chain.py` and `enroll.py`.
 - Trust set narrowed (R2-6: `prev_admins | cur_admins`), not widened.
-- Exception swallowing: the broad `except Exception` in `_refresh_registry_chain` returns `"fetch_failed"` (network errors), same pattern as prior `ed26bff` code. No security check is bypassed.
+- Exception swallowing: the broad `except Exception` in `_refresh_registry_chain` returns `"fetch_failed"` (network errors), same pattern as prior `6905635` code. No security check is bypassed.
 
 ### Item 5 (scanners)
 

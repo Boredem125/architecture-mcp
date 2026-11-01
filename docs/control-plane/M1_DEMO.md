@@ -1,6 +1,6 @@
 # M1 Demo -- design partner walkthrough
 
-> Measured 21 Oct 2026 on the founder's Windows 11 laptop (Docker Desktop 29.9.1), `main` at `65446a8` plus the T14 demo fix, after `docker compose --profile demo down -v` and a fresh `up --build`. Command: `python ee/deploy/demo.py --ca <Caddy root CA>`. Result: 27 PASS, 0 FAIL, exit 0. Windows needs `127.0.0.1 idp.localhost` in the hosts file and `--ca` (see `ee/deploy/README.md`).
+> Measured 21 Oct 2026 on the founder's Windows 11 laptop (Docker Desktop 29.9.1), `main` at `d8d97e5` plus the T14 demo fix, after `docker compose --profile demo down -v` and a fresh `up --build`. Command: `python ee/deploy/demo.py --ca <Caddy root CA>`. Result: 27 PASS, 0 FAIL, exit 0. Windows needs `127.0.0.1 idp.localhost` in the hosts file and `--ca` (see `ee/deploy/README.md`).
 
 ## Command
 
@@ -181,7 +181,7 @@ Total: 27 PASS, 0 FAIL. A second run on the same database fails at step 2 by des
 
 | Check | Result |
 |-------|--------|
-| Base stack up, migrations, `/ready` | 200 `{"status":"ok"}` after compose fixes in `8b85ede` and `65446a8`: Caddy file capability vs `cap_drop: ALL`, secret ownership per consumer, Keycloak built at image-build time so `read_only` holds. Each fix signed off by security-engineer. |
+| Base stack up, migrations, `/ready` | 200 `{"status":"ok"}` after compose fixes in `07daf66` and `d8d97e5`: Caddy file capability vs `cap_drop: ALL`, secret ownership per consumer, Keycloak built at image-build time so `read_only` holds. Each fix signed off by security-engineer. |
 | Trivy, `api` image (HIGH/CRITICAL) | 44 HIGH, 0 CRITICAL, all in Debian 13.7 base packages with no fixed version (util-linux, ncurses, systemd libs, perl-base). With `--ignore-unfixed`: 0. Python packages: 0. |
 | Trivy, filesystem (HIGH/CRITICAL) | 1 CRITICAL: a Stripe `sk_test_` pattern in `demo/__pycache__/call_demo.cpython-312.pyc`, a git-ignored local cache file of the demo script. Tracked files: 0. |
 | ZAP baseline on the proxy | 0 High, 0 Medium; 3 Low, 3 Informational (cache-control, storable content, COEP missing, modern web app); 63 rules passed. Run against `https://agg.localhost:8443` on the compose edge network with the proxy temporarily serving that name, because ZAP's Java client sends no SNI for the dotless name `localhost`. |

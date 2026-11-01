@@ -2,8 +2,8 @@
 
 Author: qa-engineer, 21 Oct 2026. Written before any M2 fix commit (freeze rule).
 
-- **Frozen at:** `9b0d1b0` (M1 done). `tests/` and `ee/tests/` are identical to HEAD (`git diff --stat 9b0d1b0 HEAD -- tests ee/tests` empty; the two intervening commits `f732d58` and `0ad0024` are plan and handoff only).
-- **Companions:** `M2_FROZEN_MANIFEST.sha256` (116 tracked files under `tests/` and `ee/tests/`, sha256 of the LF git blob, as in M1, so `sha256sum -c` passes on the Linux checkout; the 116 include the T0a test), `M2_BASELINE_NODEIDS.txt` (1761 connector ids at `9b0d1b0`; the 5 T0a ids are not in it), `M2_BASELINE_EE_NODEIDS.txt` (446 ee ids).
+- **Frozen at:** `0ec9476` (M1 done). `tests/` and `ee/tests/` are identical to HEAD (`git diff --stat 0ec9476 HEAD -- tests ee/tests` empty; the two intervening commits `57c509b` and `c90063d` are plan and handoff only).
+- **Companions:** `M2_FROZEN_MANIFEST.sha256` (116 tracked files under `tests/` and `ee/tests/`, sha256 of the LF git blob, as in M1, so `sha256sum -c` passes on the Linux checkout; the 116 include the T0a test), `M2_BASELINE_NODEIDS.txt` (1761 connector ids at `0ec9476`; the 5 T0a ids are not in it), `M2_BASELINE_EE_NODEIDS.txt` (446 ee ids).
 
 ## 1. Baseline figure per environment
 
@@ -12,7 +12,7 @@ Author: qa-engineer, 21 Oct 2026. Written before any M2 fix commit (freeze rule)
 | Environment | Collected / run | Passed | Skipped | Failed | xfailed | Source |
 |---|---|---|---|---|---|---|
 | Local Windows `.venv` | 1766 | 1765 | 1 (`test_environment_classification.py::test_symlink_to_restricted_file_is_restricted`, symlinks not permitted) | 0 | 0 | T0a run, this commit |
-| CI `windows-latest` | 1761 | 1758 | 3 (SEC-27/28, named below) | 0 | 0 | M1 gate reading, run 39497686931 at `e5d6665` |
+| CI `windows-latest` | 1761 | 1758 | 3 (SEC-27/28, named below) | 0 | 0 | M1 gate reading, run 39497686931 at `883d8b1` |
 | CI `ubuntu-latest` | 1756 | 1725 | 31 (`M1_LINUX_SKIPS.txt`) | 0 | 0 | M1 gate reading, same run |
 
 The local count is 1761 baseline + 5 T0a tests = 1766.
@@ -81,7 +81,7 @@ All 412 ee tests pass on CI Linux with Postgres.
 | `ee/tests/test_t9_routes.py::test_frozen_route_set` | Enroll-persist | 1 registry route added to `_M2_ENROLL_PERSIST_ROUTES` and included in `EXPECTED_ROUTES`, nothing removed | security (enroll-persist review, APPROVE) |
 | `ee/tests/test_t9_routes.py::test_frozen_route_set` | T11 | 2 audit routes added to `_M2_T11_ROUTES` and included in `EXPECTED_ROUTES`, nothing removed | security (T11 round 2, APPROVE) |
 | `ee/tests/test_t10_multiworker.py` (server start) | T11 | `stdout`/`stderr` `subprocess.PIPE` to `subprocess.DEVNULL` at ~281-282. The pipes were never read, so the Windows pipe buffer filled and uvicorn workers blocked (the known ReadTimeouts). No assertion changed | security (T11 round 2, APPROVE) |
-| 14 connector test files (`tests/integration/test_api_connector.py`, `test_connector_loop.py`, `test_mcp_tools.py`; `tests/security/test_api_auth.py`, `test_dual_control.py`, `test_m0_routes.py`, `test_m1_t3_followup.py`, `test_m1_t3_pins.py`, `test_m1_t4_domains.py`; `tests/unit/test_aiuc_gaps.py`, `test_cli_connector.py`, `test_environment_classification.py`, `test_evidence.py`, `test_oversight.py`) | T12c c2 | Record fixtures gain the c2 fields the broker now requires (`tool_name`, `fp_v` 2, `script`, `script_unbound`, `script_preview`), each marked "Named test-setup edit (T12c c2)"; `test_classification_factor_is_itemized` writes `tool.py` so `python tool.py` binds under the requires_dual floor (ADR 0010 s9 9.3). No assertion changed; manifest hashes updated in `dca1873`'s follow-up | security (c2 review and re-review, APPROVE; `docs/control-plane/T12C_C2_SECURITY_REVIEW.md`) |
+| 14 connector test files (`tests/integration/test_api_connector.py`, `test_connector_loop.py`, `test_mcp_tools.py`; `tests/security/test_api_auth.py`, `test_dual_control.py`, `test_m0_routes.py`, `test_m1_t3_followup.py`, `test_m1_t3_pins.py`, `test_m1_t4_domains.py`; `tests/unit/test_aiuc_gaps.py`, `test_cli_connector.py`, `test_environment_classification.py`, `test_evidence.py`, `test_oversight.py`) | T12c c2 | Record fixtures gain the c2 fields the broker now requires (`tool_name`, `fp_v` 2, `script`, `script_unbound`, `script_preview`), each marked "Named test-setup edit (T12c c2)"; `test_classification_factor_is_itemized` writes `tool.py` so `python tool.py` binds under the requires_dual floor (ADR 0010 s9 9.3). No assertion changed; manifest hashes updated in `5a1e597`'s follow-up | security (c2 review and re-review, APPROVE; `docs/control-plane/T12C_C2_SECURITY_REVIEW.md`) |
 | `tests/security/test_t0f_lexer.py::test_bounds_deny_with_a_reason_code` (setup) | T12c c2 CI follow-up | monkeypatches `shellwords.DEADLINE_SECONDS` to 60 s inside the test so the asserted reason code is the size bound, not the 100 ms deadline that won the race on the windows-latest runner (both are fail-closed denies). Assertion unchanged | security (setup-only sign-off, 28 Oct) |
 | `ee/tests/test_t9_routes.py::test_frozen_route_set` | T12c c4 | `_M2_T12C_ROUTES` adds (`GET`, `/api/v1/sync/escalations`) to `EXPECTED_ROUTES`, nothing removed | security (c4 leader review, APPROVE; `T12C_C4_SECURITY_REVIEW.md`) |
 | `ee/tests/test_t9_routes.py::test_frozen_route_set` | T12d d2 | `_M2_T12D_ROUTES` adds (`POST`, `/api/v1/sync/signer/genesis`) and (`GET`, `/api/v1/sync/signer/candidates`), nothing removed | security (d2 leader review, APPROVE; `T12D_D2_SECURITY_REVIEW.md`) |
@@ -146,8 +146,8 @@ M2T<n>Pending xfail counts: T2=5, T3=12, T4=2, T5=17, T6=48, T7=48, T8=52, T9=45
 
 ### Build records, T1-T5 (22 Oct 2026, orchestrator)
 
-1. **T1** (`f41af8d`): CI Windows ran the 3 SEC-27/28 ids as passed (run 39586885475, 1766 passed, 0 skipped). CI checks `M2_FROZEN_MANIFEST.sha256` in two halves: connector-standalone checks the non-`ee/` lines, and the `ee` job checks the `ee/` lines minus the 3 named exceptions in section 3.
-2. **Test edits beyond marker removal, approved by stop-and-ask.** security-engineer signed off each one by node id. The T3 tests raised the sentinel from inside the body. The builds turned each such `raise` into the equivalent `assert` (`test_m2_t3_domain_groups.py`, `test_m2_t3_pool.py`). `test_m2_t3_domain_groups.py` also patched the global `os.name`, which made `Path()` a `WindowsPath` on Linux, so 4 tests failed on CI Linux from `9d734e2`. They now patch the `keyhome._is_windows` seam. **Rule from T6 on:** the sentinel is raised only by one feature-absence helper at the top of a test, the final assertions are plain `assert`s, and tests never patch global `os` attributes.
+1. **T1** (`96591e1`): CI Windows ran the 3 SEC-27/28 ids as passed (run 39586885475, 1766 passed, 0 skipped). CI checks `M2_FROZEN_MANIFEST.sha256` in two halves: connector-standalone checks the non-`ee/` lines, and the `ee` job checks the `ee/` lines minus the 3 named exceptions in section 3.
+2. **Test edits beyond marker removal, approved by stop-and-ask.** security-engineer signed off each one by node id. The T3 tests raised the sentinel from inside the body. The builds turned each such `raise` into the equivalent `assert` (`test_m2_t3_domain_groups.py`, `test_m2_t3_pool.py`). `test_m2_t3_domain_groups.py` also patched the global `os.name`, which made `Path()` a `WindowsPath` on Linux, so 4 tests failed on CI Linux from `ebf7099`. They now patch the `keyhome._is_windows` seam. **Rule from T6 on:** the sentinel is raised only by one feature-absence helper at the top of a test, the final assertions are plain `assert`s, and tests never patch global `os` attributes.
 3. **T5 test-support policy.** `0007` keeps `FOR INSERT TO agg_owner` on `enrollment_codes` and `signer_links` only because the frozen T5 tests seed rows as `agg_owner`. Security ruled to keep it.
 4. **Local Windows with Postgres (no gate environment).** `test_t10_multiworker.py::test_revoked_session_401_all_workers` and `::test_concurrent_role_grants_idempotent` time out (httpx `ReadTimeout`). uvicorn `--workers 4` on Windows spawns rather than forks, and the workers starve under 40 fresh connections. CI Windows deselects `pg`, and CI Linux runs them. This is a named local limitation, not a skip.
 5. **ee CI matrix:** Python 3.12 and 3.15 (founder, 22 Oct 2026; the Chainguard `api` runtime is 3.15).
@@ -212,7 +212,7 @@ Users: alice (admin, operator), carol (admin, approver), bob (approver), eve (Gl
 
 | Check | Result |
 |---|---|
-| `git diff --stat 9b0d1b0 HEAD -- tests ee/tests` empty | PASS (no test changes since M1 done) |
+| `git diff --stat 0ec9476 HEAD -- tests ee/tests` empty | PASS (no test changes since M1 done) |
 | `M2_FROZEN_MANIFEST.sha256` covers all 116 tracked files under `tests/` and `ee/tests/` | PASS (115 existing + 1 T0a test) |
 | Node-id files written (`M2_BASELINE_NODEIDS.txt` 1761, `M2_BASELINE_EE_NODEIDS.txt` 446) | PASS |
 | Connector suite: 1765 passed, 1 skipped, 0 failed, 0 xfailed | PASS |

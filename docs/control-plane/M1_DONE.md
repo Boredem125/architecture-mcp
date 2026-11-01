@@ -8,10 +8,10 @@
    - Item 2: `ee/` suite in CI 412 passed, 0 skipped, branch coverage 87% (gate 85%).
    - Item 3: with `ee/` removed the C-class count holds (the 24-test gap is the four Class B files, ruling A). Fresh venv `pip install .`: M0 E2E 16/16 checks; step 5 dual control not exercised (carried to M2, below).
    - Item 4: on a fresh clone, Semgrep 0 ERROR, Gitleaks 0, Trivy fs 0; ZAP 0 High, 0 Medium; `api` image 0 fixable HIGH/CRITICAL (founder ruling), 44 unfixed Debian base-image HIGH published as a limit.
-   - Item 5: `demo.py` on a fresh clone at `2f71036`: 27 PASS, 0 FAIL (`M1_DEMO.md`). T13 security sign-off: APPROVE WITH CONDITIONS, F1/F2 fixed and re-reviewed.
+   - Item 5: `demo.py` on a fresh clone at `f0070ea`: 27 PASS, 0 FAIL (`M1_DEMO.md`). T13 security sign-off: APPROVE WITH CONDITIONS, F1/F2 fixed and re-reviewed.
 3. **Built:** Phase A connector hardening (T0-T4c: money floor, hook bounds, lexer, runners, `--root` allowlist, key home, pinned approver keys, domain-tagged signatures, legacy evidence). Phase B `ee/` control plane (T5-T15): Postgres with forced RLS and a DB-computed admin audit chain, OIDC ID-token verification, login/sessions/CSRF/setup code, orgs/projects/RBAC with IDOR 404s, 4-worker uvicorn on one Postgres, compose stack (Caddy, Keycloak demo), one-page web app, docs.
 4. **First real Docker run (laptop, 21 Oct)** found and fixed, each signed off by security-engineer: Caddy file capability vs `cap_drop: ALL`; secrets unreadable by their consumers (now per-consumer owner, 0400/0440); `migrate` ignored `AGG_DATABASE_URL_FILE`; Keycloak `start-dev` on a read-only FS (now built at image-build time, `USER 1000`); `demo.py` added bob with the username instead of his Keycloak `sub` and reported a failed login as PASS.
-5. **Audit of the cloud session's range** (`29ed27d..e5d6665`, lead-architect): OK WITH ISSUES, no Critical/High; named exceptions recorded in `M1_BASELINE.md`.
+5. **Audit of the cloud session's range** (`fc18237..883d8b1`, lead-architect): OK WITH ISSUES, no Critical/High; named exceptions recorded in `M1_BASELINE.md`.
 6. **Carried to M2:**
    - E2E step 5 dual control: the money preset escalates (`GOVERNANCE_UNEVALUATED`) and one reviewer approves, but `requires_dual` is false (Stripe allowlisted, semantic service absent). Make a live two-reviewer path part of the M2 demo.
    - Slimmer `api` base image (distroless or Chainguard) to clear the 44 unfixed HIGH.

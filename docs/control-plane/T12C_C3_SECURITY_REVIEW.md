@@ -1,6 +1,6 @@
 # T12c c3 security review (worker tier)
 
-Reviewer: security-engineer (Opus 4.6 W). Date: 28 Oct 2026. Scope: sync_cmds.py, connector_cmds.py, test_m2_t12c_c3.py, test_m2_t12b2_review3.py, test_m2_t12b2_review4.py (uncommitted tree at c51d0f0).
+Reviewer: security-engineer (Opus 4.6 W). Date: 28 Oct 2026. Scope: sync_cmds.py, connector_cmds.py, test_m2_t12c_c3.py, test_m2_t12b2_review3.py, test_m2_t12b2_review4.py (uncommitted tree at 5d83cdc).
 
 ## Verdict: CHANGES
 

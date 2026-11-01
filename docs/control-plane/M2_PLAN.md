@@ -1,6 +1,6 @@
 # M2 plan: sync (enrollment, signed policy bundles, audit upload) plus M1 carry-overs
 
-Status: Revised (21 Oct 2026, lead-architect) after `REVIEW_M2.md`. Security: APPROVE WITH CONDITIONS (S1-S15, Q1 and Q3 rulings). QA: APPROVE WITH CONDITIONS (Q1-Q11). Security re-review (round 2): S13 and N1-N9 are folded in. QA: APPROVE (all closed). See "Review disposition". Founder approved 21 Oct 2026; see "Founder rulings". M1 is done (`9b0d1b0`, `M1_DONE.md`).
+Status: Revised (21 Oct 2026, lead-architect) after `REVIEW_M2.md`. Security: APPROVE WITH CONDITIONS (S1-S15, Q1 and Q3 rulings). QA: APPROVE WITH CONDITIONS (Q1-Q11). Security re-review (round 2): S13 and N1-N9 are folded in. QA: APPROVE (all closed). See "Review disposition". Founder approved 21 Oct 2026; see "Founder rulings". M1 is done (`0ec9476`, `M1_DONE.md`).
 
 ## Next action
 
@@ -173,7 +173,7 @@ Status: Revised (21 Oct 2026, lead-architect) after `REVIEW_M2.md`. Security: AP
 
 ## Tests first
 
-1. **T0a (QA):** freeze at `9b0d1b0` in `M2_BASELINE.md` and `M2_FROZEN_MANIFEST.sha256` (every tracked file under `tests/` and `ee/tests/`). Also freeze the node-id sets, the per-environment named skip lists, the **threat-to-node-id matrix** (node ids fixed now) and the demo preset.
+1. **T0a (QA):** freeze at `0ec9476` in `M2_BASELINE.md` and `M2_FROZEN_MANIFEST.sha256` (every tracked file under `tests/` and `ee/tests/`). Also freeze the node-id sets, the per-environment named skip lists, the **threat-to-node-id matrix** (node ids fixed now) and the demo preset.
 2. **Per task:** QA commits the failing tests first. Each is `pytest.mark.xfail(strict=True, raises=M2T<n>Pending)`, a sentinel in `tests/m2_pending.py` and `ee/tests/m2_pending.py` that a helper raises while the feature is absent. The count goes into `M2_BASELINE.md` in the same commit. The build removes only the markers. Any other test edit: stop and ask QA and security.
 3. **Postgres boundary (Q2):** every `tests/**/test_m2_*` file is Postgres-free. It uses a fake server (`tests/m2_fakes.py`) that serves fixtures signed by keys made in the test. The `sync_server` fixture (real `agg_cp`, `--workers 4`, Postgres 16, no SQLite) lives only in `ee/tests/conftest.py`. The connector CI job has no Postgres.
 4. **Frozen files:** no connector test changes. The named `ee/` exceptions are `test_t8p2_session.py` (3 CSRF tests made stronger), `test_t10_multiworker.py` and `test_m1_t13_review.py` (setup only). Security signs off by node id. Any other frozen failure: stop, list it, security decides.

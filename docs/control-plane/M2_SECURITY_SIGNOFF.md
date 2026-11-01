@@ -2,7 +2,7 @@
 
 **Reviewer:** security-engineer (claude-opus-5-5, leader tier)
 **Date:** 2026-10-24
-**Scope:** `git diff 9b0d1b0..aaa8fc1` (M1 done to T14), 42 commits. Focus on attacks across tasks (T5-T14); each task already had its own review (HANDOFF.md).
+**Scope:** `git diff 0ec9476..77a59b6` (M1 done to T14), 42 commits. Focus on attacks across tasks (T5-T14); each task already had its own review (HANDOFF.md).
 **Focus areas:** the connector approval TCB (`src/sandbox/connector/approval.py`), sync state (`sync/state.py`, `sync/process.py`), the server approval routes (`ee/src/agg_cp/sync/escalations.py`), the web signing code (`ee/web/src`).
 
 ## Method
@@ -33,7 +33,7 @@ The M2 connector sync path has no product entry point. There is no `sandbox enro
 - **Agent writes to sync state (threats 20, 26, 37):** every M2 state file is under `.sandbox/` (`state/sync/{managed,pinned_root,registry,bundle,server_time_state,seen_nonces}.json`, `policy_history/`, `pending/`, `claimed/`, `done/`) or the key home (managed marker copy, device key). Both are covered by the non-removable `_PROTECTED_SEQS` and `keyhome.touches` checks in `classify.py:52`, `:373-382` for Write/Edit and the shell forms. `enroll`, `unenroll`, `sync` and `signer` are in `_APPROVER_SUBCOMMANDS` (`classify.py:64-67`).
 - **Server tenancy:** every M2 SECURITY DEFINER function (0007-0010) has `SET search_path = pg_catalog, pg_temp`, REVOKE PUBLIC and GRANT agg_app. M2 tables are FORCE RLS (0007:388). The decisions route is scoped to the token's `connector_id`. The approvals route has T13 three-way identity binding.
 - **Deny path:** one valid signed deny is honoured under skew, registry expiry and nonce corruption (fail toward deny). Prod remote approvals are refused on both sides (N9).
-- **Scanners:** Semgrep 1.178.0 (`.venv`, `p/python` + `p/secrets`) on `approval.py`, `sync/`, `ee/src/agg_cp/sync/` and the new test: 0 findings. gitleaks 8.30.1 on `9b0d1b0..HEAD` (42 commits): no leaks. Trivy (vuln + misconfig, HIGH/CRITICAL) on `ee/`: 0.
+- **Scanners:** Semgrep 1.178.0 (`.venv`, `p/python` + `p/secrets`) on `approval.py`, `sync/`, `ee/src/agg_cp/sync/` and the new test: 0 findings. gitleaks 8.30.1 on `0ec9476..HEAD` (42 commits): no leaks. Trivy (vuln + misconfig, HIGH/CRITICAL) on `ee/`: 0.
 
 ## Not verified
 
