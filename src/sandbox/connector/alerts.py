@@ -33,6 +33,8 @@ _ALWAYS = {
     "runners_allowed": "runners",
     "key_pinned": "key_pinned",
     "clock_skew": "clock_skew",
+    "script_changed": "script_changed",
+    "shell_unavailable": "shell_unavailable",
 }
 # Escalations alert only when critical or dual control.
 _ESCALATIONS = {"shell_escalated", "tool_call_escalated", "escalate_redirect"}
@@ -60,7 +62,7 @@ def build(layout: FolderLayout, session_id: str, record: dict[str, Any], kind: s
     """The alert payload: enough to triage, never file contents or command output."""
     risk = record.get("risk") or {}
     sem = record.get("semantic") or {}
-    return {
+    alert = {
         "ts": time.time(),
         "kind": kind,
         "event": record.get("event"),
@@ -74,6 +76,12 @@ def build(layout: FolderLayout, session_id: str, record: dict[str, Any], kind: s
         "risk_score": risk.get("score"),
         "risk_band": risk.get("band"),
     }
+    # T16 F-2: carry sha256 fields on refusal alerts so the alert names
+    # the expected and actual hashes (M2_DEMO s7.3).
+    for sha_key in ("expected_sha256", "actual_sha256"):
+        if record.get(sha_key):
+            alert[sha_key] = record[sha_key]
+    return alert
 
 
 def _post(url: str, payload: dict[str, Any], timeout: float) -> str:

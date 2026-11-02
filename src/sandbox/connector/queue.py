@@ -208,6 +208,24 @@ class EscalationQueue:
         except OSError:
             pass
 
+        # T16 F-2: emit an alert on refusal (SCRIPT_CHANGED, SHELL_UNAVAILABLE)
+        # after signing, best-effort like every other alert emit.
+        if result.get("state") == "refused":
+            try:
+                from sandbox.connector import alerts
+
+                session_id = ""
+                try:
+                    session_file = self._layout.root / ".sandbox" / "session.json"
+                    session_id = json.loads(
+                        session_file.read_text(encoding="utf-8")
+                    ).get("session_id", "")
+                except (OSError, ValueError):
+                    pass
+                alerts.emit(self._layout, session_id, result)
+            except Exception:  # noqa: BLE001 — alert is best-effort
+                pass
+
         # Clean up the claimed marker if present.
         claimed = self._layout.claimed_dir / f"{request_id}.json"
         if claimed.exists():

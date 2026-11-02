@@ -1585,6 +1585,116 @@ def test_extra8_refusal_record_signed_terminal_chained(tmp_path, monkeypatch):
     assert not marker.exists(), "re-delivery must not create the marker"
 
 
+# ===================================================================
+# T16 5(d) / F-2 (M2_DEMO.md section 7.3): a SCRIPT_CHANGED refusal
+# raises the critical ``script_changed`` alert through the same
+# ``alerts`` path as every other terminal refusal.  Tests-first,
+# strict xfail at HEAD.
+# ===================================================================
+
+
+class M2T16AlertPending(Exception):
+    """T16 F-2: refusal records emit a script_changed alert."""
+
+
+def _t16_refuse_script_changed(tmp_path, monkeypatch):
+    """Swap-then-approve; returns (layout, request_id, done_record, expected_sha)."""
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
+    lay = _ws(tmp_path / "ws")
+
+    marker = tmp_path / "marker_t16_alert.txt"
+    script = lay.root / "t16_alert.py"
+    script.write_text(
+        f'import pathlib; pathlib.Path(r"{marker}").write_text("ran")\n',
+        encoding="utf-8",
+    )
+    rec, req_id = _hook_escalate(lay, "python t16_alert.py", monkeypatch)
+    expected_sha = (rec.get("script") or {}).get("sha256", "")
+
+    script.write_text("# attacker bytes\n", encoding="utf-8")
+
+    from sandbox.connector.approval import approve
+    result = asyncio.run(approve(lay, req_id, "test-reviewer"))
+    if result.get("status") == "awaiting_second":
+        result = asyncio.run(approve(lay, req_id, "test-reviewer-2"))
+
+    assert not marker.exists(), "refusal should not execute"
+    done = _done_record(lay, req_id)
+    assert done is not None and done.get("state") == "refused", done
+    return lay, req_id, done, expected_sha
+
+
+def test_t16_script_changed_refusal_raises_alert(tmp_path, monkeypatch):
+    """After the swap-then-approve refusal, ``alerts.read_alerts(layout)``
+    holds one ``script_changed`` alert naming the request_id, the expected
+    and actual sha256, and no command output."""
+    _need_t12c()
+    lay, req_id, done, expected_sha = _t16_refuse_script_changed(tmp_path, monkeypatch)
+
+    from sandbox.connector import alerts
+    all_alerts = alerts.read_alerts(lay, limit=100)
+    found = [a for a in all_alerts
+             if a.get("event") == "script_changed"
+             or a.get("kind") == "script_changed"]
+    if not found:
+        raise M2T16AlertPending(
+            f"no script_changed alert after refusal of {req_id}; "
+            f"alerts={[(a.get('kind'), a.get('event')) for a in all_alerts]}"
+        )
+    assert len(found) == 1, f"expected one script_changed alert, got {len(found)}"
+    alert = found[0]
+    assert alert.get("event") == "script_changed"
+    assert alert.get("kind") == "script_changed"
+    assert alert.get("request_id") == req_id
+    assert done.get("event") == "script_changed", (
+        f"refusal done-record must carry event=script_changed, got {done.get('event')!r}"
+    )
+    actual_sha = done.get("actual_sha256", "")
+    assert expected_sha and actual_sha and expected_sha != actual_sha
+    text = json.dumps(alert)
+    assert expected_sha in text, "alert does not name the expected sha256"
+    assert actual_sha in text, "alert does not name the actual sha256"
+    # Never command output.
+    for key in ("stdout", "stderr", "output"):
+        assert key not in alert, f"alert carries command output field {key!r}"
+    assert "attacker bytes" not in text
+
+
+def test_t16_twin_executed_record_raises_no_script_changed_alert(tmp_path, monkeypatch):
+    """Twin: an unchanged script that runs to ``executed`` raises no
+    script_changed (or shell_unavailable) alert."""
+    _need_t12c()
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
+    lay = _ws(tmp_path / "ws")
+
+    marker = tmp_path / "marker_t16_twin.txt"
+    script = lay.root / "t16_twin.py"
+    script.write_text(
+        f'import pathlib; pathlib.Path(r"{marker}").write_text("ran")\n',
+        encoding="utf-8",
+    )
+    rec, req_id = _hook_escalate(lay, "python t16_twin.py", monkeypatch)
+
+    from sandbox.connector.approval import approve
+    result = asyncio.run(approve(lay, req_id, "test-reviewer"))
+    if result.get("status") == "awaiting_second":
+        result = asyncio.run(approve(lay, req_id, "test-reviewer-2"))
+
+    done = _done_record(lay, req_id)
+    assert done is not None and done.get("state") == "executed", (done, result)
+    assert marker.exists(), "unchanged script should have run"
+
+    from sandbox.connector import alerts
+    bad = [a for a in alerts.read_alerts(lay, limit=100)
+           if a.get("event") in ("script_changed", "shell_unavailable")
+           or a.get("kind") in ("script_changed", "shell_unavailable")]
+    assert bad == [], f"executed record raised a refusal alert: {bad}"
+
+
 
 def test_extra8_refusal_record_remote_path_signed(tmp_path, monkeypatch):
     """A refusal on the remote path is signed by connector:<device_id>."""

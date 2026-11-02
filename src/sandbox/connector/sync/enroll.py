@@ -65,6 +65,7 @@ def enroll(
     expect_fingerprint: str | None,
     *,
     operator: str | None = None,
+    cwd_layout: Any | None = None,
 ) -> dict[str, Any]:
     """Enroll this connector with the control plane.
 
@@ -204,6 +205,7 @@ def enroll(
         fingerprint=computed_fp,
         device_sk=sk,
         operator_user_id=server_operator,
+        cwd_layout=cwd_layout,
     )
 
     return data
@@ -399,6 +401,7 @@ def _persist_enrollment(
     fingerprint: str,
     device_sk: SigningKey,
     operator_user_id: str = "",
+    cwd_layout: Any | None = None,
 ) -> None:
     """Write managed marker, pinned_root.json, registry.json, device_id,
     device key, enrollment.json.
@@ -412,28 +415,18 @@ def _persist_enrollment(
     import os
 
     from sandbox.connector.keyhome import (
-        _discover_workspace_roots,
         key_home_root,
     )
     from sandbox.connector.layout import FolderLayout
 
-    # Discover workspace from the key home
-    roots = _discover_workspace_roots()
-    layout = None
-    for root in roots:
-        try:
-            lay = FolderLayout(root)
-            if lay.exists():
-                layout = lay
-                break
-        except Exception:  # noqa: BLE001
-            continue
-
-    if layout is None:
-        raise EnrollError("no initialized workspace found; run 'sandbox init' first")
-
-    sync_dir = layout.root / ".sandbox" / "state" / "sync"
-    sync_dir.mkdir(parents=True, exist_ok=True)
+    # T16 F-9: resolve the workspace from the cwd, never iterate
+    # discovered roots, never fall back (M2_DEMO s7.2).
+    layout = cwd_layout if cwd_layout is not None else FolderLayout(Path.cwd())
+    if not layout.exists():
+        raise EnrollError(
+            "no .sandbox/ in the current directory; "
+            "run 'sandbox init' first (enroll uses the cwd, not a discovered root)"
+        )
 
     ws_id_file = layout.base / "workspace_id"
     if not ws_id_file.exists():
@@ -443,6 +436,28 @@ def _persist_enrollment(
     kh = key_home_root()
     if kh is None:
         raise EnrollError("key home not available")
+
+    # T16 F-9: require the key-home entry for this workspace.  The entry
+    # must exist, its workspace_root must equal the resolved cwd, and the
+    # workspace_id must match.  Never iterate, never fall back (M2_DEMO
+    # s7.2).  Every write is after every check so a refusal writes nothing.
+    kh_ws_root_file = kh / ws_id / "workspace_root"
+    if not kh_ws_root_file.exists():
+        raise EnrollError(
+            f"no key-home entry for workspace {ws_id}; "
+            "run 'sandbox init' in this directory first"
+        )
+    kh_ws_root = Path(
+        kh_ws_root_file.read_text(encoding="utf-8").strip()
+    ).resolve()
+    if kh_ws_root != layout.root.resolve():
+        raise EnrollError(
+            f"key-home workspace_root {kh_ws_root} does not match "
+            f"cwd {layout.root.resolve()}; enroll from the correct directory"
+        )
+
+    sync_dir = layout.root / ".sandbox" / "state" / "sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
 
     temp_files: list[Path] = []
     renames: list[tuple[Path, Path]] = []

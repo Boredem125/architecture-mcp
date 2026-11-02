@@ -101,12 +101,26 @@ def _warn_display_safety(fields: dict[str, str]) -> bool:
 @click.option("--operator", default=None, help="Expected operator user_id (must match server)")
 def enroll(server: str, code: str, expect_fingerprint: str, operator: str | None) -> None:
     """Enroll this connector with the control plane."""
-    from sandbox.connector.sync.enroll import enroll as _enroll
+    from pathlib import Path
+
+    from sandbox.connector.layout import FolderLayout
+    from sandbox.connector.sync.enroll import EnrollError, enroll as _enroll
 
     # T15b-2 MUST-2: the one-time code never travels over http:// to a
-    # non-loopback host.
+    # non-loopback host.  Checked first, before any other logic.
     _check_transport_safety(server)
-    result = _enroll(server, code, expect_fingerprint, operator=operator)
+
+    # T16 F-9: resolve the workspace from the cwd; refuse if .sandbox is
+    # absent (M2_DEMO s7.2).  Never iterate discovered roots.
+    cwd_layout = FolderLayout(Path.cwd())
+    if not cwd_layout.exists():
+        raise click.ClickException(
+            "no .sandbox/ in the current directory; "
+            "run 'sandbox init' first"
+        )
+
+    result = _enroll(server, code, expect_fingerprint, operator=operator,
+                     cwd_layout=cwd_layout)
     click.echo(f"Enrolled: device_id={result.get('device_id', '?')}")
     op = result.get("operator_user_id", "")
     if op:

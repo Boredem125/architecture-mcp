@@ -1,6 +1,6 @@
 # ADR 0001: Sync protocol between the connector and the control plane
 
-Status: Proposed (17 Oct 2026, lead-architect). Amended for M2 (21 Oct 2026, M2 T0b): see "M2 amendments" at the bottom. The M2 plan that this text comes from was reviewed by security-engineer and qa-engineer and approved by the founder on 21 Oct 2026 (`docs/control-plane/M2_PLAN.md`, `REVIEW_M2.md`). Accepted for M2: the security approval is quoted below.
+Status: Proposed (17 Oct 2026, lead-architect). Amended for M2 (21 Oct 2026, M2 T0b): see "M2 amendments" at the bottom. The M2 plan that this text comes from was reviewed by security-engineer and qa-engineer and approved by the founder on 21 Oct 2026 (`docs/control-plane/M2_PLAN.md`, `REVIEW_M2.md`). Accepted for M2: the security approval is quoted below. Amendment A1 (2 Nov 2026, M2 T16b: change approvals stored and served) approved by the founder on 1 Nov 2026 (T16 triage ruling 1); see the end of this file.
 
 ## Next action
 
@@ -207,3 +207,44 @@ Source: `docs/control-plane/M2_PLAN.md` D1-D8 and the founder rulings of 21 Oct 
 
 1. ~~Security: should `sandbox unenroll --decision` be refused when the pinned registry has expired?~~ **Ruled (security, T0b):** yes, refused; the operator syncs first. A decision may live at most 24 h (A1.10).
 2. ~~Security: confirm the lead decision in A1.10 (un-enroll keeps the enforced policy as the local approved policy).~~ **Confirmed (security, T0b),** with three conditions now in A1.10: every section is kept or un-enroll fails, the policy and audit record are written before the markers go, and open managed requests are closed.
+
+## Amendment A1 (2 Nov 2026): change approvals stored and served
+
+Approved by the founder on 1 Nov 2026: T16 triage ruling 1 (`docs/control-plane/T12B_PLAN.md`, "Founder rulings on the T16 triage"). Task T16b. It amends A2.1 and A6.2 above. Cite it as "ADR 0001 Amendment A1 (2 Nov)"; it is not the M2 amendments' subsection "A1. Enrollment".
+
+### Context
+
+- `POST /api/v1/admin/bundles` parses `change_approvals` and drops them. Nothing stores or serves them, and `GET /sync/bundle` returns the bare envelope (M2_DEMO 7.1, 7.5). So no connector can apply a server bundle: `verify_and_apply` needs the approvals and has no way to get them (F-1).
+- A change approval signs the bundle hash, which is the SHA-256 of the canonical bundle payload. So approvals cannot live inside that payload.
+
+### Decision
+
+1. **Store.** `POST /api/v1/admin/bundles` stores each element of `change_approvals` verbatim in the existing `policy_change_approvals` table (migration 0007), keyed by the new `policy_bundles` row, in the same transaction as the bundle insert. No new migration. Column use in M2:
+   - `change_request_id`: the `policy_bundles.id` of the row. 0007 declares no foreign key; `policy_change_requests` is not written in M2.
+   - `signature`: the whole approval envelope as received, as canonical JSON text.
+   - `key_id`: the envelope's first `signatures[].key_id`, an index copy only.
+   - `user_id`: the owner of that `key_id` in the org's `approver_keys` (revoked or not). This fills a NOT NULL column; it is attribution, not a vote. If an element is not an object with a `signatures` list, or no `approver_keys` row matches, the publish is refused 400 `bad_change_approvals` and nothing is stored. With an honest server, no connector could count such an approval, so the refusal loses nothing.
+   - `signed_at`: the server's store time. The server reads no signed time from the envelope.
+   - An empty or absent list stores no rows. The publish still succeeds; every connector refuses that bundle.
+2. **Serve.** `GET /api/v1/sync/bundle?after=<seq>` (replaces the bare-envelope body in A6.2):
+   - 204, empty body, when the device's project has no stored bundle with `sequence > after`.
+   - Else 200 `{"envelope": <signed envelope, unchanged>, "change_approvals": [...]}`. The list holds every approval stored for that bundle row, parsed back from `signature`, in no promised order (the verifier counts distinct users).
+   - The row served is the lowest `sequence` greater than `after`, not the latest. The connector refuses a `base_sequence` other than its current sequence (A2.3), so serving the latest would strand a connector that is more than one bundle behind. Today's code serves the latest.
+   - Nothing consumes the old body (F-1), so no client breaks.
+3. **Beside, never inside.** Approvals sit beside the envelope, never inside the hashed and signed payload. The server signs the payload as given. `verify_and_apply` takes the approvals as its separate `change_approvals` argument and never reads approvals from the payload. The `change_approvals[]` entry in the A2.1 payload list is superseded: anything there is hashed data only.
+4. **The connector stays authoritative.** `verify_and_apply` checks the approvals against its pinned registry: 2 distinct CLI users for a first bundle or a loosening, 1 for a tightening (A2.3). Nothing the server stores or serves changes that decision.
+5. **The server does not judge approvals in M2.** It does not count them, check their bundle hash or compare against the previous row. Server logic never reads `policy_bundles` as approved policy. Operator self-approval is refused server-side unconditionally (M2_DEMO 7.1 MUST: `submit_approval` sets `allow_req = False`); `allow_requester` is honoured only by the connector's locally verified bundle.
+6. **Deferred.** Full server-side verification at publish (M2_DEMO 7.1 "Full fix": `admin_create_bundle` runs the connector's rule and refuses otherwise): later, sized by lead-architect. Only after it lands may server logic read `policy_bundles` as approved policy.
+
+### Named limit (M2, exact wording from M2_DEMO 7.1)
+
+"M2: the control plane signs and stores a bundle on one admin's request, retaining and serving its change approvals verbatim, without verifying them. No connector applies such a bundle: the connector verifies two distinct CLI approvals against the pinned registry before any loosening takes effect, and the control plane refuses operator self-approval regardless of the bundle's `allow_requester` flag."
+
+Effective when T16b lands (server-side retention and serving of change approvals). Prior wording said "without verifying or retaining"; retention and serving are now implemented.
+
+### Consequences
+
+- With T16a, a server bundle reaches the laptop through the pull path. T16b's done-when check tests this amendment: a 2-approval loosening is applied, a 0-approval loosening is refused by the connector.
+- One admin can still publish an unapproved bundle. Every connector refuses it (M2_DEMO 7.5 holds), but the server's `policy_bundles` rows stay unverified until item 6.
+- Security properties: none loosened. The publish refusal in item 1 and the next-row rule in item 2 only refuse more or fix delivery order.
+- Tests first (qa): store then serve returns the same approval content; 204 when nothing is newer; the lowest next row is served; a refused publish stores nothing.

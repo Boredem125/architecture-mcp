@@ -2075,3 +2075,202 @@ def test_get_escalation_detail_carries_registry_version(t12b_server):
     assert data["registry_version"] == 1, (
         f"expected registry_version=1, got {data['registry_version']}"
     )
+
+
+# ===================================================================
+# T16 F-8 (M2_DEMO.md section 7.1): server-side operator self-approval
+# must fail closed regardless of ``allow_requester`` in the latest
+# ``policy_bundles`` row.  Tests-first, strict xfail at HEAD.
+#
+# Rule: never write ``policy_bundles`` or ``change_approvals`` directly;
+# the bundle goes in through ``POST /api/v1/admin/bundles``.
+# ===================================================================
+
+
+class M2T16F8Pending(Exception):
+    """T16 F-8: submit_approval refuses operator self-approval unconditionally."""
+
+
+@pytest.fixture(scope="module")
+def t16_f8_server(pg_url, app_url, owner_url, pg_roles, tmp_path_factory):
+    """4-worker agg_cp server with a bundle signer key configured.
+
+    The bundle signer key is passed through ``extra_env`` so the server
+    subprocess can sign bundles posted via ``POST /admin/bundles``.
+    alice is admin AND the device operator (the F-8 exploit path);
+    bob is a second approver.
+    """
+    key_dir = tmp_path_factory.mktemp("t16_f8_bundle_signer")
+    key_file = key_dir / "bundle_signer.key"
+    key_file.write_bytes(bytes(SigningKey.generate()).hex().encode("ascii"))
+
+    gen = make_sync_server(
+        pg_url, app_url, owner_url,
+        org_names=["T16 F8 Org"],
+        extra_env={"AGG_BUNDLE_SIGNER_KEY_FILE": str(key_file)},
+    )
+    info = next(gen)
+
+    conninfo = _conninfo(owner_url)
+    with psycopg.connect(conninfo, autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)",
+                     [info["org_id"]])
+        alice_id = _seed_user_row(conn, info["org_id"], "alice@t16f8.test")
+        bob_id = _seed_user_row(conn, info["org_id"], "bob@t16f8.test")
+        conn.execute(
+            "INSERT INTO role_bindings "
+            "(id, org_id, user_id, scope_type, scope_id, role, created_at) "
+            "VALUES (%s, %s, %s, 'org', %s, 'admin', now()) "
+            "ON CONFLICT DO NOTHING",
+            [str(uuid.uuid4()), info["org_id"], alice_id, info["org_id"]],
+        )
+    info["alice_id"] = alice_id
+    info["bob_id"] = bob_id
+
+    try:
+        yield info
+    finally:
+        gen.close()
+
+
+def _f8_bundle_payload(org_id: str, project_id: str, *, sequence: int,
+                       allow_requester: bool) -> dict:
+    return {
+        "org_id": org_id,
+        "project_id": project_id,
+        "sequence": sequence,
+        "base_sequence": sequence - 1,
+        "registry_version": 1,
+        "folder_policy": {"shell": {"blocklist_action": "deny"}},
+        "governance_policy": {},
+        "mcp_policy": {},
+        "approval": {"local_fallback": False,
+                     "allow_requester": allow_requester},
+        "change_approvals": [],
+        "issued_at": time.time(),
+        "not_before": time.time() - 60,
+        "expires_at": time.time() + 7 * 86400,
+    }
+
+
+def _f8_setup(srv, tag: str):
+    """Project + registry (alice, bob) + connector operated by alice +
+    one uploaded escalation.  alice (admin) then posts bundle seq 1
+    (allow_requester False) and seq 2 (allow_requester True) through
+    ``POST /api/v1/admin/bundles``.  Returns a dict of handles."""
+    import httpx
+    alice_sk, alice_pub, alice_kid = keygen()
+    bob_sk, bob_pub, bob_kid = keygen()
+    device_sk, device_pub, _ = keygen()
+    project_id = str(uuid.uuid4())
+
+    with psycopg.connect(_conninfo(srv["owner_url"])) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)",
+                     [srv["org_id"]])
+        create_project(conn, srv["org_id"], project_id, environment="staging")
+        conn.commit()
+
+    _seed_registry_with_keys(srv["owner_url"], srv["org_id"], [
+        {"key_id": alice_kid, "public_key": alice_pub.hex(),
+         "user_id": srv["alice_id"], "kind": "cli", "roles": ["approver"]},
+        {"key_id": bob_kid, "public_key": bob_pub.hex(),
+         "user_id": srv["bob_id"], "kind": "cli", "roles": ["approver"]},
+    ])
+    device_id = _seed_connector(
+        srv["owner_url"], srv["org_id"], project_id, device_pub,
+        operator_user_id=srv["alice_id"],
+    )
+    token = secrets.token_hex(32)
+    _seed_device_token(srv["owner_url"], srv["org_id"], project_id,
+                       device_id, token)
+
+    request_id = f"req-t16f8-{tag}-{uuid.uuid4().hex[:8]}"
+    status, esc_id = _upload_escalation(
+        srv["base_url"], device_id, token, request_id,
+    )
+    assert status == 200, f"escalation upload failed: {status}"
+
+    # alice (admin) posts the bundles through the route, never the table.
+    admin_cookie, admin_csrf = _make_fresh_session(
+        srv["owner_url"], srv["org_id"], srv["alice_id"],
+    )
+    for seq, allow in ((1, False), (2, True)):
+        r = httpx.post(
+            f"{srv['base_url']}/api/v1/admin/bundles",
+            json={"project_id": project_id,
+                  "bundle_payload": _f8_bundle_payload(
+                      srv["org_id"], project_id, sequence=seq,
+                      allow_requester=allow),
+                  "change_approvals": []},
+            cookies={"__Host-agg_session": admin_cookie},
+            headers={"X-CSRF-Token": admin_csrf},
+            timeout=10.0,
+        )
+        assert r.status_code == 200, (
+            f"POST /admin/bundles seq {seq} failed: {r.status_code} {r.text}"
+        )
+        assert r.json().get("sequence") == seq
+
+    return {
+        "project_id": project_id, "device_id": device_id,
+        "esc_id": esc_id, "request_id": request_id,
+        "alice_sk": alice_sk, "bob_sk": bob_sk,
+    }
+
+
+def _f8_post_approval(srv, h, sk, user_id):
+    import httpx
+    cookie, csrf = _make_fresh_session(srv["owner_url"], srv["org_id"], user_id)
+    envelope = _make_remote_approval_envelope(
+        sk,
+        request_id=h["request_id"],
+        org_id=srv["org_id"], project_id=h["project_id"],
+        device_id=h["device_id"], user_id=user_id,
+    )
+    return httpx.post(
+        f"{srv['base_url']}/api/v1/sync/escalations/{h['esc_id']}/approvals",
+        json=envelope,
+        cookies={"__Host-agg_session": cookie},
+        headers={"X-CSRF-Token": csrf},
+        timeout=10.0,
+    )
+
+
+@pytest.mark.pg
+def test_t16_f8_operator_self_approval_refused_despite_allow_requester_bundle(t16_f8_server):
+    """F-8: the latest bundle (posted by alice as admin, no change_approvals)
+    says ``allow_requester: true``.  alice, the device's operator, approves
+    her own device's escalation.  The server must refuse with the same
+    403 ``operator self-approval refused`` as when the flag is absent."""
+    _need("agg_cp.sync.escalations", "_T12B_M4_BINDING")
+    srv = t16_f8_server
+    h = _f8_setup(srv, "self")
+
+    r = _f8_post_approval(srv, h, h["alice_sk"], srv["alice_id"])
+
+    err = ""
+    try:
+        err = str(r.json().get("error", ""))
+    except Exception:  # noqa: BLE001
+        pass
+    if r.status_code != 403 or "self-approval" not in err:
+        raise M2T16F8Pending(
+            f"operator self-approval accepted via allow_requester bundle: "
+            f"{r.status_code} {r.text[:200]}"
+        )
+    assert r.status_code == 403
+    assert err == "operator self-approval refused"
+
+
+@pytest.mark.pg
+def test_t16_f8_twin_other_approver_still_accepted(t16_f8_server):
+    """Twin: with the same allow_requester bundle in place, a different
+    approver (bob) is still accepted."""
+    _need("agg_cp.sync.escalations", "_T12B_M4_BINDING")
+    srv = t16_f8_server
+    h = _f8_setup(srv, "twin")
+
+    r = _f8_post_approval(srv, h, h["bob_sk"], srv["bob_id"])
+    assert r.status_code == 200, (
+        f"second approver refused: {r.status_code} {r.text}"
+    )

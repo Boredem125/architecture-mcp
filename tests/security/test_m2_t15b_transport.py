@@ -368,7 +368,14 @@ def test_t15b2_enroll_http_non_loopback_refused_before_socket(tmp_path, monkeypa
 def test_t15b2_twin_enroll_loopback_http_still_attempted(tmp_path, monkeypatch):
     """Positive twin: loopback http passes the transport check and the
     enroll request is attempted (it fails harmlessly against the mock)."""
-    monkeypatch.chdir(tmp_path)
+    from sandbox.connector.install import init as sandbox_init
+    kh = tmp_path / "keyhome"
+    kh.mkdir()
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    sandbox_init(ws, claude=False, mcp=False)
+    monkeypatch.chdir(ws)
     tracker = _MockTracker({})
     from sandbox.cli.main import cli
     with patch("urllib.request.urlopen", side_effect=tracker.urlopen):

@@ -1003,38 +1003,13 @@ def escalation_router(db_url: str, clock=None) -> APIRouter:
             ).fetchone()
             operator_uid = operator_row[0] if operator_row else None
             if operator_uid is not None and str(operator_uid) == str(auth_user_id):
-                # R2: read allow_requester ONLY from the latest signed
-                # bundle for this project, never from the escalation record
-                allow_req = False
-                try:
-                    bundle_row = conn.execute(
-                        "SELECT bundle_blob FROM policy_bundles "
-                        "WHERE project_id = %s::uuid "
-                        "ORDER BY sequence DESC LIMIT 1",
-                        [stored_project_id],
-                    ).fetchone()
-                    if bundle_row and bundle_row[0] is not None:
-                        blob = bundle_row[0]
-                        if isinstance(blob, memoryview):
-                            blob = bytes(blob)
-                        if isinstance(blob, bytes):
-                            bundle_data = json.loads(blob)
-                        else:
-                            bundle_data = json.loads(blob)
-                        bp = bundle_data
-                        if isinstance(bp, dict) and "payload" in bp:
-                            bp = bp["payload"]
-                        if isinstance(bp, dict):
-                            approval = bp.get("approval", {})
-                            if isinstance(approval, dict):
-                                allow_req = bool(approval.get("allow_requester", False))
-                except Exception:
-                    allow_req = False
-                if not allow_req:
-                    return JSONResponse(
-                        {"error": "operator self-approval refused"},
-                        status_code=403,
-                    )
+                # T16 F-8: operator self-approval is refused server-side
+                # unconditionally.  allow_requester is honoured only by the
+                # connector's locally verified bundle (M2_DEMO s7.1).
+                return JSONResponse(
+                    {"error": "operator self-approval refused"},
+                    status_code=403,
+                )
 
             # R1: fingerprint binding -- both sides required, no fallback
             payload_fp = str(payload.get("fingerprint", ""))

@@ -1105,7 +1105,7 @@ def test_enroll_persists_operator_user_id_and_device_id(tmp_path, monkeypatch):
         srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(
             200, _enroll_response(genesis_env, device_id="dev-t12b-1",
                                   operator_user_id="op-alice"))
-        enroll(srv.base_url, "CODE-OK", fp)
+        enroll(srv.base_url, "CODE-OK", fp, cwd_layout=lay)
 
     sync_dir = lay.root / ".sandbox" / "state" / "sync"
     enroll_file = sync_dir / "enrollment.json"

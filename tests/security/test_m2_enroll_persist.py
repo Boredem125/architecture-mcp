@@ -100,7 +100,8 @@ def _need_persist() -> None:
                 )
                 from sandbox.connector.sync.enroll import enroll
                 try:
-                    enroll(srv.base_url, "CODE-OK", fp)
+                    enroll(srv.base_url, "CODE-OK", fp,
+                           cwd_layout=FolderLayout(ws))
                 except Exception:
                     pass
 
@@ -377,7 +378,7 @@ def test_enroll_persists_managed_marker_sync_dir(tmp_path, key_home):
     with FakeSyncServer() as srv:
         srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(
             200, _enroll_response(genesis_env))
-        enroll(srv.base_url, "CODE-OK", fp)
+        enroll(srv.base_url, "CODE-OK", fp, cwd_layout=lay)
 
     sync_dir = lay.root / ".sandbox" / "state" / "sync"
     assert (sync_dir / "managed").exists(), "managed marker not in sync dir"
@@ -394,7 +395,7 @@ def test_enroll_persists_managed_marker_keyhome(tmp_path, key_home):
     with FakeSyncServer() as srv:
         srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(
             200, _enroll_response(genesis_env))
-        enroll(srv.base_url, "CODE-OK", fp)
+        enroll(srv.base_url, "CODE-OK", fp, cwd_layout=lay)
 
     assert is_managed(lay), "workspace is not managed after enroll"
 
@@ -410,7 +411,7 @@ def test_enroll_persists_pinned_root(tmp_path, key_home):
     with FakeSyncServer() as srv:
         srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(
             200, _enroll_response(genesis_env))
-        enroll(srv.base_url, "CODE-OK", fp)
+        enroll(srv.base_url, "CODE-OK", fp, cwd_layout=lay)
 
     assert pinned_root(lay) == fp, (
         f"pinned_root should be {fp!r}, got {pinned_root(lay)!r}"
@@ -427,7 +428,7 @@ def test_enroll_persists_registry(tmp_path, key_home):
     with FakeSyncServer() as srv:
         srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(
             200, _enroll_response(genesis_env))
-        enroll(srv.base_url, "CODE-OK", fp)
+        enroll(srv.base_url, "CODE-OK", fp, cwd_layout=lay)
 
     sync_dir = lay.root / ".sandbox" / "state" / "sync"
     reg_file = sync_dir / "registry.json"
@@ -450,7 +451,7 @@ def test_enroll_persists_device_key(tmp_path, key_home):
     with FakeSyncServer() as srv:
         srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(
             200, _enroll_response(genesis_env))
-        enroll(srv.base_url, "CODE-OK", fp)
+        enroll(srv.base_url, "CODE-OK", fp, cwd_layout=lay)
 
     # The device key must be somewhere in the key home
     ws_id_file = lay.root / ".sandbox" / "workspace_id"
@@ -471,7 +472,7 @@ def test_enroll_persists_device_id(tmp_path, key_home):
     with FakeSyncServer() as srv:
         srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(
             200, _enroll_response(genesis_env, device_id="d-persist-1"))
-        enroll(srv.base_url, "CODE-OK", fp)
+        enroll(srv.base_url, "CODE-OK", fp, cwd_layout=lay)
 
     sync_dir = lay.root / ".sandbox" / "state" / "sync"
     did_file = sync_dir / "device_id"
@@ -511,7 +512,7 @@ def test_enroll_genesis_fingerprint_mismatch_writes_nothing(tmp_path, key_home):
         srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(
             200, _enroll_response(genesis_evil, device_id="d-bad"))
         with pytest.raises(EnrollError, match="fingerprint"):
-            enroll(srv.base_url, "CODE-OK", fp_expected)
+            enroll(srv.base_url, "CODE-OK", fp_expected, cwd_layout=lay)
 
     after_sync = set(sync_dir.rglob("*")) if sync_dir.exists() else set()
     assert after_sync == before_sync, (
@@ -536,7 +537,7 @@ def test_enroll_server_error_writes_nothing(tmp_path, key_home):
         srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(
             500, {"error": "internal_error"})
         with pytest.raises(EnrollError):
-            enroll(srv.base_url, "CODE-OK", "fp-abc")
+            enroll(srv.base_url, "CODE-OK", "fp-abc", cwd_layout=lay)
 
     after_sync = set(sync_dir.rglob("*")) if sync_dir.exists() else set()
     assert after_sync == before_sync, "state files changed on server error"
@@ -555,7 +556,7 @@ def test_enroll_consumed_code_writes_nothing(tmp_path, key_home):
         srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(
             409, {"error": "code_consumed"})
         with pytest.raises(EnrollError, match="consumed|used"):
-            enroll(srv.base_url, "CODE-OK", "fp-abc")
+            enroll(srv.base_url, "CODE-OK", "fp-abc", cwd_layout=lay)
 
     after_sync = set(sync_dir.rglob("*")) if sync_dir.exists() else set()
     assert after_sync == before_sync, "state files changed on 409 code_consumed"
@@ -577,7 +578,7 @@ def test_enroll_atomic_all_files_written(tmp_path, key_home):
     with FakeSyncServer() as srv:
         srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(
             200, _enroll_response(genesis_env))
-        enroll(srv.base_url, "CODE-OK", fp)
+        enroll(srv.base_url, "CODE-OK", fp, cwd_layout=lay)
 
     sync_dir = lay.root / ".sandbox" / "state" / "sync"
     # All must exist together
@@ -1046,7 +1047,7 @@ def test_after_enroll_is_managed_true(tmp_path, key_home):
     with FakeSyncServer() as srv:
         srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(
             200, _enroll_response(genesis_env))
-        enroll(srv.base_url, "CODE-OK", fp)
+        enroll(srv.base_url, "CODE-OK", fp, cwd_layout=lay)
 
     assert is_managed(lay), "workspace not managed after real enroll"
 
@@ -1067,7 +1068,7 @@ def test_after_enroll_hook_enforces_deny_all_without_bundle(tmp_path, key_home):
     with FakeSyncServer() as srv:
         srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(
             200, _enroll_response(genesis_env))
-        enroll(srv.base_url, "CODE-OK", fp)
+        enroll(srv.base_url, "CODE-OK", fp, cwd_layout=lay)
 
     assert is_managed(lay)
     # After enroll with no bundle applied, the hook should enforce
@@ -1091,7 +1092,7 @@ def test_after_enroll_sticky_mode_applies(tmp_path, key_home):
     with FakeSyncServer() as srv:
         srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(
             200, _enroll_response(genesis_env))
-        enroll(srv.base_url, "CODE-OK", fp)
+        enroll(srv.base_url, "CODE-OK", fp, cwd_layout=lay)
 
     assert is_managed(lay)
 
@@ -1122,7 +1123,7 @@ def test_after_enroll_can_accept_bundles(tmp_path, key_home):
     with FakeSyncServer() as srv:
         srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(
             200, _enroll_response(genesis_env))
-        enroll(srv.base_url, "CODE-OK", fp)
+        enroll(srv.base_url, "CODE-OK", fp, cwd_layout=lay)
 
     assert can_accept_bundles(lay), (
         "can_accept_bundles is False after enroll; pinned_root.json not written"
@@ -1159,7 +1160,7 @@ def test_enroll_server_echoes_fp_but_genesis_differs(tmp_path, key_home):
         resp["fingerprint"] = fp_expected  # malicious echo
         srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(200, resp)
         with pytest.raises(EnrollError, match="fingerprint"):
-            enroll(srv.base_url, "CODE-OK", fp_expected)
+            enroll(srv.base_url, "CODE-OK", fp_expected, cwd_layout=lay)
 
     after_sync = set(sync_dir.rglob("*")) if sync_dir.exists() else set()
     assert after_sync == before_sync, (
@@ -1209,7 +1210,7 @@ def test_enroll_chain_with_forged_later_version_refused(tmp_path, key_home):
                                   registry=[genesis_env, v2_forged],
                                   device_id="d-forged-chain"))
         with pytest.raises(EnrollError, match="fingerprint|registry|chain|verif"):
-            enroll(srv.base_url, "CODE-OK", fp)
+            enroll(srv.base_url, "CODE-OK", fp, cwd_layout=lay)
 
     after_sync = set(sync_dir.rglob("*")) if sync_dir.exists() else set()
     assert after_sync == before_sync, (
@@ -1240,10 +1241,111 @@ def test_enroll_ignores_fingerprint_string_in_response(tmp_path, key_home):
         resp = _enroll_response(genesis_env, device_id="d-ignore-fp")
         resp["fingerprint"] = "completely-wrong-fp-string"
         srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(200, resp)
-        enroll(srv.base_url, "CODE-OK", fp)
+        enroll(srv.base_url, "CODE-OK", fp, cwd_layout=lay)
 
     # The client computed the fingerprint locally; the wrong string was ignored
     assert is_managed(lay), "enroll failed because it trusted the fingerprint string"
     assert pinned_root(lay) == fp, (
         "pinned_root does not match locally computed fingerprint"
     )
+
+
+# ===================================================================
+# T16 F-9 (M2_DEMO.md section 7.2): ``sandbox enroll`` must resolve the
+# workspace from the cwd like ``sync`` does, never from the first
+# workspace discovered in the key home.  Tests-first, strict xfail.
+# New tests only; the existing ones above are untouched.
+# ===================================================================
+
+
+class M2T16EnrollCwdPending(Exception):
+    """T16 F-9: enroll() resolves the workspace from the cwd."""
+
+
+def _t16_sync_dir(root: Path) -> Path:
+    return root / ".sandbox" / "state" / "sync"
+
+
+def _t16_not_first_discovered(roots_in_test: list) -> tuple:
+    """Return (target, other): target is a workspace that is NOT the first
+    one ``_discover_workspace_roots`` yields, so the HEAD behaviour (enrol
+    the first discovered root) deterministically lands in ``other``."""
+    from sandbox.connector.keyhome import _discover_workspace_roots
+    discovered = [Path(r).resolve() for r in _discover_workspace_roots()]
+    assert len(discovered) >= 2, f"expected 2 discovered roots, got {discovered}"
+    first = discovered[0]
+    resolved = [Path(r).resolve() for r in roots_in_test]
+    assert first in resolved, f"first discovered root {first} is not a test workspace"
+    others = [r for r in resolved if r != first]
+    return others[0], first
+
+
+def test_t16_f9_enroll_from_second_workspace_writes_cwd_only(
+        tmp_path, key_home, monkeypatch):
+    """Two initialised workspaces in one key home; cwd = the one that is
+    NOT first in discovery order.  The sync dir must appear only under cwd."""
+    _need_persist()
+    from sandbox.connector.sync.enroll import enroll
+    from sandbox.connector.sync.state import is_managed
+    from sandbox.connector.layout import FolderLayout
+
+    lay_a = _ws(tmp_path / "ws_a")
+    lay_b = _ws(tmp_path / "ws_b")
+    target, other = _t16_not_first_discovered([lay_a.root, lay_b.root])
+    monkeypatch.chdir(target)
+
+    fp, genesis_env = _make_genesis_and_fingerprint()
+    with FakeSyncServer() as srv:
+        srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(
+            200, _enroll_response(genesis_env, device_id="d-cwd"))
+        enroll(srv.base_url, "CODE-OK", fp)
+
+    if not (_t16_sync_dir(target) / "managed").exists():
+        raise M2T16EnrollCwdPending(
+            f"enroll() from cwd {target.name} wrote nothing there; "
+            f"other sync dir exists={_t16_sync_dir(other).exists()}"
+        )
+    assert is_managed(FolderLayout(target)), "cwd workspace not managed"
+    enrollment = json.loads(
+        (_t16_sync_dir(target) / "enrollment.json").read_text(encoding="utf-8"))
+    assert enrollment.get("device_id") == "d-cwd"
+    assert not _t16_sync_dir(other).exists(), (
+        f"enroll leaked into the other workspace {other.name}"
+    )
+    assert not is_managed(FolderLayout(other))
+
+
+def test_t16_f9_enroll_uninitialised_cwd_refuses_and_writes_nothing(
+        tmp_path, key_home, monkeypatch):
+    """cwd has no .sandbox while another workspace in the key home is
+    initialised: EnrollError, and nothing is written anywhere."""
+    _need_persist()
+    from sandbox.connector.sync.enroll import enroll, EnrollError
+    from sandbox.connector.sync.state import is_managed
+
+    lay_a = _ws(tmp_path / "ws_a")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    monkeypatch.chdir(plain)
+
+    fp, genesis_env = _make_genesis_and_fingerprint()
+    with FakeSyncServer() as srv:
+        srv.routes[("POST", "/api/v1/sync/enroll")] = FakeResponse(
+            200, _enroll_response(genesis_env))
+        try:
+            enroll(srv.base_url, "CODE-OK", fp)
+        except EnrollError:
+            refused = True
+        else:
+            refused = False
+
+    if not refused:
+        raise M2T16EnrollCwdPending(
+            "enroll() from an uninitialised cwd succeeded "
+            f"(wrote to ws_a: {_t16_sync_dir(lay_a.root).exists()})"
+        )
+    assert not (plain / ".sandbox").exists(), "enroll created .sandbox in cwd"
+    assert not _t16_sync_dir(lay_a.root).exists(), (
+        "enroll fell back to the other initialised workspace"
+    )
+    assert not is_managed(lay_a)

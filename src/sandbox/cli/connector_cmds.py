@@ -424,8 +424,11 @@ def status_cmd(path: str, as_json: bool) -> None:
     pending = queue.list_pending()
 
     from sandbox.connector.policy_versions import version_info
+    from sandbox.connector.sync.state import is_managed, is_locked
 
     version = version_info(layout)
+    managed = is_managed(layout)
+    locked = is_locked(layout)
     if as_json:
         click.echo(_json.dumps({
             "root": str(layout.root),
@@ -433,6 +436,8 @@ def status_cmd(path: str, as_json: bool) -> None:
             "policy_version": version,
             "allow_runners": _enforced_runners(layout),
             "pending": pending,
+            "managed": managed,
+            "locked": locked,
         }, indent=2))
         return
 
@@ -440,6 +445,8 @@ def status_cmd(path: str, as_json: bool) -> None:
     click.echo(f"Policy:   {_describe_version(version)}")
     click.echo(f"Triggers: {policy.triggers.model_dump()}")
     click.echo(f"Runners:  {_describe_runners(layout)}")
+    click.echo(f"Managed:  {'yes' if managed else 'no'}")
+    click.echo(f"Locked:   {'yes' if locked else 'no'}")
     click.echo(f"Pending:  {len(pending)}")
     for rec in pending:
         dual = f"  [dual control {len(rec.get('approvals') or [])}/2]" if rec.get("requires_dual") else ""

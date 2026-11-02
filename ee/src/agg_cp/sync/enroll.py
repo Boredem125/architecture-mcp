@@ -354,6 +354,15 @@ def enroll_router(db_url: str, clock=None) -> APIRouter:
             session, err = _validate(conn, request)
             if err is not None:
                 return err
+
+            # T16 F-5: non-uuid code_id returns 404 before any SQL cast
+            # (M2_DEMO s7.4).  Reuse escalations._is_uuid.
+            from agg_cp.sync.escalations import _is_uuid
+            if not _is_uuid(code_id):
+                return JSONResponse(
+                    {"error": "not_found"}, status_code=404,
+                )
+
             org_id, user_id, session_id, _, _ = session
 
             # Check session freshness: the session must have been created

@@ -651,6 +651,7 @@ def test_e2e_remote_approval_path(e2e_server, tmp_path, monkeypatch):
 
     from sandbox.connector.sync.enroll import enroll as real_enroll, EnrollError
 
+    monkeypatch.chdir(ws_root)
     try:
         enroll_result = real_enroll(
             srv["base_url"], enroll_code, root_fp,
@@ -2028,6 +2029,7 @@ def test_e2e_c6_script_swap_after_web_and_cli_approvals(e2e_server, tmp_path, mo
     ws_root.mkdir()
     sandbox_init(ws_root, claude=False, mcp=False)
     lay = FolderLayout(ws_root)
+    monkeypatch.chdir(ws_root)
     real_enroll(srv["base_url"], enroll_code, root_fp, operator=alice_id)
 
     sync_dir = lay.root / ".sandbox" / "state" / "sync"

@@ -55,6 +55,13 @@ def _refusal_record(
     actual_sha256: str = "",
 ) -> dict[str, Any]:
     """Build a terminal refusal done-record."""
+    # T16 F-2: map reason_code to an alert event so alerts._ALWAYS can
+    # route SCRIPT_CHANGED / SHELL_UNAVAILABLE refusals (ADR 0010 s9).
+    _REFUSAL_EVENTS = {
+        "SCRIPT_CHANGED": "script_changed",
+        "SHELL_UNAVAILABLE": "shell_unavailable",
+    }
+    event = _REFUSAL_EVENTS.get(reason_code, "")
     result = {
         **_provenance(record),
         "request_id": record.get("request_id", ""),
@@ -70,6 +77,8 @@ def _refusal_record(
         "stdout": "",
         "stderr": reason,
     }
+    if event:
+        result["event"] = event
     if expected_sha256:
         result["expected_sha256"] = expected_sha256
     if actual_sha256:

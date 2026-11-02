@@ -1170,3 +1170,53 @@ def test_enroll_response_includes_operator_user_id(pg_url, pg_roles, app_url, ow
         f"enroll response missing operator_user_id: {list(body.keys())}"
     )
     assert body["operator_user_id"] == operator_id
+
+
+# ===================================================================
+# T16 F-5 (M2_DEMO.md section 7.4, frozen step 9): GET
+# /api/v1/enrollment-codes/<non-uuid> is 404 not_found, never 500.
+# Tests-first, strict xfail at HEAD.
+# ===================================================================
+
+
+class M2T16F5Pending(Exception):
+    """T16 F-5: operator_read_code returns 404 for a non-uuid code_id."""
+
+
+_T16_LEAK_MARKERS = ("traceback", "psycopg", "invalid input syntax",
+                     "internal server error", "exception")
+
+
+@pytest.mark.pg
+def test_t16_f5_read_code_non_uuid_is_404_not_500(pg_url, pg_roles, app_url, owner_url):
+    """Valid session, non-uuid id: 404 {"error":"not_found"}, body carries
+    no exception text."""
+    _need("agg_cp.sync.enroll", "enroll_router")
+    ensure_at_head(pg_url)
+    app, org_id, user_id, cookie, _, _ = _setup_session_env(pg_url, owner_url)
+
+    with TestClient(app, raise_server_exceptions=False) as c:
+        resp = c.get("/api/v1/enrollment-codes/not-a-uuid",
+                     cookies={"__Host-agg_session": cookie})
+
+    if resp.status_code == 500:
+        raise M2T16F5Pending(
+            f"non-uuid code_id gave 500: {resp.text[:200]!r}"
+        )
+    assert resp.status_code == 404, f"{resp.status_code}: {resp.text[:200]}"
+    assert resp.json() == {"error": "not_found"}
+    lower = resp.text.lower()
+    for marker in _T16_LEAK_MARKERS:
+        assert marker not in lower, f"exception text {marker!r} in body"
+
+
+@pytest.mark.pg
+def test_t16_f5_twin_read_code_non_uuid_no_session_401(pg_url, pg_roles, app_url, owner_url):
+    """Twin: no session is still refused before any id handling."""
+    _need("agg_cp.sync.enroll", "enroll_router")
+    ensure_at_head(pg_url)
+    app, _, _, _, _, _ = _setup_session_env(pg_url, owner_url)
+
+    with TestClient(app, raise_server_exceptions=False) as c:
+        resp = c.get("/api/v1/enrollment-codes/not-a-uuid")
+    assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text[:200]}"
