@@ -653,7 +653,7 @@ def test_run_once_persists_verified_registry_update(tmp_path, key_home):
 
     sync = SyncProcess(
         layout=lay, server_url="http://localhost:0",
-        device_key=b"k", device_id="d-update-1",
+        device_key=SigningKey.generate()._seed, device_id="d-update-1",
         clock=lambda: fake_time[0],
         connect=_connect,
     )
@@ -1018,7 +1018,7 @@ def test_run_once_identical_chain_is_noop(tmp_path, key_home):
 
     sync = SyncProcess(
         layout=lay, server_url="http://localhost:0",
-        device_key=b"k", device_id="d-noop-1",
+        device_key=SigningKey.generate()._seed, device_id="d-noop-1",
         clock=time.monotonic,
         connect=_connect,
     )

@@ -603,7 +603,7 @@ class TestSyncProcessUpload:
             "text": "print('x')\n", "sha256": "d" * 64,
             "shown": True, "why": "",
         }
-        pending_dir = lay.root / ".sandbox" / "pending"
+        pending_dir = lay.pending_dir
         pending_dir.mkdir(parents=True, exist_ok=True)
         rec = {
             "request_id": "req-sync-1",

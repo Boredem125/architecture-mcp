@@ -1863,7 +1863,7 @@ def test_escalation_upload_scrubbed(tmp_path, monkeypatch):
     lay = _ws(tmp_path / "ws")
 
     # Write a pending record with a secret
-    pending_dir = lay.root / ".sandbox" / "pending"
+    pending_dir = lay.pending_dir
     pending_dir.mkdir(parents=True, exist_ok=True)
     req_id = "req-scrub-1"
     record = {

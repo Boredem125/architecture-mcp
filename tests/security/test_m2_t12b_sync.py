@@ -14,6 +14,8 @@ import time
 import pytest
 
 from tests.m2_fakes import FakeSyncServer, FakeResponse
+from nacl.signing import SigningKey
+
 from tests.security.test_m2_t12_remote import (
     _create_pending_request,
     _keygen,
@@ -21,6 +23,15 @@ from tests.security.test_m2_t12_remote import (
     _setup_managed_workspace,
     _ws,
 )
+
+
+def _write_device_key(tmp_path, ws_id="a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5"):
+    """Write a random 32-byte device key into the key home device directory."""
+    kh = tmp_path / "keyhome"
+    device_dir = kh / ws_id / "device"
+    device_dir.mkdir(parents=True, exist_ok=True)
+    dk = SigningKey.generate()._seed
+    (device_dir / "device.key").write_bytes(dk)
 
 
 def test_run_once_two_approvals_execute_once(tmp_path, monkeypatch):
@@ -34,6 +45,7 @@ def test_run_once_two_approvals_execute_once(tmp_path, monkeypatch):
             (carol[0], carol[1], carol[2], "user-carol", "cli"),
         ],
     )
+    _write_device_key(tmp_path)
     lay = ctx["lay"]
     rec = _create_pending_request(lay, "req-sync-1", command="echo synced")
 
@@ -59,7 +71,11 @@ def test_run_once_two_approvals_execute_once(tmp_path, monkeypatch):
     ]
 
     with FakeSyncServer() as srv:
+        srv.routes[("POST", "/api/v1/sync/token")] = FakeResponse(
+            200, {"token": "tok-t12b", "expires_in": 600})
         srv.routes[("GET", "/api/v1/sync/decisions")] = FakeResponse(200, decisions)
+        srv.routes[("GET", "/api/v1/sync/registry")] = FakeResponse(200, {})
+        srv.routes[("GET", "/api/v1/sync/bundle")] = FakeResponse(204, None)
         # Write server_url to enrollment so run_once can find it
         sync_dir = lay.root / ".sandbox" / "state" / "sync"
         enroll_data = json.loads((sync_dir / "enrollment.json").read_text(encoding="utf-8"))
@@ -82,12 +98,17 @@ def test_run_once_two_approvals_execute_once(tmp_path, monkeypatch):
 def test_run_once_unknown_request_id_ignored(tmp_path, monkeypatch):
     """run_once: a decision for an unknown request_id is ignored."""
     ctx = _setup_managed_workspace(tmp_path, monkeypatch)
+    _write_device_key(tmp_path)
     lay = ctx["lay"]
 
     decisions = [{"request_id": "req-unknown", "payload": {}, "signatures": []}]
 
     with FakeSyncServer() as srv:
+        srv.routes[("POST", "/api/v1/sync/token")] = FakeResponse(
+            200, {"token": "tok-t12b", "expires_in": 600})
         srv.routes[("GET", "/api/v1/sync/decisions")] = FakeResponse(200, decisions)
+        srv.routes[("GET", "/api/v1/sync/registry")] = FakeResponse(200, {})
+        srv.routes[("GET", "/api/v1/sync/bundle")] = FakeResponse(204, None)
         from sandbox.cli.sync_cmds import run_once
         result = run_once(lay, server=srv.base_url)
 

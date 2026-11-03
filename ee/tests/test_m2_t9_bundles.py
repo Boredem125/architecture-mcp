@@ -234,10 +234,14 @@ def test_get_bundle_returns_latest(pg_url, pg_roles, app_url, owner_url):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["kind"] == "agg/bundle/v1"
-    assert body["sig_v"] == 1
-    assert "payload" in body
-    assert "signatures" in body
+    # A1: response is {"envelope": ..., "change_approvals": [...]}
+    assert "envelope" in body
+    assert isinstance(body.get("change_approvals"), list)
+    env = body["envelope"]
+    assert env["kind"] == "agg/bundle/v1"
+    assert env["sig_v"] == 1
+    assert "payload" in env
+    assert "signatures" in env
 
 
 @pytest.mark.pg

@@ -139,6 +139,10 @@ def _default_connect(
 ) -> tuple[int, dict, dict]:
     """HTTP transport using ``urllib.request``.  Imported lazily so no
     socket is opened at module import time.
+
+    Uses a per-call ``build_opener(_NoRedirect).open(req, ...)`` so no
+    global state is mutated and the opener cannot be replaced by another
+    module.  The final-URL check remains as a belt-and-suspenders guard.
     """
     import urllib.request
     import urllib.error
@@ -146,6 +150,14 @@ def _default_connect(
     # T15b-2: https only, except loopback; refused before any socket.
     # The message never carries the token.
     _check_url_transport(url)
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+            raise urllib.error.HTTPError(
+                req.full_url, code, "redirect refused", headers, fp,
+            )
+
+    opener = urllib.request.build_opener(_NoRedirect)
 
     hdrs = dict(headers or {})
     hdrs.setdefault("Content-Type", "application/json")
@@ -159,14 +171,6 @@ def _default_connect(
         # Unredirected: never forwarded even if a redirect were followed.
         req.add_unredirected_header("Authorization", f"Bearer {token}")
 
-    class _NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
-            raise urllib.error.HTTPError(
-                req.full_url, code, "redirect refused", headers, fp,
-            )
-
-    # Own opener: does not depend on whichever global opener is installed.
-    opener = urllib.request.build_opener(_NoRedirect)
     try:
         with opener.open(req, timeout=30) as resp:
             resp_body = resp.read()
@@ -234,6 +238,9 @@ class SyncProcess:
         self._token: str | None = None
         self._token_expires: float = 0.0
 
+        #: Escalations the server accepted (2xx) in the last cycle.
+        self.uploaded_count: int = 0
+
 
 # ---------------------------------------------------------------------------
 # next_backoff
@@ -286,16 +293,19 @@ def run_once(sync: SyncProcess) -> None:
         # ---- 1. Token refresh ----
         _refresh_token(sync)
 
-        # ---- 2. Fetch decisions ----
-        _fetch_decisions(sync)
-
-        # ---- 3. Fetch and persist registry updates ----
+        # ---- 2. Fetch and persist registry updates (D4-1 step-5: before decisions) ----
         _fetch_registry(sync)
 
-        # ---- 4. Upload pending escalations ----
+        # ---- 3. Fetch decisions and apply through apply_external ----
+        _fetch_decisions(sync)
+
+        # ---- 4. Fetch and verify next bundle (ADR 0001 A1) ----
+        _fetch_bundle(sync)
+
+        # ---- 5. Upload pending escalations ----
         _upload_escalations(sync)
 
-        # ---- 5. Upload audit records and checkpoint (managed only, T11) ----
+        # ---- 6. Upload audit records and checkpoint (managed only, T11) ----
         _upload_audit(sync)
 
         # Success: reset failure counter
@@ -307,6 +317,30 @@ def run_once(sync: SyncProcess) -> None:
     except Exception as exc:
         sync._consecutive_failures += 1
         raise SyncError(f"sync cycle failed: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# run_loop
+# ---------------------------------------------------------------------------
+
+
+def run_loop(sync: SyncProcess) -> None:
+    """Run ``run_once`` in a loop with backoff, exiting on KeyboardInterrupt.
+
+    This is what ``sandbox sync`` (without ``--once``) calls.  The loop
+    runs ``run_once`` followed by ``time.sleep(next_backoff(sync))``.
+    A ``SyncError`` from ``run_once`` is caught and the loop continues
+    (the backoff will increase).  ``KeyboardInterrupt`` exits cleanly.
+    """
+    try:
+        while True:
+            try:
+                run_once(sync)
+            except SyncError:
+                pass  # backoff handles retries
+            time.sleep(next_backoff(sync))
+    except KeyboardInterrupt:
+        return  # clean exit
 
 
 # ---------------------------------------------------------------------------
@@ -342,15 +376,36 @@ def _record_server_time(sync: SyncProcess, resp_headers: dict) -> None:
 
 
 def _refresh_token(sync: SyncProcess) -> None:
-    """Exchange the device key for a short-lived bearer token."""
+    """Exchange the device key for a short-lived bearer token.
+
+    Builds a ``DEVICE_ASSERT`` envelope (aud, iat, nonce, signed with the
+    device key) exactly as ``enroll.request_token`` does, so the server's
+    ``POST /api/v1/sync/token`` accepts it.
+    """
     now = sync._clock()
     if sync._token and now < sync._token_expires:
         return  # still valid
 
+    import secrets as _secrets
+    from nacl.signing import SigningKey
+    from sandbox.protocol.domains import DEVICE_ASSERT
+    from sandbox.protocol.envelope import sign_envelope
+
+    sk = SigningKey(sync.device_key)
+    assertion_payload = {
+        "device_id": sync.device_id,
+        "aud": sync.server_url,
+        # Wall clock: the server checks iat freshness; sync._clock is
+        # monotonic (backoff and expiry only) and must not go on the wire.
+        "iat": time.time(),
+        "nonce": _secrets.token_hex(16),
+    }
+    assertion = sign_envelope(DEVICE_ASSERT, assertion_payload, [sk])
+
     url = f"{sync.server_url}/api/v1/sync/token"
     status, body, hdrs = sync._connect(
         "POST", url,
-        body={"device_id": sync.device_id, "iat": now},
+        body={"device_id": sync.device_id, "assertion": assertion},
         token=None,
     )
     if status != 200:
@@ -393,9 +448,13 @@ def _fetch_registry(sync: SyncProcess) -> None:
 def _fetch_decisions(sync: SyncProcess) -> None:
     """Poll for decisions (approvals/denies) from the server.
 
-    Downloaded decisions are written to disk for the approval path to pick
-    up.  Pending escalations are **never** auto-approved here.
+    Downloads decisions from the server, groups them by request_id, and
+    applies them through the existing ``apply_external`` path.  Pending
+    escalations are **never** auto-approved here.  The approval path
+    (``apply_external``) verifies signatures against the pinned registry.
     """
+    import asyncio
+
     url = f"{sync.server_url}/api/v1/sync/decisions"
     status, body, hdrs = sync._connect(
         "GET", url, token=sync._token,
@@ -405,15 +464,211 @@ def _fetch_decisions(sync: SyncProcess) -> None:
 
     _record_server_time(sync, hdrs)
 
-    # Process decisions if the layout is available
-    decisions = body.get("decisions", [])
+    # Process decisions if the layout is available.
+    # Accept both {"decisions": [...]} (new API shape) and a bare list
+    # (backward compat with existing callers).
+    if isinstance(body, list):
+        decisions = body
+    elif isinstance(body, dict):
+        decisions = body.get("decisions", [])
+    else:
+        decisions = []
     if not decisions or sync.layout is None:
         return
 
-    # Write decisions to the layout for the approval path.
-    # This never changes pending status to approved on its own --
-    # the approval path (approval.apply_external) does that after
-    # verifying signatures against the pinned registry.
+    # Group decisions by request_id and rebuild envelopes
+    from sandbox.connector.queue import valid_request_id
+
+    decisions_by_request: dict[str, list[dict]] = {}
+    for row in decisions:
+        rid = row.get("request_id", "")
+        if not valid_request_id(rid):
+            continue
+        envelope = _rebuild_decision_envelope(row)
+        if envelope is not None:
+            decisions_by_request.setdefault(rid, []).append(envelope)
+
+    if not decisions_by_request:
+        return
+
+    # Apply decisions through the existing apply_external path
+    from sandbox.connector.approval import apply_external
+
+    for rid, envelopes in decisions_by_request.items():
+        try:
+            result = asyncio.run(apply_external(
+                sync.layout, rid, envelopes,
+                clock=lambda: time.time(),
+            ))
+            # Audit the outcome
+            try:
+                from sandbox.connector.audit import FolderAudit
+                audit = FolderAudit(sync.layout.audit_dir, session_id="sync")
+                audit.append({
+                    "event": "sync_decision_applied",
+                    "request_id": rid,
+                    "status": result.get("status", "unknown"),
+                    "ts": time.time(),
+                })
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _rebuild_decision_envelope(row: dict) -> dict | None:
+    """Rebuild an agg/remote-approval/v1 envelope from a server decision row.
+
+    The kind is fixed in code (never trust the server's kind column).
+    The server's user_id column is ignored (comes from the registry).
+    """
+    payload = row.get("signed_payload") or row.get("payload")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (json.JSONDecodeError, ValueError):
+            return None
+    if not isinstance(payload, dict):
+        return None
+    sig = row.get("sig") or row.get("signature") or ""
+    key_id = row.get("key_id") or payload.get("key_id", "")
+    if not sig or not key_id:
+        sigs = row.get("signatures", [])
+        if isinstance(sigs, list) and sigs:
+            sig = sigs[0].get("sig", "")
+            key_id = sigs[0].get("key_id", key_id)
+    if not sig:
+        return None
+    return {
+        "kind": "agg/remote-approval/v1",  # fixed in code
+        "sig_v": 1,
+        "payload": payload,
+        "signatures": [{"key_id": key_id, "alg": "ed25519", "sig": sig}],
+    }
+
+
+def _fetch_bundle(sync: SyncProcess) -> None:
+    """Fetch the next policy bundle from the server and apply if valid.
+
+    ``GET /api/v1/sync/bundle?after=<current_sequence>`` (ADR 0001 A1):
+      - 204: nothing to do.
+      - 200: ``verify_and_apply`` with the served approvals.
+      - Any ``BundleError``: audited as ``bundle_refused`` with an alert,
+        never applied.
+
+    The verifier is authoritative: trust comes from the pinned registry,
+    not the server.  A server error (5xx) never auto-approves.
+    """
+    if sync.layout is None:
+        return
+
+    from sandbox.connector.sync.state import current_sequence as _cur_seq
+
+    cur = _cur_seq(sync.layout)
+    after = cur if cur is not None else 0
+
+    url = f"{sync.server_url}/api/v1/sync/bundle?after={after}"
+    status, body, hdrs = sync._connect("GET", url, token=sync._token)
+
+    _record_server_time(sync, hdrs)
+
+    if status == 204:
+        return  # nothing to do
+
+    if status != 200:
+        raise SyncError(f"bundle fetch failed: HTTP {status}")
+
+    # F7: a 200 without a valid envelope dict is a malformed response;
+    # audit bundle_refused with reason malformed_response, never apply.
+    if not isinstance(body, dict):
+        _audit_bundle_refused(sync, "malformed_response")
+        return
+
+    envelope = body.get("envelope")
+    change_approvals = body.get("change_approvals", [])
+    if not envelope or not isinstance(envelope, dict):
+        _audit_bundle_refused(sync, "malformed_response")
+        return
+
+    # Lazy imports: verify_and_apply is the existing TCB path
+    from sandbox.connector.sync.bundles import BundleError, verify_and_apply
+    from sandbox.connector.sync.verified_state import load_verified_state
+
+    vs = load_verified_state(sync.layout)
+    if vs is None:
+        # Cannot verify without verified state; refuse
+        _audit_bundle_refused(sync, "no_verified_state")
+        return
+
+    try:
+        verify_and_apply(
+            sync.layout,
+            envelope,
+            vs.registry,
+            _bundle_signer_pub(vs.registry),
+            change_approvals,
+            org_id=vs.org_id,
+            project_id=vs.project_id,
+        )
+    except BundleError as exc:
+        _audit_bundle_refused(sync, str(exc.reason))
+
+
+def _bundle_signer_pub(registry) -> bytes:
+    """Return the bundle signer public key from the VERIFIED registry.
+
+    ``verify_chain`` synthesizes the ``bundle-signer`` entry from the
+    latest version's ``bundle_signer`` field only (registry.py F3/R6) and
+    has already checked its hex, length and key_id.  Never re-read
+    ``registry.json`` from disk here (verified_state.py rule).  Raises
+    ``BundleError`` if the verified registry carries no bundle signer.
+    """
+    from sandbox.connector.sync.bundles import BundleError
+
+    keys = getattr(registry, "_keys", None)
+    if not isinstance(keys, dict):
+        raise BundleError("verified registry has no key map")
+    # R3-1: keys[] does not reserve "__bundle_signer__", so require exactly
+    # one match; an ambiguous registry is refused, never guessed.
+    matches = [
+        entry for entry in keys.values()
+        if isinstance(entry, dict)
+        and entry.get("kind") == "bundle-signer"
+        and entry.get("user_id") == "__bundle_signer__"
+    ]
+    if len(matches) != 1:
+        raise BundleError("no unique bundle_signer key in verified registry")
+    pub = matches[0].get("public_key")
+    if isinstance(pub, (bytes, bytearray)):
+        return bytes(pub)
+    if isinstance(pub, str):
+        try:
+            return bytes.fromhex(pub)
+        except ValueError:
+            pass
+    raise BundleError("bundle_signer key has invalid public_key")
+
+
+def _audit_bundle_refused(sync: SyncProcess, reason: str) -> None:
+    """Write a ``bundle_refused`` audit event and raise an alert."""
+    record = {
+        "event": "bundle_refused",
+        "reason": reason,
+        "ts": time.time(),
+    }
+    try:
+        from sandbox.connector.audit import FolderAudit
+        audit = FolderAudit(sync.layout.audit_dir, session_id="sync")
+        audit.append(record)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Alert through the existing alerts path (best effort)
+    try:
+        from sandbox.connector.alerts import emit
+        emit(sync.layout, "sync", record)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _upload_escalations(sync: SyncProcess) -> None:
@@ -429,7 +684,10 @@ def _upload_escalations(sync: SyncProcess) -> None:
     if sync.layout is None:
         return
 
-    pending_dir = sync.layout.root / ".sandbox" / "pending"
+    sync.uploaded_count = 0
+    # The queue's own pending dir (EscalationQueue writes here), not a
+    # second location: T16a made this the only upload path.
+    pending_dir = sync.layout.pending_dir
     if not pending_dir.is_dir():
         return
 
@@ -441,15 +699,20 @@ def _upload_escalations(sync: SyncProcess) -> None:
         except (OSError, ValueError):
             continue
 
-        if data.get("status") != "pending":
+        # Queue records carry no status field: pending/ means pending.
+        if data.get("status", "pending") != "pending":
             continue
 
         # Scrub secrets before upload (threat 19)
         upload_data = dict(data)
         try:
-            from sandbox.connector.scrub import scrub_text
+            from sandbox.connector.scrub import OUTPUT_FIELDS, scrub_text
 
-            for key in ("command", "reason", "target", "described_as"):
+            # R4-1: also stdout/stderr, as HEAD's CLI upload did.
+            _fields = ("command", "reason", "target", "described_as",
+                       *OUTPUT_FIELDS)
+
+            for key in _fields:
                 val = upload_data.get(key)
                 if isinstance(val, str) and val:
                     upload_data[key] = scrub_text(val)
@@ -457,13 +720,13 @@ def _upload_escalations(sync: SyncProcess) -> None:
             rec = upload_data.get("record")
             if isinstance(rec, dict):
                 rec = dict(rec)
-                for key in ("command", "reason", "target", "described_as"):
+                for key in _fields:
                     val = rec.get(key)
                     if isinstance(val, str) and val:
                         rec[key] = scrub_text(val)
                 upload_data["record"] = rec
-        except Exception:  # noqa: BLE001 -- scrub failure must not block upload
-            pass
+        except Exception:  # noqa: BLE001 -- scrub failure: skip record (L1 rule)
+            continue
 
         # Validate request_id before uploading (H3 defense in depth)
         rid = upload_data.get("request_id", "")
@@ -483,14 +746,16 @@ def _upload_escalations(sync: SyncProcess) -> None:
         # Upload (idempotent on server side)
         url = f"{sync.server_url}/api/v1/sync/escalations"
         try:
-            sync._connect(
+            status, _, _ = sync._connect(
                 "POST", url,
                 body=body,
                 token=sync._token,
             )
         except Exception:
             # Upload failure does not change escalation status
-            pass
+            continue
+        if 200 <= status < 300:
+            sync.uploaded_count += 1
 
 
 # Alias for tests (threat 19 coverage)

@@ -35,6 +35,7 @@ _ALWAYS = {
     "clock_skew": "clock_skew",
     "script_changed": "script_changed",
     "shell_unavailable": "shell_unavailable",
+    "bundle_refused": "bundle_refused",
 }
 # Escalations alert only when critical or dual control.
 _ESCALATIONS = {"shell_escalated", "tool_call_escalated", "escalate_redirect"}

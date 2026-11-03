@@ -1168,6 +1168,10 @@ def test_run_once_uploads_audit_in_managed_mode(tmp_path, monkeypatch):
             return (200, {"token": "tok", "expires_in": 600}, {})
         if "/sync/decisions" in url:
             return (200, {"decisions": []}, {})
+        if "/sync/bundle" in url:
+            return (204, {}, {})
+        if "/sync/registry" in url:
+            return (200, {}, {})
         if "/sync/audit" in url:
             data = body if isinstance(body, dict) else json.loads(body)
             return (200, {"server_head": {

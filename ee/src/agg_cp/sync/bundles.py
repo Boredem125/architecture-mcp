@@ -117,6 +117,8 @@ def bundle_router(db_url: str, clock=None) -> APIRouter:
 
     # -----------------------------------------------------------------
     # GET /api/v1/sync/bundle?after=<seq>  (device token auth)
+    # ADR 0001 A1 item 2: lowest sequence > after, not latest.
+    # Returns {"envelope": ..., "change_approvals": [...]}.
     # -----------------------------------------------------------------
     @rbac_route(router, "get", "/api/v1/sync/bundle",
                 role="device", scope="project")
@@ -130,6 +132,9 @@ def bundle_router(db_url: str, clock=None) -> APIRouter:
         try:
             after = int(after_str)
         except (ValueError, TypeError):
+            return JSONResponse({"error": "bad_after"}, status_code=400)
+        # Sequences are positive BIGINTs; out-of-range values would 500 in pg.
+        if after < 0 or after > 2**63 - 1:
             return JSONResponse({"error": "bad_after"}, status_code=400)
 
         with _conn() as conn:
@@ -148,19 +153,20 @@ def bundle_router(db_url: str, clock=None) -> APIRouter:
                 [d_org],
             )
 
-            # Fetch latest bundle for this org+project with seq > after
+            # ADR 0001 A1 item 2: serve the lowest sequence > after
             row = conn.execute(
-                "SELECT bundle_blob FROM policy_bundles "
+                "SELECT id, bundle_blob FROM policy_bundles "
                 "WHERE org_id = %s::uuid AND project_id = %s::uuid "
                 "  AND sequence > %s "
-                "ORDER BY sequence DESC LIMIT 1",
+                "ORDER BY sequence ASC LIMIT 1",
                 [d_org, d_project, after],
             ).fetchone()
 
             if row is None:
                 return JSONResponse(content="", status_code=204)
 
-            blob = row[0]
+            bundle_row_id = str(row[0])
+            blob = row[1]
             if isinstance(blob, memoryview):
                 blob = bytes(blob)
             if isinstance(blob, bytes):
@@ -173,7 +179,26 @@ def bundle_router(db_url: str, clock=None) -> APIRouter:
                     {"error": "corrupt_bundle"}, status_code=500,
                 )
 
-        return JSONResponse(envelope, status_code=200)
+            # ADR 0001 A1: serve change_approvals beside the envelope
+            approval_rows = conn.execute(
+                "SELECT signature FROM policy_change_approvals "
+                "WHERE change_request_id = %s::uuid AND org_id = %s::uuid "
+                "ORDER BY key_id",
+                [bundle_row_id, d_org],
+            ).fetchall()
+
+            change_approvals = []
+            for ar in approval_rows:
+                sig_text = ar[0]
+                try:
+                    change_approvals.append(json.loads(sig_text))
+                except (ValueError, TypeError):
+                    change_approvals.append(sig_text)
+
+        return JSONResponse(
+            {"envelope": envelope, "change_approvals": change_approvals},
+            status_code=200,
+        )
 
     # -----------------------------------------------------------------
     # POST /api/v1/admin/bundles  (admin session + CSRF)
@@ -217,6 +242,56 @@ def bundle_router(db_url: str, clock=None) -> APIRouter:
             # Set org_id on the bundle payload
             bundle_payload["org_id"] = str(org_id)
 
+            # ---- ADR 0001 A1 item 1: validate change_approvals ----
+            # Each element must be a dict with a "signatures" list,
+            # and each signature's key_id must exist in approver_keys.
+            # On failure: 400 bad_change_approvals, nothing stored.
+            validated_approvals: list[tuple[str, str, str]] = []
+            if not isinstance(change_approvals, list):
+                return JSONResponse(
+                    {"error": "bad_change_approvals",
+                     "detail": "change_approvals must be a list"},
+                    status_code=400,
+                )
+            for idx, appr in enumerate(change_approvals):
+                if not isinstance(appr, dict):
+                    return JSONResponse(
+                        {"error": "bad_change_approvals",
+                         "detail": f"approval[{idx}] is not an object"},
+                        status_code=400,
+                    )
+                sigs = appr.get("signatures")
+                if not isinstance(sigs, list) or len(sigs) == 0:
+                    return JSONResponse(
+                        {"error": "bad_change_approvals",
+                         "detail": f"approval[{idx}] missing signatures list"},
+                        status_code=400,
+                    )
+                kid = sigs[0].get("key_id", "") if isinstance(sigs[0], dict) else ""
+                if not kid:
+                    return JSONResponse(
+                        {"error": "bad_change_approvals",
+                         "detail": f"approval[{idx}] signature has no key_id"},
+                        status_code=400,
+                    )
+                # Look up key_id via cli_key_lookup (checks both
+                # approver_keys and pending signer_links).
+                key_row = conn.execute(
+                    "SELECT org_id, user_id FROM cli_key_lookup(%s)",
+                    [kid],
+                ).fetchone()
+                if key_row is None or str(key_row[0]) != str(org_id):
+                    return JSONResponse(
+                        {"error": "bad_change_approvals",
+                         "detail": f"approval[{idx}] key_id not in approver_keys"},
+                        status_code=400,
+                    )
+                appr_user_id = str(key_row[1])
+                appr_json = json.dumps(
+                    appr, sort_keys=True, separators=(",", ":"),
+                )
+                validated_approvals.append((kid, appr_user_id, appr_json))
+
             # Load bundle signer key (D5.1: server secret file only)
             signer_key = _load_bundle_signer_key()
             if signer_key is None:
@@ -244,6 +319,20 @@ def bundle_router(db_url: str, clock=None) -> APIRouter:
                     [bundle_id, str(org_id), project_id, sequence,
                      blob, sig],
                 )
+
+                # ADR 0001 A1 item 1: store each approval in the
+                # same transaction as the bundle insert.
+                for kid, appr_uid, appr_json in validated_approvals:
+                    conn.execute(
+                        "INSERT INTO policy_change_approvals "
+                        "(id, org_id, change_request_id, user_id, key_id, "
+                        "signature, signed_at, created_at) "
+                        "VALUES (%s, %s::uuid, %s::uuid, %s::uuid, %s, "
+                        "%s, now(), now())",
+                        [str(uuid.uuid4()), str(org_id), bundle_id,
+                         appr_uid, kid, appr_json],
+                    )
+
                 conn.commit()
             except psycopg.errors.UniqueViolation:
                 conn.rollback()

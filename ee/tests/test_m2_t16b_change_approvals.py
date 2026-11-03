@@ -1,4 +1,4 @@
-"""T16b tests-first: server stores and serves change_approvals (ADR 0001 A1).
+﻿"""T16b tests-first: server stores and serves change_approvals (ADR 0001 A1).
 
 Spec (T12B_PLAN.md T16b row, ADR 0001 Amendment A1 (2 Nov)):
 
@@ -228,38 +228,210 @@ def _issue_code_ready(conn, org_id, project_id, operator_user_id):
 
 
 def _enroll_device(srv, conn, org_id, project_id, operator_user_id):
-    """Enroll a device.  Returns device_token (str)."""
+    """Enroll a device.  Returns device_token (str).
+
+    Since T8 the enroll route requires a PoP ``proof`` envelope
+    (``agg/device-enroll/v1`` signing code_hash).  Pattern copied from
+    ``ee/tests/test_m2_t8_enroll.py::_make_enroll_proof``.
+    """
     code, code_hash, code_id = _issue_code_ready(
         conn, org_id, project_id, operator_user_id,
     )
     import httpx
     from nacl.signing import SigningKey as SK
     device_sk = SK.generate()
-    device_pub = bytes(device_sk.verify_key).hex()
-    device_kid = hashlib.sha256(bytes(device_sk.verify_key)).hexdigest()
+    device_pub = bytes(device_sk.verify_key)
+    device_pub_hex = device_pub.hex()
+    device_kid = hashlib.sha256(device_pub).hexdigest()
+
+    # Build PoP proof envelope (T8 requirement)
+    proof_payload = {
+        "code_hash": code_hash,
+        "public_key": device_pub_hex,
+        "aud": "test",
+        "iat": time.time(),
+    }
+    proof = sign_envelope("agg/device-enroll/v1", proof_payload, device_sk)
 
     r = httpx.post(
         f"{srv['base_url']}/api/v1/sync/enroll",
         json={
             "code": code,
-            "device_key_id": device_kid,
-            "device_public_key": device_pub,
+            "public_key": device_pub_hex,
+            "proof": proof,
         },
         timeout=10, verify=False,
     )
     assert r.status_code == 200, f"enroll failed: {r.status_code} {r.text}"
     device_id = r.json().get("device_id", "")
 
-    # Get a device token
-    iat = time.time()
-    payload = {"device_id": device_id, "iat": iat}
+    # Get a device token via signed assertion (T8 requirement)
+    assertion = sign_envelope("agg/device-assert/v1", {
+        "device_id": device_id,
+        "aud": "test",
+        "iat": time.time(),
+        "nonce": secrets.token_hex(16),
+    }, device_sk)
     r2 = httpx.post(
         f"{srv['base_url']}/api/v1/sync/token",
-        json=payload,
+        json={"device_id": device_id, "assertion": assertion},
         timeout=10, verify=False,
     )
     assert r2.status_code == 200, f"token failed: {r2.status_code} {r2.text}"
     return r2.json()["token"]
+
+
+def _build_registry(admin_sks, approver_sks=(), *, org_id,
+                    bundle_signer_sk=None):
+    """Build a signed registry genesis.  Returns ([genesis_env], fingerprint).
+
+    Follows the same contract as
+    ``tests.security.test_m2_t12_remote._build_registry`` so the e2e test
+    can set up a managed workspace without importing across root boundaries.
+    """
+    keys = []
+    admins = []
+    for sk, pub, kid in admin_sks:
+        keys.append({
+            "key_id": kid, "public_key": pub.hex(),
+            "user_id": f"admin-{kid[:8]}", "iss": "https://idp.test",
+            "sub": f"admin-{kid[:8]}", "alg": "ed25519", "kind": "cli",
+            "roles": ["admin", "approver"], "added_in": 1,
+        })
+        admins.append(kid)
+    for entry in approver_sks:
+        sk, pub, kid, uid, kind = entry[:5]
+        sub = entry[5] if len(entry) > 5 else uid
+        keys.append({
+            "key_id": kid, "public_key": pub.hex(),
+            "user_id": uid, "iss": "https://idp.test", "sub": sub,
+            "alg": "ed25519", "kind": kind, "roles": ["approver"],
+            "added_in": 1,
+        })
+    genesis_payload = {
+        "org_id": org_id, "version": 1, "prev_hash": "",
+        "threshold": 2 if len(admin_sks) >= 2 else 1,
+        "admins": admins, "keys": keys,
+        "expires_at": time.time() + 86400,
+    }
+    if bundle_signer_sk is not None:
+        _, bpub, bkid = bundle_signer_sk
+        genesis_payload["bundle_signer"] = {
+            "key_id": bkid, "public_key": bpub.hex(),
+        }
+    tag = b"agg/registry/v1"
+    canonical = json.dumps(genesis_payload, sort_keys=True,
+                           separators=(",", ":")).encode()
+    msg = tag + b"\x00" + canonical
+    sigs = []
+    for sk, pub, kid in admin_sks:
+        sig = sk.sign(msg).signature.hex()
+        sigs.append({"key_id": kid, "alg": "ed25519", "sig": sig})
+    genesis_env = {
+        "kind": "agg/registry/v1", "sig_v": 1,
+        "payload": genesis_payload, "signatures": sigs,
+    }
+    fp = hashlib.sha256(
+        genesis_payload["org_id"].encode("utf-8") + b":" + canonical
+    ).hexdigest()
+    return [genesis_env], fp
+
+
+def _setup_managed_workspace(
+    tmp_path, monkeypatch, *, admin_sks=None, approver_sks=None,
+    bundle_signer_sk=None, org_id="org-1", project_id="proj-1",
+    policy_sequence=1,
+):
+    """Set up a managed workspace with a pinned registry and a signed bundle.
+
+    Local equivalent of ``tests.security.test_m2_t12_remote._setup_managed_workspace``
+    so ee tests do not cross the root boundary.  Returns dict with lay, registry, fp.
+    """
+    from sandbox.connector.install import init
+    from sandbox.connector.layout import FolderLayout
+
+    kh = tmp_path / "keyhome"
+    kh.mkdir(exist_ok=True)
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
+
+    ws = tmp_path / "ws"
+    ws.mkdir(parents=True, exist_ok=True)
+    init(ws, claude=False, mcp=False)
+    lay = FolderLayout(ws)
+
+    ws_id = "a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5"
+    (lay.base / "workspace_id").write_text(ws_id, encoding="utf-8")
+    kh_ws = kh / ws_id
+    kh_ws.mkdir(parents=True, exist_ok=True)
+    (kh_ws / "managed").write_text("1", encoding="utf-8")
+
+    sync_dir = lay.root / ".sandbox" / "state" / "sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    (sync_dir / "managed").write_text("1", encoding="utf-8")
+
+    if admin_sks is None:
+        admin_sks = [keygen(), keygen()]
+    if approver_sks is None:
+        approver_sks = []
+    if bundle_signer_sk is None:
+        bundle_signer_sk = keygen()
+
+    envelopes, fp = _build_registry(
+        admin_sks, approver_sks,
+        org_id=org_id, bundle_signer_sk=bundle_signer_sk,
+    )
+    (sync_dir / "pinned_root.json").write_text(
+        json.dumps({"fingerprint": fp}), encoding="utf-8")
+    (sync_dir / "registry.json").write_text(
+        json.dumps(envelopes), encoding="utf-8")
+
+    # Signed bundle
+    bs_sk, bs_pub, bs_kid = bundle_signer_sk
+    bundle_payload = {
+        "org_id": org_id, "project_id": project_id,
+        "sequence": policy_sequence, "base_sequence": 0,
+        "registry_version": 1, "environment": "staging",
+        "folder_policy": {}, "governance_policy": {}, "mcp_policy": {},
+        "approval": {"local_fallback": False, "allow_requester": False},
+        "change_approvals": [],
+        "issued_at": time.time(), "not_before": time.time() - 60,
+        "expires_at": time.time() + 86400,
+    }
+    bundle_env = sign_envelope("agg/bundle/v1", bundle_payload, bs_sk)
+    (sync_dir / "bundle.json").write_text(
+        json.dumps(bundle_env), encoding="utf-8")
+
+    device_id_val = "dev-1"
+    (sync_dir / "enrollment.json").write_text(json.dumps({
+        "device_id": device_id_val, "operator_user_id": "operator-alice",
+        "org_id": org_id, "project_id": project_id,
+    }), encoding="utf-8")
+    (sync_dir / "device_id").write_text(device_id_val, encoding="utf-8")
+
+    connector_sk = SigningKey.generate()
+    safe_name = f"connector_{device_id_val}"
+    (kh_ws / f"{safe_name}.seed").write_bytes(bytes(connector_sk))
+    (kh_ws / f"{safe_name}.pub").write_text(
+        bytes(connector_sk.verify_key).hex(), encoding="utf-8")
+
+    # Server-time measurement (required by sync; product reads server_time_state.json)
+    (sync_dir / "server_time_state.json").write_text(json.dumps({
+        "server_time": time.time(), "local_time": time.time(),
+    }), encoding="utf-8")
+
+    # S1: initial high_water.json (so load_verified_state never fails closed
+    # on a missing file; matches test_m2_t12_remote._setup_managed_workspace)
+    (sync_dir / "high_water.json").write_text(json.dumps({
+        "registry_version": 1, "bundle_sequence": policy_sequence,
+    }), encoding="utf-8")
+
+    return {
+        "lay": lay,
+        "registry": envelopes,
+        "fingerprint": fp,
+        "admin_sks": admin_sks,
+        "bundle_signer_sk": bundle_signer_sk,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -332,8 +504,6 @@ def t16b_server(pg_url, app_url, owner_url, pg_roles, tmp_path_factory):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T16Pending,
-                    reason="T16b: admin_create_bundle drops change_approvals (never stored)")
 def test_post_bundles_stores_change_approvals(t16b_server):
     """POST /admin/bundles with change_approvals stores them in
     policy_change_approvals keyed by the bundle row."""
@@ -400,8 +570,6 @@ def test_post_bundles_stores_change_approvals(t16b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T16Pending,
-                    reason="T16b: GET /sync/bundle returns bare envelope, not {envelope, change_approvals}")
 def test_get_bundle_returns_envelope_and_approvals(t16b_server):
     """GET /sync/bundle returns {"envelope": ..., "change_approvals": [...]}
     with approvals beside (not inside) the signed envelope."""
@@ -463,8 +631,6 @@ def test_get_bundle_returns_envelope_and_approvals(t16b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T16Pending,
-                    reason="T16b: GET /sync/bundle returns bare envelope")
 def test_get_bundle_envelope_bytes_unchanged(t16b_server):
     """The envelope bytes served by GET /sync/bundle are unchanged from
     what the server signed at publish time."""
@@ -530,8 +696,6 @@ def test_get_bundle_envelope_bytes_unchanged(t16b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T16Pending,
-                    reason="T16b: server drops change_approvals; 0-approval test requires stored approvals")
 def test_zero_approval_loosening_served_but_connector_refuses(t16b_server):
     """A 0-approval loosening is still served (server does not judge) but
     the connector's verify_and_apply refuses it."""
@@ -576,9 +740,7 @@ def test_zero_approval_loosening_served_but_connector_refuses(t16b_server):
     assert body.get("change_approvals") == [] or body.get("change_approvals") is not None
 
     from sandbox.connector.sync.bundles import verify_and_apply, BundleError
-    from tests.security.test_m2_t12_remote import (
-        _keygen as rkeygen, _setup_managed_workspace,
-    )
+    from sandbox.protocol.registry import verify_chain
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         ws = Path(td) / "ws"
@@ -588,8 +750,8 @@ def test_zero_approval_loosening_served_but_connector_refuses(t16b_server):
                 os.environ[k] = v
 
         fm = FakeMonkey()
-        admin1 = rkeygen()
-        admin2 = rkeygen()
+        admin1 = keygen()
+        admin2 = keygen()
         bs_pub = srv["bundle_signer_pub"]
         bs_kid = hashlib.sha256(bs_pub).hexdigest()
 
@@ -599,14 +761,23 @@ def test_zero_approval_loosening_served_but_connector_refuses(t16b_server):
             bundle_signer_sk=(srv["bundle_signer_sk"], bs_pub, bs_kid),
             org_id=org_id,
             project_id=project_id,
+            policy_sequence=0,
         )
         lay = ctx["lay"]
+        # Remove the seed bundle so this is a first-bundle scenario
+        # (last_valid_bundle returns None -> needs 2 approvals)
+        seed_bundle = lay.root / ".sandbox" / "state" / "sync" / "bundle.json"
+        if seed_bundle.exists():
+            seed_bundle.unlink()
+        verified_registry = verify_chain(
+            ctx["registry"], ctx["fingerprint"],
+        )
 
         with pytest.raises(BundleError, match="need 2 approvals"):
             verify_and_apply(
                 lay,
                 body["envelope"],
-                ctx["registry"],
+                verified_registry,
                 bs_pub,
                 body.get("change_approvals", []),
                 org_id=org_id,
@@ -620,8 +791,6 @@ def test_zero_approval_loosening_served_but_connector_refuses(t16b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T16Pending,
-                    reason="T16b: GET /sync/bundle serves latest, not lowest > after")
 def test_get_bundle_serves_lowest_seq_above_after(t16b_server):
     """GET /sync/bundle?after=N returns the bundle with the lowest
     sequence > N, not the newest."""
@@ -671,8 +840,6 @@ def test_get_bundle_serves_lowest_seq_above_after(t16b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T16Pending,
-                    reason="T16b: GET /sync/bundle 204 not tested through new shape")
 def test_get_bundle_204_when_nothing_newer(t16b_server):
     """GET /sync/bundle?after=<latest> returns 204 when nothing is newer."""
     _need_approvals_served()
@@ -720,8 +887,6 @@ def test_get_bundle_204_when_nothing_newer(t16b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T16Pending,
-                    reason="T16b: approvals dropped at publish; cannot round-trip")
 def test_approvals_round_trip_verbatim(t16b_server):
     """Approvals stored then served are byte-identical to what was published."""
     _need_approvals_stored()
@@ -791,8 +956,6 @@ def test_approvals_round_trip_verbatim(t16b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T16Pending,
-                    reason="T16b: publish does not validate change_approvals")
 def test_publish_400_malformed_approval(t16b_server):
     """A malformed approval (not an object with a signatures list) makes
     the publish 400 bad_change_approvals and nothing is stored."""
@@ -868,8 +1031,6 @@ def test_publish_400_malformed_approval(t16b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T16Pending,
-                    reason="T16b: publish does not validate change_approvals")
 def test_publish_400_key_not_in_approver_keys(t16b_server):
     """An approval whose key_id is not in approver_keys makes the
     publish 400 bad_change_approvals and nothing is stored."""
@@ -947,8 +1108,6 @@ def test_publish_400_key_not_in_approver_keys(t16b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T16Pending,
-                    reason="T16b: publish does not validate change_approvals")
 def test_publish_400_approval_missing_signatures_list(t16b_server):
     """An approval object with no 'signatures' list is 400 and nothing
     is stored."""
@@ -1033,8 +1192,6 @@ def test_publish_400_approval_missing_signatures_list(t16b_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M2T16Pending,
-                    reason="T16b: full e2e bundle pull path not wired")
 def test_e2e_publish_and_connector_applies(t16b_server, tmp_path, monkeypatch):
     """E2e: publish a 2-approval loosening; the connector applies it
     through the pull path (GET /sync/bundle)."""
@@ -1051,11 +1208,14 @@ def test_e2e_publish_and_connector_applies(t16b_server, tmp_path, monkeypatch):
     alice_sk, alice_kid = _route_cli_link(srv, org_id, alice_id)
     admin2_sk, admin2_kid = _route_cli_link(srv, org_id, srv["admin2_id"])
 
+    # Earlier tests published bundles at seq 1-72 in the same project
+    # (module-scoped fixture).  Use seq 79/80 so GET /sync/bundle?after=79
+    # returns our bundle, not an earlier one.
     bundle_payload = {
         "org_id": org_id,
         "project_id": project_id,
         "sequence": 80,
-        "base_sequence": 0,
+        "base_sequence": 79,
         "registry_version": 1,
         "environment": "staging",
         "folder_policy": {},
@@ -1075,10 +1235,6 @@ def test_e2e_publish_and_connector_applies(t16b_server, tmp_path, monkeypatch):
                      [appr1, appr2])
     assert r.status_code == 200, f"publish failed: {r.status_code} {r.text}"
 
-    from tests.security.test_m2_t12_remote import (
-        _keygen as rkeygen, _setup_managed_workspace, _build_registry,
-    )
-
     bs_pub = srv["bundle_signer_pub"]
     bs_kid = hashlib.sha256(bs_pub).hexdigest()
     bs_entry = (srv["bundle_signer_sk"], bs_pub, bs_kid)
@@ -1088,19 +1244,17 @@ def test_e2e_publish_and_connector_applies(t16b_server, tmp_path, monkeypatch):
         (admin2_sk, bytes(admin2_sk.verify_key), admin2_kid),
     ]
 
+    # Seed the local workspace at seq 79 so _fetch_bundle requests after=79
     ctx = _setup_managed_workspace(
         tmp_path, monkeypatch,
         admin_sks=admin_sks,
         bundle_signer_sk=bs_entry,
         org_id=org_id,
         project_id=project_id,
-        policy_sequence=0,
+        policy_sequence=79,
     )
     lay = ctx["lay"]
-
-    bundle_file = lay.root / ".sandbox" / "state" / "sync" / "bundle.json"
-    if bundle_file.exists():
-        bundle_file.unlink()
+    # Keep the seed bundle at sequence 79: load_verified_state needs it.
 
     from sandbox.connector.sync.process import SyncProcess, run_once
     from sandbox.connector.sync.state import current_sequence
@@ -1132,8 +1286,14 @@ def test_e2e_publish_and_connector_applies(t16b_server, tmp_path, monkeypatch):
             bd = {}
         return (r.status_code, bd, dict(r.headers))
 
+    # Read the device key written by _setup_managed_workspace (connector_dev-1.seed)
+    kh = Path(os.environ["SANDBOX_KEY_HOME"])
+    ws_id = (lay.base / "workspace_id").read_text(encoding="utf-8").strip()
+    dev_seed_file = kh / ws_id / "connector_dev-1.seed"
+    device_key = dev_seed_file.read_bytes()
+
     sync = SyncProcess(
-        lay, srv["base_url"], b"fake", "dev-1",
+        lay, srv["base_url"], device_key, "dev-1",
         connect=real_connect,
     )
     sync._token = device_token

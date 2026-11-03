@@ -321,6 +321,9 @@ def test_t15b2_sync_http_non_loopback_refused_before_socket(tmp_path, monkeypatc
 def test_t15b2_twin_sync_loopback_http_still_allowed(tmp_path, monkeypatch):
     """Positive twin (holds today): loopback http is accepted by the sync
     path; the network calls are attempted (and fail harmlessly here)."""
+    from nacl.signing import SigningKey as _SK
+    from unittest.mock import MagicMock
+
     lay, sync_dir, fp, chain_v3, admin_sk = _r2_setup_enrolled_workspace(
         tmp_path, org_id="org-t15b2b",
     )
@@ -328,10 +331,32 @@ def test_t15b2_twin_sync_loopback_http_still_allowed(tmp_path, monkeypatch):
         "server_url": "http://127.0.0.1:9", "device_id": "dev-t15b2b",
         "org_id": "org-t15b2b",
     }), encoding="utf-8")
+
+    # Write workspace_id and device key so _load_device_key succeeds
+    ws_id = "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6a7"
+    (lay.root / ".sandbox" / "workspace_id").write_text(ws_id, encoding="utf-8")
+    kh = tmp_path / "keyhome"
+    kh.mkdir(exist_ok=True)
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
+    device_dir = kh / ws_id / "device"
+    device_dir.mkdir(parents=True, exist_ok=True)
+    (device_dir / "device.key").write_bytes(_SK.generate()._seed)
+    (kh / ws_id / "managed").write_text("1", encoding="utf-8")
+
     monkeypatch.chdir(tmp_path / "ws")
     tracker = _MockTracker({})
+
+    # _default_connect uses build_opener(...).open(), not urlopen.
+    # Patch build_opener so the per-call opener delegates to tracker.
+    _real_build = urllib.request.build_opener
+
+    def _patched_build_opener(*handlers):
+        opener = MagicMock()
+        opener.open = lambda req, **kw: tracker.urlopen(req, **kw)
+        return opener
+
     from sandbox.cli.main import cli
-    with patch("urllib.request.urlopen", side_effect=tracker.urlopen):
+    with patch("urllib.request.build_opener", side_effect=_patched_build_opener):
         result = CliRunner().invoke(cli, ["sync", "--once", "--server", "http://127.0.0.1:9"])
     low = (result.output or "").lower()
     assert "loopback" not in low and "use https" not in low, (

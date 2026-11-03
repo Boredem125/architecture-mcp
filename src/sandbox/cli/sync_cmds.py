@@ -7,7 +7,6 @@ on the hook's approver-command deny list for agents (C9 item 6):
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import secrets
@@ -131,8 +130,16 @@ def enroll(server: str, code: str, expect_fingerprint: str, operator: str | None
 @click.option("--once", is_flag=True, help="Run one sync cycle then exit")
 @click.option("--server", default=None, help="Control plane URL (read from enrollment if omitted)")
 def sync(once: bool, server: str | None) -> None:
-    """Sync with the control plane: upload escalations, poll decisions, apply."""
+    """Sync with the control plane: upload escalations, poll decisions, apply.
+
+    ``--once`` runs one cycle then exits.  Without ``--once`` the command
+    loops until SIGINT (KeyboardInterrupt).  Delegates to ``SyncProcess``
+    in ``connector/sync/process.py`` (T16a: single cycle, one code path).
+    """
     from sandbox.connector.layout import FolderLayout
+    from sandbox.connector.sync.process import (
+        SyncProcess, run_once as _proc_run_once, run_loop, SyncError,
+    )
 
     lay = FolderLayout(".")
     if not lay.exists():
@@ -142,9 +149,63 @@ def sync(once: bool, server: str | None) -> None:
     if not is_managed(lay):
         raise click.ClickException("workspace is not managed; enroll first")
 
-    run_once(lay, server)
-    if not once:
-        click.echo("sync: continuous mode not yet implemented; use --once")
+    # Read enrollment for server URL and device key
+    enroll_data = _read_enrollment(lay)
+    effective_server = server
+    if effective_server is None and enroll_data:
+        effective_server = enroll_data.get("server_url", "")
+    if not effective_server:
+        raise click.ClickException("no server URL; pass --server or enroll first")
+
+    # T15b-2: refuse http:// to a non-loopback host before any socket
+    _check_transport_safety(effective_server)
+
+    # Load device key from key home
+    device_key = _load_device_key(lay)
+    device_id = enroll_data.get("device_id", "") if enroll_data else ""
+
+    sp = SyncProcess(lay, effective_server, device_key, device_id)
+
+    if once:
+        try:
+            _proc_run_once(sp)
+        except SyncError as exc:
+            raise click.ClickException(str(exc))
+    else:
+        run_loop(sp)
+
+
+def _load_device_key(lay) -> bytes:
+    """Load the device signing key from the key home.  Returns raw seed bytes.
+
+    Raises ``click.ClickException`` when the key is missing or not 32 bytes
+    (F1: no zero-seed fallback anywhere).
+    """
+    from sandbox.connector.keyhome import key_home_root, workspace_id
+
+    kh = key_home_root()
+    if kh is None:
+        raise click.ClickException(
+            "key home not available; cannot load device key"
+        )
+    try:
+        ws_id = workspace_id(lay, create=False)
+    except Exception as exc:
+        raise click.ClickException(
+            f"cannot determine workspace id: {exc}"
+        ) from exc
+    dk_path = kh / ws_id / "device" / "device.key"
+    if not dk_path.exists():
+        raise click.ClickException(
+            f"device key not found at {dk_path}; enroll first"
+        )
+    raw = dk_path.read_bytes()
+    if len(raw) != 32:
+        raise click.ClickException(
+            f"device key is {len(raw)} bytes, expected 32; "
+            "the key file may be corrupted"
+        )
+    return raw
 
 
 def _read_enrollment(lay):
@@ -224,103 +285,72 @@ def _get_signer_token(server: str, sk, kid: str) -> str | None:
 
 
 def run_once(lay, server: str | None = None) -> dict:
-    """One sync cycle: upload pending escalations, poll decisions, apply.
+    """One sync cycle via SyncProcess (T16a: single code path).
 
-    Returns a summary dict for testing.
+    Delegates to ``connector/sync/process.py`` for the real work (decisions,
+    bundles, registry, escalation upload, audit upload).  Returns a summary
+    dict for backward compatibility with existing callers.
     """
-    from sandbox.connector.queue import EscalationQueue, valid_request_id
-    from sandbox.connector.sync.verified_state import load_verified_state
-    from sandbox.connector.approval import apply_external, _binding_fingerprint
-    from sandbox.connector import scrub
+    from sandbox.connector.queue import EscalationQueue
+    from sandbox.connector.sync.process import (
+        SyncProcess, run_once as _run_cycle, SyncError,
+    )
 
-    queue = EscalationQueue(lay)
-    results: dict = {"uploaded": 0, "polled": 0, "applied": {}}
+    results: dict = {"uploaded": 0, "polled": 0, "applied": {}, "registry": "unchanged"}
 
-    # Resolve server URL from enrollment if not given
     enroll_data = _read_enrollment(lay)
     effective_server = server
     if effective_server is None and enroll_data:
         effective_server = enroll_data.get("server_url", "")
-    # T15b-2: refuse http:// to a non-loopback host before any socket
-    # (device token, upload, decisions and registry all carry a Bearer).
     if effective_server:
         _check_transport_safety(effective_server)
 
-    # 1. Upload pending escalations (POST /api/v1/sync/escalations, scrubbed,
-    # idempotent: the server deduplicates by request_id)
-    from sandbox.connector.sync.process import escalation_upload_body
-    token = _get_token(lay, effective_server) if effective_server else None
-    enroll_device_id = enroll_data.get("device_id", "") if enroll_data else ""
-    pending = queue.list_pending()
-    for rec in pending:
+    device_key = _load_device_key(lay)
+    device_id = enroll_data.get("device_id", "") if enroll_data else ""
+
+    # Snapshot pending request statuses before the cycle
+    queue = EscalationQueue(lay)
+    before_pending: set[str] = set()
+    for rec in queue.list_pending():
         rid = rec.get("request_id", "")
-        try:
-            upload_rec = dict(rec)
-            if scrub.enabled(lay):
-                if not scrub.scrub_fields(upload_rec, scrub.OUTPUT_FIELDS):
-                    pass  # scrub_fields returns whether it redacted; ok either way
-            # Build the structured body the server expects
-            # (shared helper validates bundle_sequence, refuses non-int)
-            body = escalation_upload_body(upload_rec, enroll_device_id,
-                                          layout=lay)
-            if body is None:
-                continue
-            if effective_server:
-                _upload_escalation(effective_server, body, token)
-            results["uploaded"] += 1
-        except Exception:  # noqa: BLE001 -- L1: scrub failure blocks this record
-            continue
+        if rid:
+            before_pending.add(rid)
 
-    # 2. Poll decisions from GET /api/v1/sync/decisions
-    decisions_by_request: dict[str, list[dict]] = {}
-    if effective_server:
-        if token is None:
-            token = _get_token(lay, effective_server)
-        raw_decisions = _fetch_decisions(effective_server, token)
-        for row in raw_decisions:
-            rid = row.get("request_id", "")
-            if not valid_request_id(rid):
-                continue
-            # Check that we have a local pending record
-            if queue.status(rid) != "pending":
-                continue
-            # Rebuild envelope with kind fixed in code (never trust server's kind)
-            envelope = _rebuild_envelope(row)
-            if envelope is not None:
-                decisions_by_request.setdefault(rid, []).append(envelope)
-        results["polled"] = len(raw_decisions)
+    sp = SyncProcess(lay, effective_server or "", device_key, device_id)
 
-    # 2b. Refresh registry chain (D4-1 / step 5 fix).
-    # The connector must have the latest verified registry before applying
-    # decisions, otherwise approvals signed under a newer registry version
-    # (e.g. v2 keys for bob/carol) cannot be verified against an old local
-    # copy (v1 only from enrollment).
-    if effective_server:
-        reg_status = _refresh_registry_chain(lay, effective_server, token)
-        results["registry"] = reg_status
-    else:
-        results["registry"] = "unchanged"
+    try:
+        _run_cycle(sp)
+    except SyncError as exc:
+        # Compat summary: report the failed cycle; never auto-approve.
+        results["error"] = str(exc)
+    results["uploaded"] = sp.uploaded_count
 
-    # 3. Apply decisions
-    for rid, envelopes in decisions_by_request.items():
-        try:
-            result = asyncio.run(apply_external(lay, rid, envelopes,
-                                                 clock=lambda: time.time()))
-            results["applied"][rid] = result.get("status", "unknown")
-            # Audit the outcome
+    # Detect applied decisions: requests that were pending and now have a
+    # different status.  Map queue status to the operation outcome for
+    # backward compatibility (queue stores "done"; the legacy path returned
+    # "executed").  Terminal states ("refused", "denied") are read from the
+    # done-record's ``state`` field so the C6 script-binding property and
+    # deny paths surface the correct status to callers.
+    for rid in before_pending:
+        new_status = queue.status(rid)
+        if new_status == "done":
+            # Read the done-record's state: apply_external writes "refused"
+            # for script-changed refusals and "denied" for signed denies.
+            done_file = lay.done_dir / f"{rid}.json"
             try:
-                from sandbox.connector.audit import FolderAudit
-                audit = FolderAudit(lay.audit_dir, session_id="sync")
-                audit.append({
-                    "event": "sync_decision_applied",
-                    "request_id": rid,
-                    "status": result.get("status", "unknown"),
-                    "ts": time.time(),
-                })
-            except Exception:  # noqa: BLE001
-                pass
-        except Exception:  # noqa: BLE001
-            results["applied"][rid] = "error"
+                done_data = json.loads(
+                    done_file.read_text(encoding="utf-8"),
+                )
+                # R4-2: an unreadable record is never reported as success.
+                done_state = (
+                    done_data.get("state", "unknown")
+                    if isinstance(done_data, dict) else "unknown"
+                )
+            except (OSError, ValueError):
+                done_state = "unknown"
+            results["applied"][rid] = done_state
+        elif new_status != "pending":
+            results["applied"][rid] = new_status
 
     return results
 
@@ -341,29 +371,6 @@ def _fetch_escalation(server: str, request_id: str, token: str | None) -> dict |
     if isinstance(data, dict):
         return data
     return None
-
-
-def _upload_escalation(server: str, rec: dict, token: str | None) -> None:
-    """POST /api/v1/sync/escalations (idempotent by request_id)."""
-    url = server.rstrip("/") + "/api/v1/sync/escalations"
-    try:
-        _signer_safe_post(url, rec, token)
-    except Exception:  # noqa: BLE001 -- upload is best-effort
-        pass
-
-
-def _fetch_decisions(server: str, token: str | None) -> list[dict]:
-    """GET /api/v1/sync/decisions and return the rows."""
-    url = server.rstrip("/") + "/api/v1/sync/decisions"
-    try:
-        data = _signer_safe_get(url, token)
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            return data.get("decisions", [])
-    except Exception:  # noqa: BLE001
-        pass
-    return []
 
 
 def _refresh_registry_chain(
@@ -407,40 +414,6 @@ def _refresh_registry_chain(
     # Delegate to shared verify-and-persist helper (R2-2)
     from sandbox.connector.sync.registry_chain import apply_registry_chain
     return apply_registry_chain(lay, new_chain)
-
-
-def _rebuild_envelope(row: dict) -> dict | None:
-    """Rebuild an agg/remote-approval/v1 envelope from a server decision row.
-
-    The kind is fixed in code (never trust the server's kind column).
-    The server's user_id column is ignored (comes from the registry).
-    """
-    payload = row.get("signed_payload") or row.get("payload")
-    # The signed_payload column is TEXT; the server may return a JSON string.
-    if isinstance(payload, str):
-        try:
-            payload = json.loads(payload)
-        except (json.JSONDecodeError, ValueError):
-            return None
-    if not isinstance(payload, dict):
-        return None
-    # The server returns the field as "signature" (DB column name),
-    # not "sig" (the envelope convention). Accept both.
-    sig = row.get("sig") or row.get("signature") or ""
-    key_id = row.get("key_id") or payload.get("key_id", "")
-    if not sig or not key_id:
-        sigs = row.get("signatures", [])
-        if isinstance(sigs, list) and sigs:
-            sig = sigs[0].get("sig", "")
-            key_id = sigs[0].get("key_id", key_id)
-    if not sig:
-        return None
-    return {
-        "kind": "agg/remote-approval/v1",  # fixed in code
-        "sig_v": 1,
-        "payload": payload,
-        "signatures": [{"key_id": key_id, "alg": "ed25519", "sig": sig}],
-    }
 
 
 @click.command("unenroll")

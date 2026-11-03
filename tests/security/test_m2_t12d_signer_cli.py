@@ -4327,6 +4327,18 @@ def test_r2_2_run_once_carries_registry_status(tmp_path, monkeypatch):
 
     monkeypatch.chdir(tmp_path / "ws")
 
+    # Write workspace_id and device key so _load_device_key succeeds
+    ws_id = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
+    ws_id_file = lay.root / ".sandbox" / "workspace_id"
+    ws_id_file.write_text(ws_id, encoding="utf-8")
+    kh = tmp_path / "keyhome"
+    kh.mkdir(exist_ok=True)
+    monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
+    device_dir = kh / ws_id / "device"
+    device_dir.mkdir(parents=True, exist_ok=True)
+    (device_dir / "device.key").write_bytes(SigningKey.generate()._seed)
+    (kh / ws_id / "managed").write_text("1", encoding="utf-8")
+
     # Write enrollment.json with a server URL
     (sync_dir / "enrollment.json").write_text(
         json.dumps({

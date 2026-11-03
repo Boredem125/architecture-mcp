@@ -59,6 +59,7 @@ import time
 from pathlib import Path
 
 import pytest
+from nacl.signing import SigningKey
 
 from tests.m2_pending import M2T10Pending
 from tests.m2_fakes import FakeSyncServer, FakeResponse
@@ -375,7 +376,7 @@ def test_sync_process_run_once_uses_injected_connect():
 
     sync = SyncProcess(
         layout=None, server_url="http://fake.invalid",
-        device_key=b"k", device_id="d-1",
+        device_key=SigningKey.generate()._seed, device_id="d-1",
         clock=time.monotonic,
         connect=fake_connect,
     )
@@ -406,7 +407,7 @@ def test_server_down_escalated_call_stays_pending(tmp_path, monkeypatch):
     lay = _ws(tmp_path / "ws")
 
     # Create a pending escalation
-    pending_dir = lay.root / ".sandbox" / "pending"
+    pending_dir = lay.pending_dir
     pending_dir.mkdir(parents=True, exist_ok=True)
     escalation = {
         "request_id": "req-1",
@@ -456,7 +457,7 @@ def test_no_timeout_auto_approve(tmp_path, monkeypatch):
     monkeypatch.setenv("SANDBOX_KEY_HOME", str(kh))
     lay = _ws(tmp_path / "ws")
 
-    pending_dir = lay.root / ".sandbox" / "pending"
+    pending_dir = lay.pending_dir
     pending_dir.mkdir(parents=True, exist_ok=True)
     escalation = {
         "request_id": "req-2",
