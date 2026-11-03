@@ -269,6 +269,38 @@ def _get_signer_token(
     return r.json()["token"]
 
 
+def _link_browser_key(
+    client: httpx.Client,
+    base_url: str,
+    csrf: str,
+) -> tuple["nacl.signing.SigningKey", str]:
+    """Enroll a browser key via POST /api/v1/signer-links kind=browser.
+
+    The user must already be logged in on *client* with a valid session.
+    Returns (sk, kid).  Replicates the pattern from
+    ee/tests/test_m2_t12b_e2e.py::_e2e_route_browser_enroll without
+    importing from tests.
+    """
+    from nacl.signing import SigningKey
+
+    sk = SigningKey.generate()
+    kid = _signer_kid(bytes(sk.verify_key))
+    pub_hex = bytes(sk.verify_key).hex()
+
+    r = client.post(
+        f"{base_url}/api/v1/signer-links",
+        json={"kind": "browser", "key_id": kid, "public_key": pub_hex},
+        headers={"X-CSRF-Token": csrf},
+        timeout=15,
+    )
+    if r.status_code != 201:
+        _fail(
+            f"/signer-links kind=browser returned {r.status_code}: "
+            f"{r.text[:200]}"
+        )
+    return sk, kid
+
+
 def _link_cli_key(
     client: httpx.Client,
     base_url: str,
@@ -822,6 +854,12 @@ def step2_setup_and_admin(client: httpx.Client, base_url: str, passwords: dict[s
         _pass(f"bob linked CLI key (kid={bob_kid[:12]}...)")
         bob_token = _get_signer_token(bob_client, base_url, bob_sk, bob_kid)
 
+        # T16d-3: bob links a browser key (route-enrolled, kind=browser)
+        bob_browser_sk, bob_browser_kid = _link_browser_key(
+            bob_client, base_url, bob_csrf,
+        )
+        _pass(f"bob linked browser key (kid={bob_browser_kid[:12]}...)")
+
     # Negative: bob (pending_link) posts an envelope that does NOT add
     # his own key -> server must refuse with 403.
     fake_env = {
@@ -881,6 +919,12 @@ def step2_setup_and_admin(client: httpx.Client, base_url: str, passwords: dict[s
         )
         _pass(f"carol linked approver key (kid={carol_apr_kid[:12]}...)")
 
+        # T16d-3: carol links a browser key (route-enrolled, kind=browser)
+        carol_browser_sk, carol_browser_kid = _link_browser_key(
+            carol_client2, base_url, carol_csrf2,
+        )
+        _pass(f"carol linked browser key (kid={carol_browser_kid[:12]}...)")
+
     v2_canonical = json.dumps(
         v2_payload, sort_keys=True, separators=(",", ":")
     ).encode()
@@ -919,6 +963,29 @@ def step2_setup_and_admin(client: httpx.Client, base_url: str, passwords: dict[s
             "user_id": alice_user_id,
             "iss": alice_apr_iss,
             "sub": alice_apr_sub,
+            "roles": ["approver"],
+            "added_in": 3,
+        },
+        # T16d-3: browser keys for bob and carol (route-enrolled, kind=browser)
+        {
+            "key_id": bob_browser_kid,
+            "public_key": bytes(bob_browser_sk.verify_key).hex(),
+            "kind": "browser",
+            "alg": "ed25519",
+            "user_id": bob_user_id,
+            "iss": bob_iss,
+            "sub": bob_sub,
+            "roles": ["approver"],
+            "added_in": 3,
+        },
+        {
+            "key_id": carol_browser_kid,
+            "public_key": bytes(carol_browser_sk.verify_key).hex(),
+            "kind": "browser",
+            "alg": "ed25519",
+            "user_id": carol_user_id,
+            "iss": carol_apr_iss,
+            "sub": carol_apr_sub,
             "roles": ["approver"],
             "added_in": 3,
         },
@@ -963,7 +1030,7 @@ def step2_setup_and_admin(client: httpx.Client, base_url: str, passwords: dict[s
             f"v3 publish returned {v3_resp.status_code}: "
             f"{v3_resp.text[:300]}"
         )
-    _pass("v3 accepted (registry version 3, bob + approver keys)")
+    _pass("v3 accepted (registry version 3, bob + approver + browser keys)")
 
     # 2t. GET /api/v1/sync/signer/registry -> 3-version chain
     chain_resp = client.get(
@@ -989,6 +1056,11 @@ def step2_setup_and_admin(client: httpx.Client, base_url: str, passwords: dict[s
         "carol_user_id": carol_user_id,
         "org_slug": org_slug,
         "registry_version": 3,
+        # T16d-3: browser keys for the gate driver
+        "bob_browser_sk": bob_browser_sk,
+        "bob_browser_kid": bob_browser_kid,
+        "carol_browser_sk": carol_browser_sk,
+        "carol_browser_kid": carol_browser_kid,
     }
 
 
@@ -1448,10 +1520,11 @@ def step5_persistence(client: httpx.Client, base_url: str, step2_data: dict) -> 
     _wait_ready(client, base_url, timeout=120)
     _pass("/ready returned 200 after restart")
 
-    # 5d. agg-cp audit verify --org <slug> inside the api container
+    # 5d. audit verify inside the api container (T16d-1: the distroless image
+    # has no agg-cp console script; use python -m agg_cp.cli instead)
     verify_result = subprocess.run(
         ["docker", "compose", "exec", "-T", "api",
-         "agg-cp", "audit", "verify", "--org", org_slug],
+         "python", "-m", "agg_cp.cli", "audit", "verify", "--org", org_slug],
         cwd=str(_COMPOSE_DIR),
         capture_output=True,
         text=True,
@@ -1460,10 +1533,10 @@ def step5_persistence(client: httpx.Client, base_url: str, step2_data: dict) -> 
     )
     if verify_result.returncode != 0:
         _fail(
-            f"agg-cp audit verify --org {org_slug} exited "
+            f"python -m agg_cp.cli audit verify --org {org_slug} exited "
             f"{verify_result.returncode}: {verify_result.stderr[:300]}"
         )
-    _pass(f"agg-cp audit verify --org {org_slug} exited 0 (audit chain intact)")
+    _pass(f"python -m agg_cp.cli audit verify --org {org_slug} exited 0 (audit chain intact)")
 
 
 # ---------------------------------------------------------------------------

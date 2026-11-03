@@ -6,6 +6,7 @@
   "registrationAllowed": false,
   "users": [
     {
+      "id": "a0000001-0000-4000-a000-000000000001",
       "username": "alice",
       "email": "alice@acme.example",
       "firstName": "Alice",
@@ -23,6 +24,7 @@
       ]
     },
     {
+      "id": "b0000002-0000-4000-a000-000000000002",
       "username": "bob",
       "email": "bob@acme.example",
       "firstName": "Bob",
@@ -40,6 +42,7 @@
       ]
     },
     {
+      "id": "c0000003-0000-4000-a000-000000000003",
       "username": "carol",
       "email": "carol@acme.example",
       "firstName": "Carol",

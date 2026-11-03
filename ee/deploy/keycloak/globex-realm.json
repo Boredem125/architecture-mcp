@@ -6,6 +6,7 @@
   "registrationAllowed": false,
   "users": [
     {
+      "id": "e0000004-0000-4000-a000-000000000004",
       "username": "eve",
       "email": "eve@globex.example",
       "firstName": "Eve",
