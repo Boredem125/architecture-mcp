@@ -390,7 +390,7 @@ def doctor_cmd(path: str) -> None:
                          "ADR 0009 it is inert: runners escalate unless shell.allow_runners is approved "
                          "by two reviewers. policy.json was not changed.")
         for g in allow_pattern_gaps(patterns):
-            notes.append(f"WARNING: allow pattern {g!r} has no (\s|$) boundary or end anchor; the hook now "
+            notes.append(f"WARNING: allow pattern {g!r} has no (\\s|$) boundary or end anchor; the hook now "
                          "requires whitespace after the match, so e.g. `ls/x.sh` escalates. Add the boundary.")
     except Exception:  # noqa: BLE001 — the warnings must not break the layout check
         pass

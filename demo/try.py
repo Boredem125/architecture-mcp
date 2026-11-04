@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 
 from sandbox.connector.hook_eval import post_tool_use, pre_tool_use
@@ -78,6 +79,11 @@ def main() -> None:
     ap.add_argument("--dir", default=".", help="The demo project (default: current folder).")
     args = ap.parse_args()
     logging.disable(logging.INFO)
+    for stream in (sys.stdout, sys.stderr):  # piped stdout on Windows defaults to cp1252
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     if os.name == "nt":
         os.system("")
     layout = FolderLayout.discover(args.dir)
