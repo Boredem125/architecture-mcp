@@ -263,7 +263,7 @@ Security (L) ruling, M2 T16g. It amends A2.3 and Amendment A1 item 5. Cite it as
 1. **Enforced at publish.** `POST /api/v1/admin/bundles` refuses 400 `proposer_in_approvals`, storing nothing, when any element of `change_approvals` resolves through `cli_key_lookup` (the Amendment A1 item 1 lookup, which covers pending `signer_links`) to the publishing session's `user_id`. A second key held by the same user resolves to the same `user_id` and is refused the same way.
 2. **Not enforced by the connector.** No proposer field is added to the envelope; the A2.1 field set is unchanged. The connector's rule stands: two distinct CLI users for a first bundle or a loosening, one for a tightening, counted against the pinned registry.
 3. **Amendment A1 item 5 amended.** The server still does not count approvals, check their bundle hash or compare against the previous row. It performs two identity refusals only: operator self-approval on an escalation, and the publishing admin among a bundle's approvers.
-4. **Demo.** Bob (admin) proposes the step 4 bundles through the API; alice and carol approve (F3). The demo and every test publish through a user who does not approve.
+4. **Demo.** Carol (org admin) proposes the step 4 and step 8 bundles through the API; alice and bob (CLI keys with roles in the pinned registry; bob stays non-admin) approve (F3). The demo, the gate driver and every test publish through a user who does not approve. (Earlier text said bob proposes; bob is the demo's non-admin approver with a 403 check, so the proposer is carol. Security (W) 4 Nov: no objection.)
 
 ### Named limit (M2)
 

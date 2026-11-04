@@ -147,6 +147,45 @@ jobs:
           COVERAGE_FILE: ${{ runner.temp }}/.coverage
           COVERAGE_PROCESS_START: ee/pyproject.toml
         run: python -m coverage run --rcfile=ee/pyproject.toml -m pytest -q ee/tests --junitxml "$RUNNER_TEMP/junit-ee.xml"
+      - name: Drop unfinished subprocess coverage files
+        # A worker SIGKILLed mid-write leaves a zero-byte or schema-less
+        # .coverage.* file; coverage 7.16 opens them read-only on combine
+        # and fails with "no such table: coverage_schema".  Remove only
+        # those and warn loudly so the lost data is visible in the run.
+        run: |
+          python - <<'EOF'
+          import glob, os, sqlite3
+          root = os.environ["RUNNER_TEMP"]
+          files = sorted(glob.glob(os.path.join(root, ".coverage.*")))
+          print(f"{len(files)} subprocess coverage file(s) in {root}")
+          bad = []
+          for f in files:
+              size = os.path.getsize(f)
+              reason = None
+              if size == 0:
+                  reason = "zero bytes"
+              else:
+                  try:
+                      con = sqlite3.connect(f"file:{f}?mode=ro", uri=True)
+                      try:
+                          n = con.execute(
+                              "select count(*) from sqlite_master"
+                              " where type='table' and name='coverage_schema'"
+                          ).fetchone()[0]
+                      finally:
+                          con.close()
+                      if n == 0:
+                          reason = "no coverage_schema table"
+                  except sqlite3.DatabaseError as e:
+                      reason = f"sqlite error: {e}"
+              print(f"  {os.path.basename(f)}  {size} bytes  {reason or 'ok'}")
+              if reason:
+                  bad.append((f, reason))
+          for f, reason in bad:
+              os.remove(f)
+              print(f"::warning::Deleted unfinished coverage data file {os.path.basename(f)} ({reason}); its coverage is lost")
+          print(f"deleted {len(bad)} file(s)")
+          EOF
       - name: Combine subprocess coverage
         env:
           COVERAGE_FILE: ${{ runner.temp }}/.coverage

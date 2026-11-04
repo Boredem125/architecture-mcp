@@ -352,9 +352,17 @@ def change_approval(payload, sk, kid):
             "signatures": [{"key_id": kid, "alg": "ed25519", "sig": sk.sign(msg).signature.hex()}]}
 
 
+# T16h (ADR 0001 A2): the publishing admin's key may not appear in change_approvals,
+# so carol (org admin) publishes through her own session and alice + bob approve.
+carol_client = httpx.Client(verify=CA, follow_redirects=False)
+_r = carol_client.get(f"{BASE}/api/v1/auth/login", params={"org": "acme"})
+demo._keycloak_login(carol_client, _r.headers["location"], "carol", passwords["carol"])
+carol_csrf = demo._get_me(carol_client, BASE).get("csrf_token", "")
+
+
 def publish(payload, approvals):
-    r = client.post(f"{BASE}/api/v1/admin/bundles", json={"project_id": payload["project_id"], "bundle_payload": payload, "change_approvals": approvals},
-                    headers={"X-CSRF-Token": csrf}, timeout=15)
+    r = carol_client.post(f"{BASE}/api/v1/admin/bundles", json={"project_id": payload["project_id"], "bundle_payload": payload, "change_approvals": approvals},
+                          headers={"X-CSRF-Token": carol_csrf}, timeout=15)
     return r
 
 
@@ -387,10 +395,10 @@ def fetch_bundle(after=0):
 
 b1 = bundle_payload(1, 0)
 a_alice = change_approval(b1, alice_sk, alice_kid)
-a_carol = change_approval(b1, carol_sk, carol_kid)
+a_bob = change_approval(b1, bob_sk, bob_kid)
 t = time.time()
-r = publish(b1, [a_alice, a_carol])
-rec("4", "alice+carol publish bundle seq 1 (environment: staging, escalation_timeout_seconds: 0) via /admin/bundles", r.status_code == 200, f"HTTP {r.status_code} {r.text[:120]}", "POST /api/v1/admin/bundles", time.time() - t)
+r = publish(b1, [a_alice, a_bob])
+rec("4", "carol publishes, alice+bob approve bundle seq 1 (environment: staging, escalation_timeout_seconds: 0) via /admin/bundles", r.status_code == 200, f"HTTP {r.status_code} {r.text[:120]}", "POST /api/v1/admin/bundles", time.time() - t)
 
 # T16d-4: N4 pre-switch -- a second enrollment that has NOT received the staging bundle.
 # Before the bundle arrives, the connector treats the project as prod (default).
@@ -441,9 +449,9 @@ if served:
     # Verifier negatives (the bundle is already applied by sync, so all should fail)
     ok, m = try_apply(served, [a_alice]); rec("4", "first bundle with one approval refused", not ok, m, "verify_and_apply(served, [alice])")
     flipped = json.loads(json.dumps(served)); s = flipped["signatures"][0]["sig"]; flipped["signatures"][0]["sig"] = ("0" if s[0] != "0" else "1") + s[1:]
-    ok, m = try_apply(flipped, [a_alice, a_carol]); rec("4", "byte-flipped bundle refused", not ok, m, "verify_and_apply(flipped sig)")
-    ok, m = try_apply(served, [a_alice, a_carol], project=payments_id); rec("4", "bundle for another project refused", not ok, m, "verify_and_apply(project_id=payments)")
-    ok, m = try_apply(served, [a_alice, a_carol]); rec("4", "replay of the same sequence refused (already applied by sync)", not ok, m, "verify_and_apply(served, replay)")
+    ok, m = try_apply(flipped, [a_alice, a_bob]); rec("4", "byte-flipped bundle refused", not ok, m, "verify_and_apply(flipped sig)")
+    ok, m = try_apply(served, [a_alice, a_bob], project=payments_id); rec("4", "bundle for another project refused", not ok, m, "verify_and_apply(project_id=payments)")
+    ok, m = try_apply(served, [a_alice, a_bob]); rec("4", "replay of the same sequence refused (already applied by sync)", not ok, m, "verify_and_apply(served, replay)")
 
 # T16d-4: N4 pre-switch -- after the second workspace syncs, it gets the staging bundle.
 if n4_ws and n4_code:
@@ -878,13 +886,13 @@ res, el, cmd = hook(ws, ENV, "Bash", {"command": "echo hi"}, session="m2-gate-8"
 rec("8", "F4: still locked after re-enroll until a bundle arrives", res["decision"] == "deny", f"decision={res['decision']} reason={res['reason'][:120]}", cmd, el)
 registry = _verify_registry(sync_dir, root_fp)
 b3 = bundle_payload(3, 0)
-r3 = publish(b3, [change_approval(b3, alice_sk, alice_kid), change_approval(b3, carol_sk, carol_kid)])
-rec("8", "alice+carol publish bundle seq 3 (base 0) for the re-enrolled workspace", r3.status_code == 200, f"HTTP {r3.status_code} {r3.text[:100]}", "POST /api/v1/admin/bundles seq 3 base 0")
+r3 = publish(b3, [change_approval(b3, alice_sk, alice_kid), change_approval(b3, bob_sk, bob_kid)])
+rec("8", "carol publishes, alice+bob approve bundle seq 3 (base 0) for the re-enrolled workspace", r3.status_code == 200, f"HTTP {r3.status_code} {r3.text[:100]}", "POST /api/v1/admin/bundles seq 3 base 0")
 b_served, _, dev_tok2 = fetch_bundle(2)
 if b_served is not None and registry is not None:
     bp = b_served["payload"]
     ok, m = try_apply(b_served, [change_approval(bp, carol_sk, carol_kid)]); rec("8", "F4: a one-approval bundle does not unlock", not ok, m, "verify_and_apply(served, [carol])")
-    ok, m = try_apply(b_served, [change_approval(bp, alice_sk, alice_kid), change_approval(bp, carol_sk, carol_kid)]); rec("8", "F4: a two-CLI-approval bundle unlocks", ok, m, "verify_and_apply(served, [alice, carol])")
+    ok, m = try_apply(b_served, [change_approval(bp, alice_sk, alice_kid), change_approval(bp, bob_sk, bob_kid)]); rec("8", "F4: a two-CLI-approval bundle unlocks", ok, m, "verify_and_apply(served, [alice, bob])")
     # sync --once writes server_time_state.json (no hand-fed helper)
     sh([SANDBOX, "sync", "--once", "--server", BASE], ws, ENV)
     res, el, cmd = hook(ws, ENV, "Bash", {"command": "echo hi"}, session="m2-gate-8")

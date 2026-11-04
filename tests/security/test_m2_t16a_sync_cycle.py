@@ -298,7 +298,13 @@ def test_byteflipped_bundle_refused_and_audited(tmp_path, monkeypatch):
     )
     bad_env = json.loads(json.dumps(envelope))
     sig = bad_env["signatures"][0]["sig"]
-    bad_env["signatures"][0]["sig"] = sig[:4] + "ff" + sig[6:]
+    # XOR bit 0 of byte 0: guaranteed to change the bytes (a fixed "ff"
+    # splice is a no-op when the random signature already has "ff" there).
+    sig_bytes = bytearray(bytes.fromhex(sig))
+    sig_bytes[0] ^= 0x01
+    bad_env["signatures"][0]["sig"] = sig_bytes.hex()
+    assert bad_env["signatures"][0]["sig"] != sig
+    assert len(bad_env["signatures"][0]["sig"]) == len(sig)
 
     routes = {
         ("POST", "/api/v1/sync/token"): (200, {"token": "t", "expires_in": 600}, {}),
@@ -312,6 +318,13 @@ def test_byteflipped_bundle_refused_and_audited(tmp_path, monkeypatch):
                        connect=connect)
     run_once(sync)
     assert current_sequence(lay) == 1
+
+    # "and audited": the local bundle_refused audit record must exist
+    from sandbox.connector.audit import FolderAudit
+    audit = FolderAudit(lay.audit_dir, session_id="sync")
+    entries = audit.list_records(limit=50)
+    refused = [e for e in entries if e.get("event") == "bundle_refused"]
+    assert len(refused) >= 1, f"no bundle_refused audit event; events: {[e.get('event') for e in entries]}"
 
 
 def test_replay_old_sequence_refused(tmp_path, monkeypatch):
@@ -891,7 +904,13 @@ def test_f4_byteflipped_bundle_audited_and_alerted(tmp_path, monkeypatch):
     )
     bad_env = json.loads(json.dumps(envelope))
     sig = bad_env["signatures"][0]["sig"]
-    bad_env["signatures"][0]["sig"] = sig[:4] + "ff" + sig[6:]
+    # XOR bit 0 of byte 0: guaranteed to change the bytes (a fixed "ff"
+    # splice is a no-op when the random signature already has "ff" there).
+    sig_bytes = bytearray(bytes.fromhex(sig))
+    sig_bytes[0] ^= 0x01
+    bad_env["signatures"][0]["sig"] = sig_bytes.hex()
+    assert bad_env["signatures"][0]["sig"] != sig
+    assert len(bad_env["signatures"][0]["sig"]) == len(sig)
 
     routes = {
         ("POST", "/api/v1/sync/token"): (200, {"token": "t", "expires_in": 600}, {}),

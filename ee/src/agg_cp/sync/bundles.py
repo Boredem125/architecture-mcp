@@ -287,6 +287,16 @@ def bundle_router(db_url: str, clock=None) -> APIRouter:
                         status_code=400,
                     )
                 appr_user_id = str(key_row[1])
+                # ADR 0001 A2 item 1: the publishing admin may not be
+                # among the approvers (any of their keys, incl. pending
+                # signer_links, resolves to the same user_id).
+                if appr_user_id == str(user_id):
+                    return JSONResponse(
+                        {"error": "proposer_in_approvals",
+                         "detail": f"approval[{idx}] key belongs to the "
+                                   "publishing admin"},
+                        status_code=400,
+                    )
                 appr_json = json.dumps(
                     appr, sort_keys=True, separators=(",", ":"),
                 )

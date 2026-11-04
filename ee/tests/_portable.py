@@ -5,6 +5,8 @@ Provides:
   start_new_session=True on POSIX.
 - ``group_terminate(proc)`` and ``group_kill(proc)`` that send signals
   to the whole process group.
+- ``supervisor_terminate(proc)`` that sends SIGTERM to the leader only
+  (POSIX), letting a uvicorn supervisor shut its workers down cleanly.
 - ``symlink_privilege_probe()`` -> (bool, str|None): True if symlinks
   can be created, False with a skip reason string.
 """
@@ -42,6 +44,27 @@ def group_terminate(proc: subprocess.Popen) -> None:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             proc.terminate()
+
+
+def supervisor_terminate(proc: subprocess.Popen) -> None:
+    """Send SIGTERM to the supervisor process only (POSIX).
+
+    uvicorn's multiprocess supervisor forwards SIGTERM to its workers and
+    waits for them, so signalling just the supervisor gives each worker
+    exactly one SIGTERM and time to flush (e.g. coverage's ``sigterm``
+    handler writing ``.coverage.*`` files).  Signalling the whole group
+    delivers two SIGTERMs per worker and races the supervisor's own
+    shutdown.  Callers fall back to ``group_kill`` after a timeout.
+
+    On Windows there is no SIGTERM; this is the same as ``group_terminate``.
+    """
+    if os.name == "nt":
+        group_terminate(proc)
+        return
+    try:
+        proc.terminate()
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 def group_kill(proc: subprocess.Popen) -> None:

@@ -192,9 +192,14 @@ def make_sync_server(pg_url: str, app_url: str, owner_url: str,
             info["org_evil"] = org_ids[1]
         yield info
     finally:
-        _portable.group_terminate(proc)
+        # Terminate the supervisor only: uvicorn forwards SIGTERM to its
+        # 4 workers and waits for them, so each worker gets one SIGTERM
+        # and coverage's sigterm handler can finish writing .coverage.*
+        # (a SIGKILL mid-write leaves a schema-less file that breaks
+        # `coverage combine`).  Give the group 30 s before force-killing.
+        _portable.supervisor_terminate(proc)
         try:
-            proc.wait(timeout=10)
+            proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
             _portable.group_kill(proc)
             proc.wait(timeout=5)

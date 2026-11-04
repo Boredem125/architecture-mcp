@@ -137,7 +137,7 @@ Verified in code: the signed envelope and the `agg/policy-change/v1` approvals c
 
 Named limit (exact wording): "M2: the connector counts any two distinct CLI approvers against its pinned registry; it cannot see who proposed the bundle, because the signed envelope carries no proposer. Proposer exclusion (ADR 0001 A2.3) is enforced only by the control plane at `POST /api/v1/admin/bundles`, which refuses an approval whose key belongs to the publishing admin (ADR 0001 Amendment A2). Two different humans still approve every loosening on the laptop; the three-person separation of A2.3 depends on the control plane."
 
-MUST before the gate (own tests-first item T16h, not T16g): the publish refusal in ADR 0001 Amendment A2 item 1, with the T16b fixtures moved to a third-admin publisher by node id.
+MUST before the gate (own tests-first item T16h, not T16g): the publish refusal in ADR 0001 Amendment A2 item 1, with the T16b fixtures moved to a third-admin publisher by node id. Gate driver step 4 and step 8: carol (org admin) publishes, alice and bob approve (ADR 0001 Amendment A2 item 4).
 
 ### 7.7 G7-C: no connector quarantine state. LOW. Named limit (founder approved, 4 Nov).
 

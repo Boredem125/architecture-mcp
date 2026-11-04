@@ -442,7 +442,8 @@ def _setup_managed_workspace(
 def t16b_server(pg_url, app_url, owner_url, pg_roles, tmp_path_factory):
     """4-worker agg_cp server for T16b tests.
 
-    Seeds: org, project, alice (admin), admin2 (admin), bob + carol (users).
+    Seeds: org, project, alice (admin), admin2 (admin), bob (admin, no CLI
+    key; the publisher since T16h, ADR 0001 Amendment A2), carol (user).
     Bundle signer key file in env.
     """
     import psycopg
@@ -469,7 +470,7 @@ def t16b_server(pg_url, app_url, owner_url, pg_roles, tmp_path_factory):
         bob_id = _seed_user_row(conn, info["org_id"], "bob@t16b.test")
         carol_id = _seed_user_row(conn, info["org_id"], "carol@t16b.test")
 
-        for uid in (alice_id, admin2_id):
+        for uid in (alice_id, admin2_id, bob_id):
             conn.execute(
                 "INSERT INTO role_bindings "
                 "(id, org_id, user_id, scope_type, scope_id, role, created_at) "
@@ -515,6 +516,7 @@ def test_post_bundles_stores_change_approvals(t16b_server):
     org_id = srv["org_id"]
     project_id = srv["project_id"]
     alice_id = srv["alice_id"]
+    bob_id = srv["bob_id"]  # T16h: publisher is a third admin (ADR 0001 A2)
 
     bundle_payload = {
         "org_id": org_id,
@@ -539,7 +541,7 @@ def test_post_bundles_stores_change_approvals(t16b_server):
     appr1 = _make_change_approval(alice_sk, bundle_payload)
     appr2 = _make_change_approval(admin2_sk, bundle_payload)
 
-    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, alice_id)
+    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, bob_id)
     r = _post_bundle(srv, cookie, csrf, project_id, bundle_payload,
                      [appr1, appr2])
     assert r.status_code == 200, f"publish failed: {r.status_code} {r.text}"
@@ -581,6 +583,7 @@ def test_get_bundle_returns_envelope_and_approvals(t16b_server):
     org_id = srv["org_id"]
     project_id = srv["project_id"]
     alice_id = srv["alice_id"]
+    bob_id = srv["bob_id"]  # T16h: publisher is a third admin (ADR 0001 A2)
 
     alice_sk, alice_kid = _route_cli_link(srv, org_id, alice_id)
     admin2_sk, admin2_kid = _route_cli_link(srv, org_id, srv["admin2_id"])
@@ -604,7 +607,7 @@ def test_get_bundle_returns_envelope_and_approvals(t16b_server):
     appr1 = _make_change_approval(alice_sk, bundle_payload)
     appr2 = _make_change_approval(admin2_sk, bundle_payload)
 
-    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, alice_id)
+    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, bob_id)
     r = _post_bundle(srv, cookie, csrf, project_id, bundle_payload,
                      [appr1, appr2])
     assert r.status_code == 200, f"publish failed: {r.status_code} {r.text}"
@@ -642,6 +645,7 @@ def test_get_bundle_envelope_bytes_unchanged(t16b_server):
     org_id = srv["org_id"]
     project_id = srv["project_id"]
     alice_id = srv["alice_id"]
+    bob_id = srv["bob_id"]  # T16h: publisher is a third admin (ADR 0001 A2)
 
     bundle_payload = {
         "org_id": org_id,
@@ -660,7 +664,7 @@ def test_get_bundle_envelope_bytes_unchanged(t16b_server):
         "expires_at": time.time() + 86400,
     }
 
-    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, alice_id)
+    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, bob_id)
     r = _post_bundle(srv, cookie, csrf, project_id, bundle_payload, [])
     assert r.status_code == 200
 
@@ -707,6 +711,7 @@ def test_zero_approval_loosening_served_but_connector_refuses(t16b_server):
     org_id = srv["org_id"]
     project_id = srv["project_id"]
     alice_id = srv["alice_id"]
+    bob_id = srv["bob_id"]  # T16h: publisher is a third admin (ADR 0001 A2)
 
     bundle_payload = {
         "org_id": org_id,
@@ -725,7 +730,7 @@ def test_zero_approval_loosening_served_but_connector_refuses(t16b_server):
         "expires_at": time.time() + 86400,
     }
 
-    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, alice_id)
+    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, bob_id)
     r = _post_bundle(srv, cookie, csrf, project_id, bundle_payload, [])
     assert r.status_code == 200
 
@@ -802,8 +807,9 @@ def test_get_bundle_serves_lowest_seq_above_after(t16b_server):
     org_id = srv["org_id"]
     project_id = srv["project_id"]
     alice_id = srv["alice_id"]
+    bob_id = srv["bob_id"]  # T16h: publisher is a third admin (ADR 0001 A2)
 
-    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, alice_id)
+    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, bob_id)
 
     for seq in (40, 41):
         bp = {
@@ -850,8 +856,9 @@ def test_get_bundle_204_when_nothing_newer(t16b_server):
     org_id = srv["org_id"]
     project_id = srv["project_id"]
     alice_id = srv["alice_id"]
+    bob_id = srv["bob_id"]  # T16h: publisher is a third admin (ADR 0001 A2)
 
-    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, alice_id)
+    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, bob_id)
     bp = {
         "org_id": org_id,
         "project_id": project_id,
@@ -897,6 +904,7 @@ def test_approvals_round_trip_verbatim(t16b_server):
     org_id = srv["org_id"]
     project_id = srv["project_id"]
     alice_id = srv["alice_id"]
+    bob_id = srv["bob_id"]  # T16h: publisher is a third admin (ADR 0001 A2)
 
     alice_sk, alice_kid = _route_cli_link(srv, org_id, alice_id)
     admin2_sk, admin2_kid = _route_cli_link(srv, org_id, srv["admin2_id"])
@@ -920,7 +928,7 @@ def test_approvals_round_trip_verbatim(t16b_server):
     appr1 = _make_change_approval(alice_sk, bundle_payload)
     appr2 = _make_change_approval(admin2_sk, bundle_payload)
 
-    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, alice_id)
+    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, bob_id)
     r = _post_bundle(srv, cookie, csrf, project_id, bundle_payload,
                      [appr1, appr2])
     assert r.status_code == 200
@@ -967,6 +975,7 @@ def test_publish_400_malformed_approval(t16b_server):
     org_id = srv["org_id"]
     project_id = srv["project_id"]
     alice_id = srv["alice_id"]
+    bob_id = srv["bob_id"]  # T16h: publisher is a third admin (ADR 0001 A2)
 
     bundle_payload = {
         "org_id": org_id,
@@ -1000,7 +1009,7 @@ def test_publish_400_malformed_approval(t16b_server):
             [org_id],
         ).fetchone()[0]
 
-    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, alice_id)
+    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, bob_id)
     r = _post_bundle(srv, cookie, csrf, project_id, bundle_payload,
                      ["not-an-envelope"])
     assert r.status_code == 400, f"expected 400, got {r.status_code}"
@@ -1042,6 +1051,7 @@ def test_publish_400_key_not_in_approver_keys(t16b_server):
     org_id = srv["org_id"]
     project_id = srv["project_id"]
     alice_id = srv["alice_id"]
+    bob_id = srv["bob_id"]  # T16h: publisher is a third admin (ADR 0001 A2)
 
     bundle_payload = {
         "org_id": org_id,
@@ -1078,7 +1088,7 @@ def test_publish_400_key_not_in_approver_keys(t16b_server):
     rogue_sk = SigningKey.generate()
     appr = _make_change_approval(rogue_sk, bundle_payload)
 
-    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, alice_id)
+    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, bob_id)
     r = _post_bundle(srv, cookie, csrf, project_id, bundle_payload, [appr])
     assert r.status_code == 400, f"expected 400, got {r.status_code}"
     assert "bad_change_approvals" in r.text
@@ -1119,6 +1129,7 @@ def test_publish_400_approval_missing_signatures_list(t16b_server):
     org_id = srv["org_id"]
     project_id = srv["project_id"]
     alice_id = srv["alice_id"]
+    bob_id = srv["bob_id"]  # T16h: publisher is a third admin (ADR 0001 A2)
 
     bundle_payload = {
         "org_id": org_id,
@@ -1155,7 +1166,7 @@ def test_publish_400_approval_missing_signatures_list(t16b_server):
     bad_appr = {"kind": "agg/policy-change/v1", "sig_v": 1,
                 "payload": {"bundle_hash": "abc"}}
 
-    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, alice_id)
+    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, bob_id)
     r = _post_bundle(srv, cookie, csrf, project_id, bundle_payload,
                      [bad_appr])
     assert r.status_code == 400, f"expected 400, got {r.status_code}"
@@ -1204,6 +1215,7 @@ def test_e2e_publish_and_connector_applies(t16b_server, tmp_path, monkeypatch):
     org_id = srv["org_id"]
     project_id = srv["project_id"]
     alice_id = srv["alice_id"]
+    bob_id = srv["bob_id"]  # T16h: publisher is a third admin (ADR 0001 A2)
 
     alice_sk, alice_kid = _route_cli_link(srv, org_id, alice_id)
     admin2_sk, admin2_kid = _route_cli_link(srv, org_id, srv["admin2_id"])
@@ -1230,7 +1242,7 @@ def test_e2e_publish_and_connector_applies(t16b_server, tmp_path, monkeypatch):
     appr1 = _make_change_approval(alice_sk, bundle_payload)
     appr2 = _make_change_approval(admin2_sk, bundle_payload)
 
-    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, alice_id)
+    cookie, csrf = _make_fresh_session(srv["owner_url"], org_id, bob_id)
     r = _post_bundle(srv, cookie, csrf, project_id, bundle_payload,
                      [appr1, appr2])
     assert r.status_code == 200, f"publish failed: {r.status_code} {r.text}"
