@@ -763,18 +763,17 @@ for _target_sid in _audit_sessions:
     # has no quarantine state. Two asserts replace the old status check:
     # (a) the server holds an audit_quarantine row for this connector's fork;
     # (b) the local alerts carry an audit_fork event.
-    _has_audit_fork_alert = "audit_fork" in alerts7
+    _has_audit_fork_alert = "audit_fork" in alerts7.lower()
     rec("7", "sandbox alerts contains audit_fork after audit fork", _has_audit_fork_alert,
         f"audit_fork_alert={_has_audit_fork_alert} alerts[-200:]={alerts7.strip()[-200:]}",
         "sandbox alerts -n 50")
+    # Gate check only: psql as the compose superuser bypasses the forced RLS on
+    # audit_quarantine / sync_alerts (app.org_id); the api's agg_app role sees
+    # nothing without a tenant context. psql prints the error on failure.
     _quar_cmd = [
-        "docker", "compose", "exec", "-T", "api", "python", "-c",
-        "import json; from agg_cp.auth import _app_conn, _sync_conninfo; "
-        "import os; db=os.environ.get('DATABASE_URL',''); "
-        "ci=_sync_conninfo(db); "
-        "c=_app_conn(ci).__enter__(); "
-        "rows=c.execute(\"SELECT kind, detail FROM audit_quarantine WHERE kind='fork' ORDER BY created_at DESC LIMIT 5\").fetchall(); "
-        "print(json.dumps([{'kind':r[0],'detail':r[1] if isinstance(r[1],dict) else json.loads(r[1]) if r[1] else {}} for r in rows]))"
+        "docker", "compose", "exec", "-T", "postgres", "psql", "-U", "postgres", "-d", "agg", "-At", "-v", "ON_ERROR_STOP=1", "-c",
+        "SELECT coalesce(json_agg(json_build_object('kind', kind, 'detail', detail) ORDER BY created_at DESC), '[]') "
+        "FROM (SELECT kind, detail, created_at FROM audit_quarantine WHERE kind='fork' ORDER BY created_at DESC LIMIT 5) q",
     ]
     rc7qr, out7qr, el7qr = sh(_quar_cmd, DEPLOY, ENV, timeout=30)
     _quar_rows = []
@@ -783,8 +782,8 @@ for _target_sid in _audit_sessions:
     except (ValueError, IndexError):
         pass
     rec("7", "server audit_quarantine holds a fork row after audit fork", len(_quar_rows) > 0,
-        f"rows={len(_quar_rows)} first={json.dumps(_quar_rows[:1])[:200]}",
-        "SELECT kind, detail FROM audit_quarantine WHERE kind='fork'", el7qr)
+        f"rc={rc7qr} rows={len(_quar_rows)} first={json.dumps(_quar_rows[:1])[:200]} out_tail={out7qr.strip()[-120:] if rc7qr else ''}",
+        "psql (postgres superuser): SELECT kind, detail FROM audit_quarantine WHERE kind='fork'", el7qr)
 
     # Server-side: audit verify --project (main chain on server should pass)
     rc7v, out7v, el7v = sh(["docker", "compose", "exec", "-T", "api", "python", "-m", "agg_cp.cli", "audit", "verify", "--project", staging_id], DEPLOY, ENV, timeout=60)
@@ -794,13 +793,9 @@ for _target_sid in _audit_sessions:
 
     # Server-side: check sync_alerts for truncation/fork
     _check_cmd = [
-        "docker", "compose", "exec", "-T", "api", "python", "-c",
-        "import json; from agg_cp.auth import _app_conn, _sync_conninfo; "
-        "import os; db=os.environ.get('DATABASE_URL',''); "
-        "ci=_sync_conninfo(db); "
-        "c=_app_conn(ci).__enter__(); "
-        "rows=c.execute(\"SELECT kind,detail FROM sync_alerts WHERE kind IN ('fork','truncation') ORDER BY created_at DESC LIMIT 5\").fetchall(); "
-        "print(json.dumps([{'kind':r[0],'detail':r[1] if isinstance(r[1],dict) else json.loads(r[1]) if r[1] else {}} for r in rows]))"
+        "docker", "compose", "exec", "-T", "postgres", "psql", "-U", "postgres", "-d", "agg", "-At", "-v", "ON_ERROR_STOP=1", "-c",
+        "SELECT coalesce(json_agg(json_build_object('kind', kind, 'detail', detail) ORDER BY created_at DESC), '[]') "
+        "FROM (SELECT kind, detail, created_at FROM sync_alerts WHERE kind IN ('fork','truncation') ORDER BY created_at DESC LIMIT 5) q",
     ]
     rc7q, out7q, el7q = sh(_check_cmd, DEPLOY, ENV, timeout=30)
     _server_alerts = []
@@ -811,8 +806,8 @@ for _target_sid in _audit_sessions:
     _has_server_fork = any(a.get("kind") == "fork" for a in _server_alerts)
     _has_server_trunc = any(a.get("kind") == "truncation" for a in _server_alerts)
     rec("7", "server-side sync_alerts holds fork or truncation alert", _has_server_fork or _has_server_trunc,
-        f"server_fork={_has_server_fork} server_trunc={_has_server_trunc} alerts={json.dumps(_server_alerts)[:200]}",
-        "SELECT kind,detail FROM sync_alerts WHERE kind IN ('fork','truncation')")
+        f"rc={rc7q} server_fork={_has_server_fork} server_trunc={_has_server_trunc} alerts={json.dumps(_server_alerts)[:200]} out_tail={out7q.strip()[-120:] if rc7q else ''}",
+        "psql (postgres superuser): SELECT kind,detail FROM sync_alerts WHERE kind IN ('fork','truncation')")
 
     # Restore cursor (so subsequent steps are not broken)
     if _cursor_bak is not None:
