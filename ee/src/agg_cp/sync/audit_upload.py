@@ -121,12 +121,20 @@ def audit_upload_router(db_url: str, clock=None) -> APIRouter:
         except (ValueError, json.JSONDecodeError):
             return JSONResponse({"error": "invalid_json"}, status_code=400)
 
+        # T16g G7-B: the batch contract is {session_id, records:[...]}.
+        # A body that is not an object, or whose ``records`` is missing,
+        # empty or not a list, is refused 400 ``bad_body``.  It used to default to
+        # [] and answer 200 while storing nothing (central audit empty).
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "bad_body"}, status_code=400)
         session_id = body.get("session_id", "")
-        records = body.get("records", [])
+        records = body.get("records")
+        if not isinstance(records, list) or not records:
+            return JSONResponse({"error": "bad_body"}, status_code=400)
 
-        if not session_id or not isinstance(records, list):
+        if not isinstance(session_id, str) or not session_id:
             return JSONResponse(
-                {"error": "missing_session_id_or_records"},
+                {"error": "missing_session_id"},
                 status_code=400,
             )
 
@@ -156,6 +164,11 @@ def audit_upload_router(db_url: str, clock=None) -> APIRouter:
             try:
                 last_head: dict = {}
                 for rec in records:
+                    if not isinstance(rec, dict):
+                        conn.rollback()
+                        return JSONResponse(
+                            {"error": "bad_body"}, status_code=400,
+                        )
                     chain_length = rec.get("chain_length")
                     previous_hash = rec.get("previous_hash", "")
                     record_hash = rec.get("record_hash", "")
@@ -287,7 +300,7 @@ def audit_upload_router(db_url: str, clock=None) -> APIRouter:
                             str(uuid.uuid4()), d_org, d_connector,
                             session_id, chain_length, previous_hash,
                             record_hash,
-                            json.dumps(rec_body) if rec_body else None,
+                            json.dumps(rec_body) if rec_body is not None else None,
                         ],
                     )
 

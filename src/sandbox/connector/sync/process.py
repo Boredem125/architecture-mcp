@@ -592,27 +592,68 @@ def _fetch_bundle(sync: SyncProcess) -> None:
 
     # Lazy imports: verify_and_apply is the existing TCB path
     from sandbox.connector.sync.bundles import BundleError, verify_and_apply
-    from sandbox.connector.sync.verified_state import load_verified_state
+    from sandbox.connector.sync.state import last_valid_bundle
+    from sandbox.connector.sync.verified_state import (
+        BootstrapError, _any_bundle_file, load_bootstrap_state,
+        load_verified_state,
+    )
 
     vs = load_verified_state(sync.layout)
-    if vs is None:
-        # Cannot verify without verified state; refuse
-        _audit_bundle_refused(sync, "no_verified_state")
+    bootstrap = None
+    if vs is not None:
+        registry = vs.registry
+        org_id = vs.org_id
+        project_id = vs.project_id
+    elif _any_bundle_file(sync.layout) or last_valid_bundle(sync.layout) is not None:
+        # A bundle file exists (even unparseable) but does not verify:
+        # never bootstrap over it (security R2).  The reason names the
+        # bootstrap refusal so a garbage bundle.json is distinguishable
+        # from a missing trust root.
+        _audit_bundle_refused(
+            sync, "bootstrap_refused: bootstrap_bundle_present (no_verified_state)",
+        )
         return
+    else:
+        # T16g G7-A: no bundle at all (right after enroll, or re-enroll
+        # from locked).  The separate bootstrap loader verifies the local
+        # trust root; load_verified_state itself is never relaxed.
+        try:
+            bootstrap = load_bootstrap_state(sync.layout)
+        except BootstrapError as exc:
+            _audit_bundle_refused(sync, f"bootstrap_refused: {exc.reason}")
+            return
+        payload = envelope.get("payload")
+        seq = payload.get("sequence") if isinstance(payload, dict) else None
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
+            _audit_bundle_refused(
+                sync, "bootstrap_refused: sequence must be an int >= 1 "
+                "for the first bundle",
+            )
+            return
+        registry = bootstrap.registry
+        org_id = bootstrap.org_id
+        project_id = bootstrap.project_id
 
     try:
-        verify_and_apply(
+        result = verify_and_apply(
             sync.layout,
             envelope,
-            vs.registry,
-            _bundle_signer_pub(vs.registry),
+            registry,
+            _bundle_signer_pub(registry),
             change_approvals,
-            org_id=vs.org_id,
-            project_id=vs.project_id,
+            org_id=org_id,
+            project_id=project_id,
         )
     except BundleError as exc:
         _audit_bundle_refused(sync, str(exc.reason))
+        return
 
+    if bootstrap is not None:
+        # First bundle applied: ratchet the high-water mark now (the
+        # verified-state accessor would do it on its next call anyway).
+        from sandbox.connector.sync.verified_state import _save_high_water
+        sync_dir = sync.layout.root / ".sandbox" / "state" / "sync"
+        _save_high_water(sync_dir, bootstrap.registry_version, result.sequence)
 
 def _bundle_signer_pub(registry) -> bytes:
     """Return the bundle signer public key from the VERIFIED registry.
@@ -762,13 +803,25 @@ def _upload_escalations(sync: SyncProcess) -> None:
 _upload_escalations_scrubbed = _upload_escalations
 
 
+#: Consecutive cycles with a network error on the audit step before
+#: ``audit_upload_failed`` is raised (security L ruling, 4 Nov 2026).
+AUDIT_NETWORK_ALERT_AFTER: int = 3
+
+
 def _upload_audit(sync: SyncProcess) -> None:
-    """Upload audit records and send a checkpoint (D3, T11).
+    """Upload audit records and send a checkpoint (D3, T11; T16g G7-B).
 
     Only runs in managed mode.  Lazy-imports ``audit_upload`` so the
-    hook never loads it (socket guard).  An upload or checkpoint failure
-    is logged but does **not** block the sync cycle or affect escalation
-    status -- it simply means the next cycle will retry.
+    hook never loads it (socket guard).
+
+    Nothing is swallowed: every failure becomes a local alert AND a local
+    audit record (session ``sync``) in this cycle: ``audit_fork`` (409),
+    ``audit_truncation_local`` (cursor past the local chain),
+    ``server_head_mismatch``, ``audit_upload_failed`` with the HTTP status
+    on any other 4xx/5xx; a network error is alerted after
+    ``AUDIT_NETWORK_ALERT_AFTER`` consecutive cycles.  The checkpoint is
+    sent even when the upload failed.  None of this blocks the cycle,
+    changes an escalation status or loosens enforcement.
     """
     if sync.layout is None:
         return
@@ -778,22 +831,78 @@ def _upload_audit(sync: SyncProcess) -> None:
     if not is_managed(sync.layout):
         return
 
-    try:
-        from sandbox.connector.sync.audit_upload import (
-            AuditUploader, upload_records, send_checkpoint,
-        )
-    except ImportError:
-        return  # module not yet available
+    from sandbox.connector.sync.audit_upload import (
+        AuditUploader, AuditUploadError, send_checkpoint, upload_records,
+    )
 
     import logging
     _log = logging.getLogger(__name__)
 
+    errors: list[dict] = []
+    net_error: Exception | None = None
+
+    uploader = AuditUploader(sync.layout, sync.device_id, sync.device_key)
     try:
-        uploader = AuditUploader(sync.layout, sync.device_id, sync.device_key)
-        upload_records(uploader, sync._connect, sync._token, sync.server_url)
+        result = upload_records(uploader, sync._connect, sync._token, sync.server_url)
+        errors.extend(result.get("errors", []))
+    except AuditUploadError as exc:
+        errors.extend(exc.errors)
+    except (ConnectionError, OSError) as exc:  # URLError is an OSError
+        net_error = exc
+    except Exception as exc:  # noqa: BLE001 -- never swallow
+        errors.append({"kind": "audit_upload_failed", "status": None,
+                       "session_id": None,
+                       "reason": f"upload error: {type(exc).__name__}"})
+
+    # The checkpoint goes even when the upload failed (A4.2).
+    try:
         send_checkpoint(uploader, sync._connect, sync._token, sync.server_url)
-    except Exception:
-        # Audit upload/checkpoint failure must not block the cycle,
-        # auto-approve escalations, or affect backoff.  The next
-        # cycle will retry from the cursor.
-        _log.exception("audit upload/checkpoint failed")
+    except AuditUploadError as exc:
+        for e in exc.errors:
+            errors.append({"kind": "audit_upload_failed",
+                           "status": e.get("status"), "session_id": None,
+                           "reason": f"checkpoint: {e.get('reason', '')}"})
+    except (ConnectionError, OSError) as exc:
+        net_error = net_error or exc
+    except Exception as exc:  # noqa: BLE001
+        errors.append({"kind": "audit_upload_failed", "status": None,
+                       "session_id": None,
+                       "reason": f"checkpoint error: {type(exc).__name__}"})
+
+    if net_error is not None:
+        n = getattr(sync, "_audit_net_failures", 0) + 1
+        sync._audit_net_failures = n
+        _log.error("audit upload network error (%d consecutive): %s", n, net_error)
+        if n >= AUDIT_NETWORK_ALERT_AFTER:
+            errors.append({"kind": "audit_upload_failed", "status": None,
+                           "session_id": None,
+                           "reason": f"network error for {n} consecutive "
+                                     f"cycles: {type(net_error).__name__}"})
+    else:
+        sync._audit_net_failures = 0
+
+    for e in errors:
+        _audit_sync_alert(sync, e)
+
+
+def _audit_sync_alert(sync: SyncProcess, error: dict) -> None:
+    """Write the local audit record and raise the alert for one audit
+    upload failure.  Best effort on each half; never raises."""
+    kind = str(error.get("kind") or "audit_upload_failed")
+    record = {
+        "event": kind,
+        "reason": str(error.get("reason") or ""),
+        "status": error.get("status"),
+        "audit_session_id": error.get("session_id"),
+        "ts": time.time(),
+    }
+    try:
+        from sandbox.connector.audit import FolderAudit
+        FolderAudit(sync.layout.audit_dir, session_id="sync").append(record)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from sandbox.connector.alerts import emit
+        emit(sync.layout, "sync", record)
+    except Exception:  # noqa: BLE001
+        pass

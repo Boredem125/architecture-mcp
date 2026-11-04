@@ -351,25 +351,37 @@ def test_upload_records_in_order(tmp_path, monkeypatch):
     sk, pub, kid, device_id = _device_keygen()
     recs = _write_audit_records(lay.audit_dir, "sess-a", 5)
 
-    uploaded = []
+    batches = []
 
     def fake_connect(method, url, body=None, headers=None, token=None):
         if method == "POST" and "/sync/audit" in url:
-            uploaded.append(body if isinstance(body, dict) else json.loads(body))
+            data = body if isinstance(body, dict) else json.loads(body)
+            batches.append(data)
+            # Batch contract (ADR 0001 A3 item 3): 200 with server_head
+            # at the batch end.
+            last = data["records"][-1]
             return (200, {"server_head": {
-                "session_id": "sess-a",
-                "chain_length": len(uploaded),
-                "head_hash": recs[len(uploaded) - 1]["record_hash"],
+                "session_id": data["session_id"],
+                "chain_length": last["chain_length"],
+                "head_hash": last["record_hash"],
             }}, {})
         return (200, {}, {})
 
     uploader = AuditUploader(lay, device_id, bytes(sk))
     result = upload_records(uploader, fake_connect, "tok-1", "http://fake")
 
+    # One POST per session chunk: 5 records fit in one batch.
+    assert len(batches) == 1
+    assert batches[0]["session_id"] == "sess-a"
+    uploaded = batches[0]["records"]
     assert len(uploaded) == 5
-    # Chain lengths must be sequential
+    # Chain lengths must be sequential and carry the chain fields
     for i, rec in enumerate(uploaded):
         assert rec["chain_length"] == i + 1
+        assert rec["previous_hash"] == recs[i]["previous_hash"]
+        assert rec["record_hash"] == recs[i]["record_hash"]
+        assert rec["body"]["seq"] == i
+    assert result["uploaded"] == 5
 
 
 def test_upload_resumes_from_cursor(tmp_path, monkeypatch):
@@ -402,11 +414,15 @@ def test_upload_resumes_from_cursor(tmp_path, monkeypatch):
     def fake_connect(method, url, body=None, headers=None, token=None):
         if method == "POST" and "/sync/audit" in url:
             data = body if isinstance(body, dict) else json.loads(body)
-            uploaded.append(data)
+            uploaded.extend(data["records"])
+            # The cursor must not have moved before the 200 arrives.
+            on_disk = json.loads((sync_dir / "cursor.json").read_text(encoding="utf-8"))
+            assert on_disk["sessions"]["sess-a"]["chain_length"] == 5
+            last = data["records"][-1]
             return (200, {"server_head": {
                 "session_id": "sess-a",
-                "chain_length": data["chain_length"],
-                "head_hash": data["record_hash"],
+                "chain_length": last["chain_length"],
+                "head_hash": last["record_hash"],
             }}, {})
         return (200, {}, {})
 
@@ -415,6 +431,12 @@ def test_upload_resumes_from_cursor(tmp_path, monkeypatch):
 
     assert len(uploaded) == 5
     assert uploaded[0]["chain_length"] == 6
+    assert [r["chain_length"] for r in uploaded] == [6, 7, 8, 9, 10]
+    # Cursor advanced to the batch end only after the matching 200.
+    on_disk = json.loads((sync_dir / "cursor.json").read_text(encoding="utf-8"))
+    assert on_disk["sessions"]["sess-a"] == {
+        "chain_length": 10, "head_hash": recs[9]["record_hash"],
+    }
 
 
 # ===================================================================
@@ -1032,7 +1054,10 @@ def test_quarantine_not_silently_cleared(tmp_path, monkeypatch):
     """
     _need("sandbox.connector.sync.audit_upload", "AuditUploader")
     _need("sandbox.connector.sync.audit_upload", "upload_records")
-    from sandbox.connector.sync.audit_upload import AuditUploader, upload_records
+    from sandbox.connector.sync.audit_upload import (
+        AuditUploader, AuditUploadError, upload_records,
+    )
+    from sandbox.connector.sync.process import SyncProcess, run_once
 
     kh = tmp_path / "keyhome"
     kh.mkdir()
@@ -1043,29 +1068,81 @@ def test_quarantine_not_silently_cleared(tmp_path, monkeypatch):
     _write_audit_records(lay.audit_dir, "sess-a", 5)
 
     fork_reported = []
-    quarantine_cleared = [False]
 
     def fake_connect(method, url, body=None, headers=None, token=None):
         if method == "POST" and "/sync/audit" in url:
             data = body if isinstance(body, dict) else json.loads(body)
-            if data.get("chain_length") == 3:
+            last = data["records"][-1]
+            # The batch carrying the forged record 3 is quarantined and
+            # refused whole (409), per the batch contract.
+            if data["session_id"] == "sess-a" and any(
+                r.get("chain_length") == 3 for r in data["records"]
+            ):
                 fork_reported.append(True)
                 return (409, {"error": "fork", "quarantined": True}, {})
             return (200, {"server_head": {
-                "session_id": "sess-a",
-                "chain_length": data["chain_length"],
-                "head_hash": data["record_hash"],
+                "session_id": data["session_id"],
+                "chain_length": last["chain_length"],
+                "head_hash": last["record_hash"],
             }}, {})
+        if "/sync/token" in url:
+            return (200, {"token": "tok", "expires_in": 600}, {})
+        if "/sync/decisions" in url:
+            return (200, {"decisions": []}, {})
+        if "/sync/bundle" in url:
+            return (204, {}, {})
+        if "/sync/checkpoint" in url:
+            return (200, {"upload_seq": 1}, {})
         return (200, {}, {})
 
-    uploader = AuditUploader(lay, device_id, bytes(sk))
-    # The upload should report the fork, not silently continue
-    try:
-        upload_records(uploader, fake_connect, "tok-1", "http://fake")
-    except Exception:
-        pass
+    cursor_path = lay.root / ".sandbox" / "state" / "sync" / "cursor.json"
 
+    def _cursor_len():
+        if not cursor_path.exists():
+            return 0
+        cur = json.loads(cursor_path.read_text(encoding="utf-8"))
+        return cur.get("sessions", {}).get("sess-a", {}).get("chain_length", 0)
+
+    uploader = AuditUploader(lay, device_id, bytes(sk))
+    # The upload must report the fork as audit_fork, not silently continue
+    with pytest.raises(AuditUploadError) as ei:
+        upload_records(uploader, fake_connect, "tok-1", "http://fake")
     assert len(fork_reported) >= 1, "Fork not reported to client"
+    fork_errs = [e for e in ei.value.errors if e["kind"] == "audit_fork"]
+    assert fork_errs, [e["kind"] for e in ei.value.errors]
+    assert fork_errs[0]["status"] == 409
+    assert fork_errs[0]["session_id"] == "sess-a"
+    # The cursor was not advanced past the quarantined record.
+    assert _cursor_len() < 3
+
+    # Through run_once (managed) the fork becomes a local audit record
+    # (session ``sync``) and an alert; it is never silently cleared.
+    sync_dir = cursor_path.parent
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    (sync_dir / "managed").write_text("1")
+    sync = SyncProcess(
+        layout=lay, server_url="http://fake.invalid",
+        device_key=bytes(sk), device_id=device_id,
+        connect=fake_connect,
+    )
+    run_once(sync)
+    assert len(fork_reported) >= 2, "Fork not re-reported on the next cycle"
+    sync_records = [
+        json.loads(line) for line in
+        (lay.audit_dir / "sync" / "records.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    fork_records = [r for r in sync_records if r.get("event") == "audit_fork"]
+    assert fork_records, [r.get("event") for r in sync_records]
+    assert fork_records[0]["status"] == 409
+    assert fork_records[0]["audit_session_id"] == "sess-a"
+    alerts = [
+        json.loads(line) for line in
+        (lay.logs_dir / "alerts.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(a.get("kind") == "audit_fork" for a in alerts), alerts
+    assert _cursor_len() < 3
 
 
 # ===================================================================
@@ -1161,6 +1238,7 @@ def test_run_once_uploads_audit_in_managed_mode(tmp_path, monkeypatch):
     _write_audit_records(lay.audit_dir, "sess-m", 3)
 
     calls = []
+    audit_bodies = []
 
     def fake_connect(method, url, body=None, headers=None, token=None):
         calls.append((method, url))
@@ -1174,10 +1252,12 @@ def test_run_once_uploads_audit_in_managed_mode(tmp_path, monkeypatch):
             return (200, {}, {})
         if "/sync/audit" in url:
             data = body if isinstance(body, dict) else json.loads(body)
+            audit_bodies.append(data)
+            last = data["records"][-1]
             return (200, {"server_head": {
-                "session_id": "sess-m",
-                "chain_length": data.get("chain_length", 1),
-                "head_hash": data.get("record_hash", ""),
+                "session_id": data["session_id"],
+                "chain_length": last["chain_length"],
+                "head_hash": last["record_hash"],
             }}, {})
         if "/sync/checkpoint" in url:
             return (200, {"upload_seq": 1}, {})
@@ -1192,7 +1272,10 @@ def test_run_once_uploads_audit_in_managed_mode(tmp_path, monkeypatch):
 
     audit_calls = [u for _, u in calls if "/sync/audit" in u]
     checkpoint_calls = [u for _, u in calls if "/sync/checkpoint" in u]
-    assert len(audit_calls) == 3, f"Expected 3 audit POSTs, got {len(audit_calls)}"
+    # Batch contract: one POST carrying all 3 records for sess-m.
+    assert len(audit_calls) == 1, f"Expected 1 audit POST, got {len(audit_calls)}"
+    assert audit_bodies[0]["session_id"] == "sess-m"
+    assert [r["chain_length"] for r in audit_bodies[0]["records"]] == [1, 2, 3]
     assert len(checkpoint_calls) == 1, f"Expected 1 checkpoint POST, got {len(checkpoint_calls)}"
 
 

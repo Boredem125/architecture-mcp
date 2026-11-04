@@ -36,6 +36,11 @@ _ALWAYS = {
     "script_changed": "script_changed",
     "shell_unavailable": "shell_unavailable",
     "bundle_refused": "bundle_refused",
+    # T16g G7-B: audit upload failures are never swallowed.
+    "audit_fork": "audit_fork",
+    "audit_truncation_local": "audit_truncation_local",
+    "audit_upload_failed": "audit_upload_failed",
+    "server_head_mismatch": "server_head_mismatch",
 }
 # Escalations alert only when critical or dual control.
 _ESCALATIONS = {"shell_escalated", "tool_call_escalated", "escalate_redirect"}

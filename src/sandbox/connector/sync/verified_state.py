@@ -205,3 +205,198 @@ def _save_high_water(sync_dir, registry_version: int, bundle_sequence: int) -> N
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap loader (T16g G7-A): the first bundle after enrolment only
+# ---------------------------------------------------------------------------
+#
+# ``load_verified_state`` needs a verified bundle, so right after
+# ``sandbox enroll`` every decision path gets ``None`` (deny-all, prod, no
+# approvals) and ``_fetch_bundle`` could never apply the first bundle.
+# This loader is used ONLY by ``_fetch_bundle`` and ONLY when no bundle
+# exists at all (no ``bundle.json``, nothing in ``policy_history/``).  It
+# never relaxes ``load_verified_state`` and it is never a decision input.
+#
+# Trust root (security L ruling, HANDOFF 4 Nov 2026): ``pinned_root.json``
+# plus ``verify_chain(registry.json)``; the bundle signer comes from that
+# verified registry.  org_id comes from the root-signed genesis and must
+# equal the non-empty ``enrollment.json`` org_id; project_id comes from
+# ``enrollment.json`` (F3 named limit).  Nothing is read from the server
+# body, no re-pin, no keys from the bundle, no marker file.
+
+
+class BootstrapError(Exception):
+    """Refusal from :func:`load_bootstrap_state`; ``reason`` is audited."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+class BootstrapState(NamedTuple):
+    """Verified inputs for the first bundle (no bundle exists yet)."""
+    registry: Any  # sandbox.protocol.registry.Registry
+    registry_version: int
+    org_id: str
+    project_id: str
+
+
+def _any_bundle_file(layout) -> bool:
+    """True if ``bundle.json`` exists at all (even unparseable) or any
+    ``policy_history/bundle_*.json`` exists."""
+    sync_dir = layout.root / ".sandbox" / "state" / "sync"
+    try:
+        if (sync_dir / "bundle.json").exists():
+            return True
+    except OSError:
+        return True  # cannot tell: fail closed
+    hist = layout.root / ".sandbox" / "policy_history"
+    try:
+        if hist.is_dir():
+            for child in hist.iterdir():
+                if child.name.startswith("bundle_") and child.name.endswith(".json"):
+                    return True
+    except OSError:
+        return True
+    return False
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def load_bootstrap_state(layout) -> BootstrapState:
+    """Verify the local trust root for a first bundle; raise on any gap.
+
+    Checks, in order (each refusal is a :class:`BootstrapError` whose
+    ``reason`` the caller audits as ``bundle_refused``):
+
+    1. the workspace carries a managed marker (never a standalone fallback);
+    2. no bundle exists (``bundle.json`` or ``policy_history/``): with one
+       present the caller must go through ``load_verified_state``;
+    3. ``pinned_root.json`` holds a fingerprint (only enroll writes it);
+    4. ``registry.json`` is a well-formed chain that verifies against it;
+    5. the latest registry version is an int >= 1, not expired, and its
+       ``not_before`` (when present) is not in the future;
+    6. the root-signed genesis ``org_id`` is a non-empty string;
+    7. ``enrollment.json`` exists with a non-empty ``org_id`` equal to the
+       genesis org_id and a non-empty ``project_id``;
+    8. ``high_water.json`` exists and is well formed; ``bundle_sequence``
+       must be 0 (a higher value with no bundle means the state was
+       deleted: refuse ``state_deleted`` and stay locked, ADR 0001 A1.8);
+       ``registry_version`` must not exceed the verified registry version.
+    """
+    import time as _time
+
+    from sandbox.connector.sync.state import (
+        is_managed, last_valid_bundle, pinned_root,
+    )
+    from sandbox.protocol.registry import verify_chain
+
+    sync_dir = layout.root / ".sandbox" / "state" / "sync"
+
+    # 1. Managed marker
+    if not is_managed(layout):
+        raise BootstrapError("bootstrap_not_managed")
+
+    # 2. No bundle at all: any bundle.json (parseable or not) or any
+    #    policy_history/bundle_*.json means the verified-state path owns
+    #    this workspace; never bootstrap over it (security R2).
+    if _any_bundle_file(layout) or last_valid_bundle(layout) is not None:
+        raise BootstrapError("bootstrap_bundle_present")
+
+    # 3. Pinned root
+    fp = pinned_root(layout)
+    if not isinstance(fp, str) or not fp:
+        raise BootstrapError("no_pinned_root")
+
+    # 4. Registry chain verified against the pinned root
+    reg_file = sync_dir / "registry.json"
+    if not reg_file.is_file():
+        raise BootstrapError("no_registry")
+    try:
+        data = json.loads(reg_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise BootstrapError("registry_malformed") from None
+    chain = data if isinstance(data, list) else [data]
+    if not chain or not all(
+        isinstance(env, dict) and isinstance(env.get("payload"), dict)
+        for env in chain
+    ):
+        raise BootstrapError("registry_malformed")
+    try:
+        registry = verify_chain(chain, fp)
+    except Exception as exc:  # RegistryError, EnvelopeError, anything else
+        raise BootstrapError(
+            f"registry_verify_failed: {type(exc).__name__}"
+        ) from None
+
+    # 5. Latest version, expiry, not_before
+    latest = chain[-1]["payload"]
+    registry_version = getattr(registry, "version", None)
+    if not _is_int(registry_version) or registry_version < 1:
+        raise BootstrapError("registry_version_invalid")
+    expires_at = latest.get("expires_at")
+    now = _time.time()
+    if (
+        not isinstance(expires_at, (int, float))
+        or isinstance(expires_at, bool)
+        or now > float(expires_at)
+    ):
+        raise BootstrapError("registry_expired")
+    not_before = latest.get("not_before")
+    if not_before is not None:
+        if (
+            not isinstance(not_before, (int, float))
+            or isinstance(not_before, bool)
+            or float(not_before) > now
+        ):
+            raise BootstrapError("registry_not_before")
+
+    # 6. org_id from the root-signed genesis
+    genesis_org = chain[0]["payload"].get("org_id")
+    if not isinstance(genesis_org, str) or not genesis_org:
+        raise BootstrapError("registry_org_missing")
+
+    # 7. enrollment.json: org must match the genesis; project from here
+    enrollment = _read_enrollment(sync_dir)
+    if enrollment is None:
+        raise BootstrapError("enrollment_missing")
+    enroll_org = enrollment.get("org_id")
+    if not isinstance(enroll_org, str) or not enroll_org:
+        raise BootstrapError("enrollment_org_missing")
+    if enroll_org != genesis_org:
+        raise BootstrapError(
+            "org_id mismatch: enrollment.json org_id does not match the "
+            "root-signed genesis org_id"
+        )
+    project_id = enrollment.get("project_id")
+    if not isinstance(project_id, str) or not project_id:
+        raise BootstrapError("enrollment_project_missing")
+
+    # 8. high_water.json: bundle_sequence must be 0 (A1.8), registry floor
+    hwm = _load_high_water(sync_dir)
+    if hwm is None:
+        raise BootstrapError("high_water_missing")
+    hw_seq = hwm.get("bundle_sequence")
+    hw_reg = hwm.get("registry_version")
+    if not _is_int(hw_seq) or not _is_int(hw_reg) or hw_seq < 0 or hw_reg < 0:
+        raise BootstrapError("high_water_malformed")
+    if hw_seq > 0:
+        raise BootstrapError(
+            f"state_deleted: high_water bundle_sequence {hw_seq} but no "
+            "verified bundle exists (ADR 0001 A1.8); re-enroll"
+        )
+    if hw_reg > registry_version:
+        raise BootstrapError(
+            f"registry_rollback: high_water registry_version {hw_reg} "
+            f"above verified registry version {registry_version}"
+        )
+
+    return BootstrapState(
+        registry=registry,
+        registry_version=registry_version,
+        org_id=genesis_org,
+        project_id=project_id,
+    )

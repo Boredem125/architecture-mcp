@@ -64,7 +64,11 @@ class Registry:
         admins: set[str],
         expires_at: float,
         admin_sigs_at_add: dict[str, int],
+        version: int = 0,
     ) -> None:
+        #: Version of the last verified payload (T16g founder ruling 2;
+        #: ADR 0001 A2.5).  Bundles below it are refused.
+        self.version = version
         self._keys = keys                    # key_id -> key entry dict
         self._admins = admins                # set of admin key_ids
         self._expires_at = expires_at        # latest version's expires_at
@@ -222,6 +226,11 @@ def verify_chain(
         payload = env["payload"]
         version = payload.get("version")
 
+        # Version must be a real int (no bool, no float): the bundle floor
+        # (ADR 0001 A2.5) and Registry.version rely on it.
+        if not isinstance(version, int) or isinstance(version, bool):
+            raise RegistryError(f"version {version!r} is not an integer")
+
         # Second genesis refused (threat 22)
         if version == 1:
             raise RegistryError("second genesis refused")
@@ -377,6 +386,7 @@ def verify_chain(
         admins=set(latest.get("admins", [])),
         expires_at=latest.get("expires_at", 0),
         admin_sigs_at_add=admin_sigs_at_add,
+        version=latest.get("version", 0),
     )
 
 

@@ -151,11 +151,37 @@ def sweep_device_silent(
     return count
 
 
+def _canonical_record_hash(body: Any) -> str | None:
+    """``sha256(canonical JSON body)``: the connector's record_hash formula
+    (``sandbox/connector/audit.py``).  ``None`` if the body is unusable."""
+    import hashlib
+
+    if isinstance(body, (str, bytes)):
+        try:
+            body = json.loads(body)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(body, dict):
+        return None
+    try:
+        canonical = json.dumps(
+            body, separators=(",", ":"), sort_keys=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        return None
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def verify_project(conn: Any, project_id: str) -> tuple[bool, list[dict]]:
-    """Verify all audit chains for a project.
+    """Verify all audit chains for a project (ADR 0001 A4.3).
 
     Returns ``(ok, gaps)`` where ``gaps`` is a list of dicts describing
-    each gap found.  ``ok`` is True when no gaps are found.
+    each problem found.  ``ok`` is True only when at least one record is
+    stored for the project and every chain is intact: lengths contiguous
+    from 1, ``previous_hash`` links match, and every ``record_hash``
+    equals ``sha256(canonical body)`` (founder ruling 1, 4 Nov 2026: a
+    project with zero rows is NOT ok, and content is rechecked, not just
+    the links).
     """
     pairs = conn.execute(
         """
@@ -170,9 +196,15 @@ def verify_project(conn: Any, project_id: str) -> tuple[bool, list[dict]]:
 
     gaps: list[dict] = []
 
+    if not pairs:
+        return False, [{
+            "project_id": str(project_id),
+            "type": "no_records",
+        }]
+
     for connector_id, session_id in pairs:
         records = conn.execute(
-            "SELECT chain_length, previous_hash, record_hash "
+            "SELECT chain_length, previous_hash, record_hash, body "
             "FROM audit_records "
             "WHERE connector_id = %s::uuid AND session_id = %s "
             "ORDER BY chain_length",
@@ -185,7 +217,16 @@ def verify_project(conn: Any, project_id: str) -> tuple[bool, list[dict]]:
         expected_length = 1
         expected_prev = ""
 
-        for rec_length, prev_hash, rec_hash in records:
+        for rec_length, prev_hash, rec_hash, body in records:
+            # Content check: record_hash must be the hash of the body
+            if _canonical_record_hash(body) != rec_hash:
+                gaps.append({
+                    "connector_id": str(connector_id),
+                    "session_id": session_id,
+                    "chain_length": rec_length,
+                    "type": "hash_mismatch",
+                })
+
             if rec_length != expected_length:
                 gaps.append({
                     "connector_id": str(connector_id),

@@ -248,3 +248,39 @@ Effective when T16b lands (server-side retention and serving of change approvals
 - One admin can still publish an unapproved bundle. Every connector refuses it (M2_DEMO 7.5 holds), but the server's `policy_bundles` rows stay unverified until item 6.
 - Security properties: none loosened. The publish refusal in item 1 and the next-row rule in item 2 only refuse more or fix delivery order.
 - Tests first (qa): store then serve returns the same approval content; 204 when nothing is newer; the lowest next row is served; a refused publish stores nothing.
+
+## Amendment A2 (4 Nov 2026): proposer exclusion is enforced by the control plane at publish
+
+Security (L) ruling, M2 T16g. It amends A2.3 and Amendment A1 item 5. Cite it as "ADR 0001 Amendment A2 (4 Nov)".
+
+### Context
+
+- A2.3 says "Neither may be the proposer." Nothing carries the proposer: the signed envelope has no proposer field, `agg/policy-change/v1` approvals name only the approver's key, and `verify_and_apply._verify_change_approvals` counts distinct registry users with no exclusion. The proposer exists only as the admin session that posts `POST /api/v1/admin/bundles`; there is no signed proposal.
+- A proposer field in the envelope would be the server's own claim under the server's own bundle-signer signature. It is exactly as trustworthy as a refusal at publish, and it widens the strict-parse payload of A2.1.
+
+### Decision
+
+1. **Enforced at publish.** `POST /api/v1/admin/bundles` refuses 400 `proposer_in_approvals`, storing nothing, when any element of `change_approvals` resolves through `cli_key_lookup` (the Amendment A1 item 1 lookup, which covers pending `signer_links`) to the publishing session's `user_id`. A second key held by the same user resolves to the same `user_id` and is refused the same way.
+2. **Not enforced by the connector.** No proposer field is added to the envelope; the A2.1 field set is unchanged. The connector's rule stands: two distinct CLI users for a first bundle or a loosening, one for a tightening, counted against the pinned registry.
+3. **Amendment A1 item 5 amended.** The server still does not count approvals, check their bundle hash or compare against the previous row. It performs two identity refusals only: operator self-approval on an escalation, and the publishing admin among a bundle's approvers.
+4. **Demo.** Bob (admin) proposes the step 4 bundles through the API; alice and carol approve (F3). The demo and every test publish through a user who does not approve.
+
+### Named limit (M2)
+
+See `docs/control-plane/M2_DEMO.md` 7.6.
+
+### Consequences
+
+- Security properties: none loosened. Item 1 only refuses more.
+- Tests first (qa): a publish where the publishing admin's key is among the approvals is 400 `proposer_in_approvals` with no `policy_bundles` or `policy_change_approvals` row; a publish by a third admin with two other approvers is 200. The T16b and T16g fixtures publish through a third admin.
+- Until item 1 lands, the limit in M2_DEMO 7.6 applies in full.
+
+## Amendment A3 (4 Nov 2026): first-bundle bootstrap, audit upload contract, quarantine limit
+
+Security (L) rulings and founder rulings of 4 Nov 2026 (M2 T16g, gate FAILs G7-A, G7-B, G7-C). Cite it as "ADR 0001 Amendment A3 (4 Nov)".
+
+1. **First bundle after enrolment (G7-A).** `_fetch_bundle` uses a separate bootstrap loader when no verified `bundle.json` exists; `load_verified_state` is not relaxed and decision paths still get None until a bundle applies. Trust root: `pinned_root.json`, `verify_chain(registry.json)`, the bundle-signer from that verified registry; the org id from the root-signed genesis must equal the non-empty `enrollment.json` org id; the project id comes from `enrollment.json`. Checks: signature and strict parse; org and project match; `base_sequence == 0`; `sequence >= 1`; `high_water.json` present with `bundle_sequence == 0` and `sequence > high_water` (a high water above 0 with `bundle.json` gone means state was deleted: refuse with `state_deleted`, stay `locked`, A1.8; both files gone: refuse naming high_water, never recreate it); loosening against the deny-all base needs 2 distinct CLI user ids with roles; environment only from the bundle (absent means prod; non-prod is a loosening); registry not expired and past `not_before`; `high_water.json` written after success. Never accepted: a registry, root or fingerprint from the server or any re-pin, keys inside the bundle (A2.2), org or project from the bundle or server body, a bootstrap marker file, unverified server change approvals, a fallback to standalone.
+2. **Registry version pin (founder ruling 2, A2.5).** `verify_chain` sets the registry version from the last verified payload; the connector refuses a bundle whose `registry_version` is below it. `high_water.json` is never the comparison base.
+3. **Audit upload contract (G7-B; 5.2, 5.3, A4.1-A4.2 stand).** The connector sends `{session_id, records: [{chain_length, previous_hash, record_hash, body}]}` chunked under the caps (1000 records, 1 MiB), verifies the local chain before upload, moves the cursor only after a 200, and compares `server_head` (`server_head_mismatch`). The server refuses a body with a missing or empty `records` list with 400 `bad_body` and stores nothing. Never swallowed: `audit_fork` on 409 and `audit_truncation_local` when the cursor exceeds the local length raise an alert and a local audit record immediately; `audit_upload_failed` with status and reason on any 4xx or 5xx immediately, and on network errors after 3 consecutive cycles; the checkpoint is sent even when the upload fails. None of this blocks the cycle, changes escalation status or loosens enforcement.
+4. **`verify_project` (founder ruling 1, A4.3).** Zero rows is not ok; every row's `record_hash` is recomputed from the canonical body, not only the links.
+5. **Quarantine named limit (G7-C, founder approved).** Quarantine is a server-side state for forked records (`audit_quarantine`). In M2 the connector does not enter quarantine; it raises a local `audit_fork` alert and keeps enforcing locally. Device-level quarantine is M3. See `docs/control-plane/M2_DEMO.md` 7.7.

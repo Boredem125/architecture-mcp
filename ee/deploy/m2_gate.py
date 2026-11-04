@@ -751,12 +751,32 @@ for _target_sid in _audit_sessions:
         f"fork={_has_fork_alert} truncation={_has_trunc_alert} alerts[-200:]={alerts7.strip()[-200:]}",
         "sandbox alerts -n 50")
 
-    # Check status for quarantine
-    rc7s, stat7, _ = sh([SANDBOX, "status", "--json"], ws, ENV)
-    _quar = "quarantine" in stat7.lower() or "locked" in stat7.lower()
-    rec("7", "sandbox status reports quarantine after audit fork", "quarantine" in stat7.lower(),
-        f"quarantine_in_status={'quarantine' in stat7.lower()} status[-200:]={stat7.strip()[-200:]}",
-        "sandbox status --json")
+    # G7-C named limit (M2_DEMO.md 7.7, ADR 0001 Amendment A3 item 5): the connector
+    # has no quarantine state. Two asserts replace the old status check:
+    # (a) the server holds an audit_quarantine row for this connector's fork;
+    # (b) the local alerts carry an audit_fork event.
+    _has_audit_fork_alert = "audit_fork" in alerts7
+    rec("7", "sandbox alerts contains audit_fork after audit fork", _has_audit_fork_alert,
+        f"audit_fork_alert={_has_audit_fork_alert} alerts[-200:]={alerts7.strip()[-200:]}",
+        "sandbox alerts -n 50")
+    _quar_cmd = [
+        "docker", "compose", "exec", "-T", "api", "python", "-c",
+        "import json; from agg_cp.auth import _app_conn, _sync_conninfo; "
+        "import os; db=os.environ.get('DATABASE_URL',''); "
+        "ci=_sync_conninfo(db); "
+        "c=_app_conn(ci).__enter__(); "
+        "rows=c.execute(\"SELECT kind, detail FROM audit_quarantine WHERE kind='fork' ORDER BY created_at DESC LIMIT 5\").fetchall(); "
+        "print(json.dumps([{'kind':r[0],'detail':r[1] if isinstance(r[1],dict) else json.loads(r[1]) if r[1] else {}} for r in rows]))"
+    ]
+    rc7qr, out7qr, el7qr = sh(_quar_cmd, DEPLOY, ENV, timeout=30)
+    _quar_rows = []
+    try:
+        _quar_rows = json.loads(out7qr.strip().splitlines()[-1]) if out7qr.strip() else []
+    except (ValueError, IndexError):
+        pass
+    rec("7", "server audit_quarantine holds a fork row after audit fork", len(_quar_rows) > 0,
+        f"rows={len(_quar_rows)} first={json.dumps(_quar_rows[:1])[:200]}",
+        "SELECT kind, detail FROM audit_quarantine WHERE kind='fork'", el7qr)
 
     # Server-side: audit verify --project (main chain on server should pass)
     rc7v, out7v, el7v = sh(["docker", "compose", "exec", "-T", "api", "python", "-m", "agg_cp.cli", "audit", "verify", "--project", staging_id], DEPLOY, ENV, timeout=60)
@@ -795,7 +815,8 @@ for _target_sid in _audit_sessions:
 if not _step7_ran:
     rec("7", "audit truncation test", False, f"no audit session with >=4 records; sessions={_audit_sessions}", "check .sandbox/audit/")
     rec("7", "fork or truncation alert in sandbox alerts", False, "skipped: no testable session", "")
-    rec("7", "sandbox status reports quarantine after audit fork", False, "skipped", "")
+    rec("7", "sandbox alerts contains audit_fork after audit fork", False, "skipped", "")
+    rec("7", "server audit_quarantine holds a fork row after audit fork", False, "skipped", "")
     rec("7", "audit verify --project passes on main chain", None, "skipped", "")
     rec("7", "server-side sync_alerts", None, "skipped", "")
 

@@ -11,7 +11,17 @@ Design invariants:
   - The cursor sits under the non-removable deny (threat 20).
   - ``upload_seq`` increments by exactly 1 per checkpoint (S11).
   - Every local session since enrollment is listed in the checkpoint (S12).
-  - A fork from the server (409) raises ``AuditUploadError``.
+  - Records go up as ``{session_id, records:[{chain_length, previous_hash,
+    record_hash, body}]}`` chunked under the server caps (1000 records,
+    1 MiB), ADR 0001 5.2/A4.1 (T16g G7-B).
+  - The local chain is re-verified (``verify_records_bytes``) before any
+    record of a session is sent.
+  - The cursor moves only after a 200 whose ``server_head`` matches the
+    batch end; otherwise ``server_head_mismatch`` is reported.
+  - Every failure is typed (``AuditUploadError.errors``): ``audit_fork``
+    on 409, ``audit_truncation_local`` when the cursor is past the local
+    chain, ``audit_upload_failed`` with the HTTP status on any other
+    4xx/5xx.  Nothing is swallowed; the caller alerts and audits.
 """
 from __future__ import annotations
 
@@ -28,7 +38,37 @@ from typing import Any, Callable
 
 
 class AuditUploadError(Exception):
-    """Non-recoverable error during audit upload."""
+    """Typed audit upload failure.
+
+    ``errors`` is a list of ``{kind, status, session_id, reason}`` dicts,
+    one per failed session (plus the checkpoint).  ``kind`` is one of
+    ``audit_fork``, ``audit_truncation_local``, ``audit_upload_failed`` or
+    ``server_head_mismatch``.  The message joins every reason.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: str = "audit_upload_failed",
+        status: int | None = None,
+        session_id: str | None = None,
+        errors: list[dict] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.status = status
+        self.session_id = session_id
+        self.errors: list[dict] = errors if errors is not None else [{
+            "kind": kind, "status": status,
+            "session_id": session_id, "reason": message,
+        }]
+
+
+#: Server caps (ee/src/agg_cp/sync/audit_upload.py): a batch is refused
+#: 413 above either.  The connector chunks strictly below both.
+MAX_BATCH_RECORDS: int = 1000
+MAX_BATCH_BYTES: int = 1_048_576
 
 
 # ---------------------------------------------------------------------------
@@ -126,113 +166,216 @@ def upload_records(
 ) -> dict:
     """Upload pending audit records for all local sessions.
 
-    Returns a dict with ``uploaded`` count and the last ``server_head``.
+    Every session is attempted (a fork in one session never blocks the
+    others).  Returns ``{"uploaded", "server_head", "errors"}`` where
+    ``errors`` holds non-raising problems (``server_head_mismatch``).
+    Raises :class:`AuditUploadError` carrying every per-session failure
+    (fork, local truncation, 4xx/5xx) after all sessions were tried.
+    Transport exceptions (network) propagate unchanged.
     """
-    from sandbox.connector.audit import session_ids, verify_records_bytes
+    from sandbox.connector.audit import session_ids
 
-    cursor = uploader._load_cursor()
-    sessions = cursor.setdefault("sessions", {})
+    uploader._load_cursor()
     audit_dir = uploader.layout.audit_dir
 
     total_uploaded = 0
     last_server_head: dict | None = None
+    raised: list[dict] = []
+    soft: list[dict] = []
 
-    # Discover all local sessions
     local_sessions = session_ids(audit_dir)
     for sid in local_sessions:
         uploader._known_sessions.add(sid)
 
+    url = f"{server_url.rstrip('/')}/api/v1/sync/audit"
     for sid in local_sessions:
-        records_file = audit_dir / sid / "records.jsonl"
-        if not records_file.exists():
+        try:
+            n, head, mismatch = _upload_session(uploader, sid, connect, token, url)
+        except AuditUploadError as exc:
+            raised.extend(exc.errors)
             continue
+        total_uploaded += n
+        if head:
+            last_server_head = head
+        if mismatch is not None:
+            soft.append(mismatch)
 
-        # Load all records
-        all_records = []
-        with open(records_file, encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    try:
-                        all_records.append(json.loads(line))
-                    except (ValueError, json.JSONDecodeError):
-                        continue
+    if raised:
+        raise AuditUploadError(
+            "; ".join(str(e.get("reason", "")) for e in raised),
+            errors=raised + soft,
+        )
+    return {
+        "uploaded": total_uploaded,
+        "server_head": last_server_head,
+        "errors": soft,
+    }
 
-        # Determine where to resume
-        sess_cursor = sessions.get(sid, {})
-        cursor_length = sess_cursor.get("chain_length", 0)
 
-        # Truncation check: local records fewer than cursor says
-        if len(all_records) < cursor_length:
+def _upload_session(
+    uploader: AuditUploader,
+    sid: str,
+    connect: Callable[..., tuple[int, dict, dict]],
+    token: str,
+    url: str,
+) -> tuple[int, dict | None, dict | None]:
+    """Upload one session's pending records in chunks.
+
+    Returns ``(uploaded_count, last_server_head, mismatch_error_or_None)``.
+    Raises :class:`AuditUploadError` on local truncation, an invalid local
+    chain, a fork (409) or any other non-2xx.
+    """
+    from sandbox.connector.audit import CHAIN_FIELDS, verify_records_bytes
+
+    records_file = uploader.layout.audit_dir / sid / "records.jsonl"
+    if not records_file.exists():
+        return 0, None, None
+
+    cursor = uploader._load_cursor()
+    sessions = cursor.setdefault("sessions", {})
+    sess_cursor = sessions.get(sid, {}) or {}
+    cursor_length = sess_cursor.get("chain_length", 0)
+    if not isinstance(cursor_length, int) or isinstance(cursor_length, bool):
+        cursor_length = 0
+    cursor_head = sess_cursor.get("head_hash", "")
+
+    data = records_file.read_bytes()
+
+    # Verify the local chain before anything leaves the machine.
+    check = verify_records_bytes(data)
+    if not check.get("ok"):
+        raise AuditUploadError(
+            f"local audit chain invalid for session {sid}: "
+            f"{check.get('message', '')}",
+            kind="audit_upload_failed", session_id=sid,
+        )
+
+    all_records: list[dict] = []
+    for raw in data.split(b"\n"):
+        if raw.strip():
+            all_records.append(json.loads(raw.decode("utf-8")))
+
+    # Local truncation: the cursor is past the local chain.
+    if len(all_records) < cursor_length:
+        raise AuditUploadError(
+            f"truncation detected for session {sid}: local has "
+            f"{len(all_records)} records but cursor at {cursor_length}",
+            kind="audit_truncation_local", session_id=sid,
+        )
+    # Rewrite under the cursor: the uploaded head no longer matches.
+    if cursor_length > 0 and cursor_head and (
+        all_records[cursor_length - 1].get("record_hash") != cursor_head
+    ):
+        raise AuditUploadError(
+            f"truncation detected for session {sid}: record "
+            f"{cursor_length} no longer matches the uploaded head_hash "
+            "(uploaded records rewritten)",
+            kind="audit_truncation_local", session_id=sid,
+        )
+
+    pending = [r for r in all_records if r.get("chain_length", 0) > cursor_length]
+    pending.sort(key=lambda r: r.get("chain_length", 0))
+
+    uploaded = 0
+    last_head: dict | None = None
+
+    def _wire(rec: dict) -> dict:
+        return {
+            "chain_length": rec["chain_length"],
+            "previous_hash": rec["previous_hash"],
+            "record_hash": rec["record_hash"],
+            "body": {k: v for k, v in rec.items() if k not in CHAIN_FIELDS},
+        }
+
+    i = 0
+    while i < len(pending):
+        batch: list[dict] = []
+        batch_src: list[dict] = []
+        while i < len(pending) and len(batch) < MAX_BATCH_RECORDS:
+            candidate = batch + [_wire(pending[i])]
+            size = len(json.dumps({"session_id": sid, "records": candidate}).encode("utf-8"))
+            if size >= MAX_BATCH_BYTES:
+                if not batch:
+                    raise AuditUploadError(
+                        f"record {pending[i].get('chain_length')} of session "
+                        f"{sid} alone exceeds the {MAX_BATCH_BYTES} byte cap",
+                        kind="audit_upload_failed", session_id=sid,
+                    )
+                break
+            batch = candidate
+            batch_src.append(pending[i])
+            i += 1
+
+        status, resp_body, _hdrs = connect(
+            "POST", url, body={"session_id": sid, "records": batch}, token=token,
+        )
+        if not isinstance(resp_body, dict):
+            resp_body = {}
+        # Server-controlled text: cap what lands in the local audit record.
+        err = str(resp_body.get("error", "unknown"))[:200]
+
+        if status == 409:
             raise AuditUploadError(
-                f"truncation detected for session {sid}: "
-                f"local has {len(all_records)} records but cursor at {cursor_length}"
+                f"fork/quarantine (409) for session {sid}: {err}",
+                kind="audit_fork", status=409, session_id=sid,
+            )
+        if status == 400:
+            raise AuditUploadError(
+                f"gap or chain error (400) for session {sid}: {err}",
+                status=400, session_id=sid,
+            )
+        if status == 401:
+            raise AuditUploadError(
+                f"device revoked or unauthorized (401) for session {sid}: {err}",
+                status=401, session_id=sid,
+            )
+        if status == 413:
+            raise AuditUploadError(
+                f"batch too large (413) for session {sid}: {err}",
+                status=413, session_id=sid,
+            )
+        if status < 200 or status >= 300:
+            raise AuditUploadError(
+                f"upload failed ({status}) for session {sid}: {err}",
+                status=status, session_id=sid,
             )
 
-        # Filter to records after the cursor
-        pending = [r for r in all_records if r.get("chain_length", 0) > cursor_length]
-        # Sort by chain_length
-        pending.sort(key=lambda r: r.get("chain_length", 0))
-
-        for rec in pending:
-            # Build the upload body
-            body = {
+        last_src = batch_src[-1]
+        # A 200 is an all-or-nothing ack of the batch: that is the head
+        # ``verify_head`` compares later server heads against (D3.4).
+        uploader._acked_heads[sid] = {
+            "session_id": sid,
+            "chain_length": last_src["chain_length"],
+            "head_hash": last_src["record_hash"],
+        }
+        server_head = resp_body.get("server_head")
+        if (
+            not isinstance(server_head, dict)
+            or server_head.get("chain_length") != last_src["chain_length"]
+            or server_head.get("head_hash") != last_src["record_hash"]
+        ):
+            # A 200 whose head is not the batch end: the cursor stays and
+            # the caller alerts server_head_mismatch (ADR 0001 A4.3).
+            return uploaded, last_head, {
+                "kind": "server_head_mismatch", "status": status,
                 "session_id": sid,
-                "chain_length": rec["chain_length"],
-                "previous_hash": rec["previous_hash"],
-                "record_hash": rec["record_hash"],
-                "body": {
-                    k: v for k, v in rec.items()
-                    if k not in ("previous_hash", "chain_length", "record_hash")
-                },
+                "reason": (
+                    f"server_head_mismatch for session {sid}: batch ended at "
+                    f"chain_length {last_src['chain_length']} but the server "
+                    f"head is {server_head!r}"
+                ),
             }
 
-            url = f"{server_url.rstrip('/')}/api/v1/sync/audit"
-            status, resp_body, _hdrs = connect(
-                "POST", url, body=body, token=token,
-            )
+        # Cursor moves only after a matching 200.
+        sessions[sid] = {
+            "chain_length": last_src["chain_length"],
+            "head_hash": last_src["record_hash"],
+        }
+        uploader._save_cursor()
+        last_head = server_head
+        uploaded += len(batch)
 
-            if status == 401:
-                raise AuditUploadError(
-                    f"device revoked or unauthorized (401): "
-                    f"{resp_body.get('error', 'unknown')}"
-                )
-            if status == 404:
-                raise AuditUploadError(
-                    f"not found (404): {resp_body.get('error', 'unknown')}"
-                )
-            if status == 409:
-                raise AuditUploadError(
-                    f"fork/quarantine (409): {resp_body.get('error', 'unknown')}"
-                )
-            if status == 400:
-                raise AuditUploadError(
-                    f"gap or chain error (400): {resp_body.get('error', 'unknown')}"
-                )
-            if status == 413:
-                raise AuditUploadError(
-                    f"batch too large (413): {resp_body.get('error', 'unknown')}"
-                )
-            if status < 200 or status >= 300:
-                raise AuditUploadError(
-                    f"upload failed ({status}): {resp_body.get('error', 'unknown')}"
-                )
-
-            # Update cursor
-            sessions[sid] = {
-                "chain_length": rec["chain_length"],
-                "head_hash": rec["record_hash"],
-            }
-            uploader._save_cursor()
-
-            # Track server head for verify_head
-            server_head = resp_body.get("server_head")
-            if server_head:
-                uploader._acked_heads[sid] = server_head
-                last_server_head = server_head
-
-            total_uploaded += 1
-
-    return {"uploaded": total_uploaded, "server_head": last_server_head}
+    return uploaded, last_head, None
 
 
 # ---------------------------------------------------------------------------
@@ -311,16 +454,19 @@ def send_checkpoint(
         "POST", url, body=envelope, token=token,
     )
 
+    if not isinstance(resp_body, dict):
+        resp_body = {}
     if status == 400:
         error = resp_body.get("error", "unknown")
         raise AuditUploadError(
-            f"checkpoint refused (400): {error}"
+            f"checkpoint refused (400): {error}", status=400,
         )
     if status == 401:
-        raise AuditUploadError("checkpoint unauthorized (401)")
+        raise AuditUploadError("checkpoint unauthorized (401)", status=401)
     if status < 200 or status >= 300:
         raise AuditUploadError(
-            f"checkpoint failed ({status}): {resp_body.get('error', 'unknown')}"
+            f"checkpoint failed ({status}): {resp_body.get('error', 'unknown')}",
+            status=status,
         )
 
     # Persist the new upload_seq
@@ -352,5 +498,6 @@ def verify_head(uploader: AuditUploader, server_head: dict) -> None:
         raise AuditUploadError(
             f"server_head_mismatch: server head for {sid} is at "
             f"chain_length {server_length} but we acknowledged {acked_length} "
-            f"(server rewound/deleted audit records)"
+            f"(server rewound/deleted audit records)",
+            kind="server_head_mismatch", session_id=sid,
         )

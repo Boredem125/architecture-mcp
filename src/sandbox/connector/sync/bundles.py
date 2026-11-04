@@ -427,6 +427,7 @@ def _verify_change_approvals(
         )
 
 
+
 def verify_and_apply(
     layout,
     envelope: dict,
@@ -487,20 +488,27 @@ def verify_and_apply(
     if not_before > time.time():
         raise BundleError("not_before is in the future")
 
-    # 8. Registry version check (D2.5)
-    # The bundle's registry_version must be >= the pinned registry version.
-    # The registry's latest version is in the chain's last payload.
-    # We use the registry object: all keys from all versions are in it,
-    # but we check the version number.  The registry was built from the chain
-    # and the latest version is the one that matters.
+    # 8. Registry version check (D2.5, ADR 0001 A2.5; founder ruling 2,
+    #    4 Nov 2026).  The bundle's registry_version must be an int >= the
+    #    version of the VERIFIED registry (``Registry.version``, set by
+    #    ``verify_chain`` from the last verified payload).  Never compared
+    #    against high_water.json or registry.json (hand-editable).
     bundle_reg_version = payload.get("registry_version", 0)
-    # Registry version comes from the chain. We need to track it.
-    # The test builds registry from genesis (version=1), so bundle must be >= 1.
-    # We'll check against the registry's minimum acceptable version.
-    # For now, version 0 is always refused (older than any valid registry).
-    if bundle_reg_version < 1:
+    pinned_version = getattr(registry, "version", None)
+    if (
+        not isinstance(pinned_version, int)
+        or isinstance(pinned_version, bool)
+        or pinned_version < 1
+    ):
+        raise BundleError("registry has no verified version")
+    if (
+        not isinstance(bundle_reg_version, int)
+        or isinstance(bundle_reg_version, bool)
+        or bundle_reg_version < pinned_version
+    ):
         raise BundleError(
-            f"registry_version {bundle_reg_version} is older than pinned"
+            f"registry_version {bundle_reg_version!r} is older than the "
+            f"pinned registry version {pinned_version}"
         )
 
     # 9. Sequence checks (threat 7)
