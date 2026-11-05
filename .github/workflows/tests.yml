@@ -90,6 +90,11 @@ jobs:
       - name: Gate (no failures or errors; counts to summary)
         if: success() || failure()
         run: python .github/scripts/junit_gate.py "$RUNNER_TEMP/junit-pytest-${{ runner.os }}.xml" --label "pytest ${{ runner.os }}" --min-tests 500
+      - name: Frozen test files unchanged (M3_FROZEN_MANIFEST.sha256)
+        # All 203 entries in the manifest (tests/, ee/tests/, ee/web/tests/
+        # and named files).  Hashes are of LF content; Linux checkout is LF.
+        if: runner.os == 'Linux'
+        run: sha256sum -c docs/control-plane/M3_FROZEN_MANIFEST.sha256 --quiet
       - name: No stray files in the checkout
         if: success() || failure()
         run: |
@@ -130,17 +135,23 @@ jobs:
           python -m pip install --quiet -e "./ee[dev]" "defusedxml>=0.7.1"  # editable: coverage measures ee/src/agg_cp (gate item 2)
       - name: lint-imports (import-linter contract)
         run: lint-imports --config ee/.importlinter
-      - name: Frozen ee test files unchanged (M2_FROZEN_MANIFEST.sha256)
-        # The ee/ half of the manifest (connector-standalone checks the rest).
-        # M2_BASELINE.md section 3 named exceptions, excluded here:
-        #   ee/tests/test_t8p2_session.py (T3), ee/tests/test_t10_multiworker.py (T2),
-        #   ee/tests/test_m1_t13_review.py (T2), ee/tests/test_t9_routes.py (T7/T8).
+      - name: Frozen ee test files unchanged (M3_FROZEN_MANIFEST.sha256)
+        # The ee/ half of the M3 manifest (connector-standalone checks non-ee).
+        # M3 T0a: no named exceptions; all ee files checked at HEAD hashes.
         # Hashes are of LF content; only the Linux checkout is LF on disk.
         if: runner.os == 'Linux'
         run: >
-          grep '  ee/' docs/control-plane/M2_FROZEN_MANIFEST.sha256
-          | grep -v -e '  ee/tests/test_t8p2_session.py$' -e '  ee/tests/test_t10_multiworker.py$' -e '  ee/tests/test_m1_t13_review.py$' -e '  ee/tests/test_t9_routes.py$'
+          grep '  ee/' docs/control-plane/M3_FROZEN_MANIFEST.sha256
           | sha256sum -c --quiet
+      - name: EE node-id equality (M3_BASELINE_EE_NODEIDS.txt)
+        # Collect-only must match the frozen ee node-id list exactly.
+        # Run on py3.12 only (the baseline was generated with 3.12).
+        if: matrix.python == '3.12'
+        run: |
+          python -m pytest -q --collect-only -p no:logging ee/tests/ 2>/dev/null \
+            | grep "::" | sort > "$RUNNER_TEMP/ee_collected.txt"
+          sort docs/control-plane/M3_BASELINE_EE_NODEIDS.txt > "$RUNNER_TEMP/ee_expected.txt"
+          diff "$RUNNER_TEMP/ee_expected.txt" "$RUNNER_TEMP/ee_collected.txt"
       - name: Run ee tests (branch coverage; M1 gate item 2 needs >= 85%)
         env:
           AGG_TEST_PG_URL: postgresql://postgres@localhost:5432/postgres
@@ -280,15 +291,12 @@ jobs:
           unzip -q "$RUNNER_TEMP/cpython-embed.zip" -d "$RUNNER_TEMP/cpython-embed"
           rm "$RUNNER_TEMP/cpython-embed/python312._pth"
           "$RUNNER_TEMP/cpython-embed/python.exe" --version
-      - name: Frozen test files unchanged (M2_FROZEN_MANIFEST.sha256)
-        # M2_BASELINE.md section 3 exceptions (fixture/setup, security sign-off):
-        #   ee/tests/test_t8p2_session.py       – T3: CSRF HMAC independent computation
-        #   ee/tests/test_t10_multiworker.py     – T2: portable process group (os.setsid)
-        #   ee/tests/test_m1_t13_review.py       – T2: symlink skip on Windows
-        # All three are ee/ files; this job removes ee/ so all ee/ lines are filtered.
-        # Hashes are of LF content; only the Linux checkout is LF on disk.
-        if: runner.os == 'Linux' && hashFiles('docs/control-plane/M2_FROZEN_MANIFEST.sha256') != ''
-        run: grep -v '  ee/' docs/control-plane/M2_FROZEN_MANIFEST.sha256 | sha256sum -c --quiet
+      - name: Frozen test files unchanged (M3_FROZEN_MANIFEST.sha256)
+        # The non-ee/ half of the M3 manifest.  This job removes ee/, so only
+        # the tests/ and named-file entries are checked.  M3 T0a: no named
+        # exceptions.  Hashes are of LF content; Linux checkout is LF on disk.
+        if: runner.os == 'Linux'
+        run: grep -v '  ee/' docs/control-plane/M3_FROZEN_MANIFEST.sha256 | sha256sum -c --quiet
       - name: Run the connector (Class C) tests
         env:
           BARE_PYTHON: ${{ runner.os == 'Windows' && format('{0}/cpython-embed/python.exe', runner.temp) || '' }}
@@ -334,9 +342,41 @@ jobs:
       - name: Build (tsc + vite + CSP check)
         working-directory: ee/web
         run: npm run build
+      - name: Frozen ee/web test files unchanged (M3_FROZEN_MANIFEST.sha256)
+        # The ee/web/ half of the M3 manifest.  Hashes are of LF content;
+        # only the Linux checkout is LF on disk.
+        run: >
+          grep '  ee/web/' docs/control-plane/M3_FROZEN_MANIFEST.sha256
+          | sha256sum -c --quiet
       - name: Test (vitest)
         working-directory: ee/web
         run: npm test
+      - name: Web node-id equality (M3_BASELINE_WEB_NODEIDS.txt)
+        # Collect vitest test names and diff against the frozen web node-id list.
+        # Uses --reporter=json --outputFile to get structured test names (vitest
+        # 5.x writes JSON to a file, not stdout), then formats them as
+        # "ee/web/tests/<file>::<describe> <name>" to match the frozen list.
+        run: |
+          cd ee/web
+          npx vitest run --reporter=json --outputFile="$RUNNER_TEMP/vitest.json"
+          node -e '
+            const fs = require("fs");
+            const data = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/vitest.json", "utf8"));
+            const ids = [];
+            for (const file of data.testResults || []) {
+              const rel = file.name.replace(/.*ee\/web\//, "ee/web/");
+              for (const suite of file.assertionResults || []) {
+                const ancestors = suite.ancestorTitles || [];
+                const name = [...ancestors, suite.title].join(" ");
+                ids.push(rel + "::" + name);
+              }
+            }
+            ids.sort();
+            for (const id of ids) console.log(id);
+          ' > "$RUNNER_TEMP/web_collected.txt"
+          cd "$GITHUB_WORKSPACE"
+          sort docs/control-plane/M3_BASELINE_WEB_NODEIDS.txt > "$RUNNER_TEMP/web_expected.txt"
+          diff "$RUNNER_TEMP/web_expected.txt" "$RUNNER_TEMP/web_collected.txt"
       - name: No stray files in the checkout
         if: success() || failure()
         run: |

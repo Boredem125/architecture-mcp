@@ -38,6 +38,9 @@ node_modules/
 .next/
 out/
 
+# Vitest json reporter output (written by vitest run --reporter=json)
+.vitest/
+
 # Test artifacts
 test_sandbox.txt
 SKILL\ \(3\).md

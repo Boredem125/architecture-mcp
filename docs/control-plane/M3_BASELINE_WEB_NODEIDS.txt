@@ -1,0 +1,92 @@
+ee/web/tests/browser-key.test.ts::computeKeyId computes SHA-256 hex digest of the raw public key
+ee/web/tests/browser-key.test.ts::exportPublicKey exports public key as raw bytes (32 bytes for Ed25519)
+ee/web/tests/browser-key.test.ts::generateBrowserKeyPair generates an Ed25519 key pair
+ee/web/tests/browser-key.test.ts::generateBrowserKeyPair key algorithm is Ed25519
+ee/web/tests/browser-key.test.ts::generateBrowserKeyPair private key is non-extractable
+ee/web/tests/browser-key.test.ts::generateBrowserKeyPair private key usages include sign only
+ee/web/tests/browser-key.test.ts::generateBrowserKeyPair public key is extractable
+ee/web/tests/browser-key.test.ts::key store (IndexedDB interface) KEY_STORE_NAME is defined
+ee/web/tests/browser-key.test.ts::key store (IndexedDB interface) storeKey and loadKey are callable
+ee/web/tests/har-check.test.ts::HAR-style no-private-key check approval request body contains no private key material
+ee/web/tests/har-check.test.ts::HAR-style no-private-key check approval request includes only the signed envelope fields
+ee/web/tests/har-check.test.ts::HAR-style no-private-key check browser key link request sends only the public key
+ee/web/tests/har-check.test.ts::HAR-style no-private-key check deny request body contains no private key material
+ee/web/tests/inbox-section.test.ts::InboxSection logic: Approve hidden on prod canApprove returns false for absent environment
+ee/web/tests/inbox-section.test.ts::InboxSection logic: Approve hidden on prod canApprove returns false for prod, canDeny returns true
+ee/web/tests/inbox-section.test.ts::InboxSection logic: no key = error buildInboxApproval rejects when no key is stored
+ee/web/tests/inbox-section.test.ts::InboxSection logic: no key = error buildInboxDeny rejects when no key is stored
+ee/web/tests/inbox-section.test.ts::InboxSection logic: text-only rendering preserves literal server text (React JSX escapes at render, not here)
+ee/web/tests/inbox-section.test.ts::InboxSection logic: text-only rendering shows NUL as [U+0000] so two values differing by NUL render differently
+ee/web/tests/inbox.test.ts::inbox: Approve hidden on prod buildInboxApproval refuses absent environment (treated as prod)
+ee/web/tests/inbox.test.ts::inbox: Approve hidden on prod buildInboxApproval refuses prod escalations
+ee/web/tests/inbox.test.ts::inbox: Approve hidden on prod buildInboxDeny allowed on prod
+ee/web/tests/inbox.test.ts::inbox: Approve hidden on prod canApprove returns false for prod (existing rule)
+ee/web/tests/inbox.test.ts::inbox: Approve uses stored key from IndexedDB buildInboxApproval fails when no stored key exists
+ee/web/tests/inbox.test.ts::inbox: Approve uses stored key from IndexedDB buildInboxApproval never calls generateBrowserKeyPair
+ee/web/tests/inbox.test.ts::inbox: Approve uses stored key from IndexedDB buildInboxApproval uses loadKey, not generateBrowserKeyPair
+ee/web/tests/inbox.test.ts::inbox: Approve uses stored key from IndexedDB enroll (buildKeyLinkRequest) then approve works without manual storeKey
+ee/web/tests/inbox.test.ts::inbox: CSRF header on approve POST CSRF token must not be empty
+ee/web/tests/inbox.test.ts::inbox: CSRF header on approve POST buildInboxApproval includes X-CSRF-Token header
+ee/web/tests/inbox.test.ts::inbox: CSRF header on approve POST buildInboxDeny also includes X-CSRF-Token header
+ee/web/tests/inbox.test.ts::inbox: server text rendered as text (no dangerouslySetInnerHTML) HTML in request_id is preserved as literal text
+ee/web/tests/inbox.test.ts::inbox: server text rendered as text (no dangerouslySetInnerHTML) literal text is preserved unchanged (React escapes at render)
+ee/web/tests/inbox.test.ts::inbox: server text rendered as text (no dangerouslySetInnerHTML) null bytes in command are shown escaped as [U+0000]
+ee/web/tests/inbox.test.ts::inbox: server text rendered as text (no dangerouslySetInnerHTML) special characters in fingerprint are preserved as literal text
+ee/web/tests/inbox.test.ts::inbox: signed object equals displayed request the signed deny payload also matches the displayed escalation
+ee/web/tests/inbox.test.ts::inbox: signed object equals displayed request the signed payload contains exactly the displayed fields
+ee/web/tests/prod-guard.test.ts::canApprove (D5.5, N9) returns false for absent environment (treated as prod)
+ee/web/tests/prod-guard.test.ts::canApprove (D5.5, N9) returns false for already-decided escalations
+ee/web/tests/prod-guard.test.ts::canApprove (D5.5, N9) returns false for prod escalations
+ee/web/tests/prod-guard.test.ts::canApprove (D5.5, N9) returns true for non-prod pending escalations
+ee/web/tests/prod-guard.test.ts::canDeny returns false for already-decided escalations
+ee/web/tests/prod-guard.test.ts::canDeny returns true for non-prod pending escalations
+ee/web/tests/prod-guard.test.ts::canDeny returns true for prod escalations (deny allowed on prod)
+ee/web/tests/prod-guard.test.ts::prod environment detection (D5.5, D2.4) absent environment (undefined) is treated as prod
+ee/web/tests/prod-guard.test.ts::prod environment detection (D5.5, D2.4) empty string environment is treated as prod
+ee/web/tests/prod-guard.test.ts::prod environment detection (D5.5, D2.4) environment 'development' is NOT prod
+ee/web/tests/prod-guard.test.ts::prod environment detection (D5.5, D2.4) environment 'prod' is detected as prod
+ee/web/tests/prod-guard.test.ts::prod environment detection (D5.5, D2.4) environment 'staging' is NOT prod
+ee/web/tests/prod-guard.test.ts::prod environment detection (D5.5, D2.4) null environment is treated as prod
+ee/web/tests/script-preview.test.ts::T12c script preview: body renders as text line numbers are prepended to each line of the body
+ee/web/tests/script-preview.test.ts::T12c script preview: body renders as text script body with HTML tags is rendered as text, not HTML
+ee/web/tests/script-preview.test.ts::T12c script preview: hash gates Approve Approve is disabled when preview hash does not match
+ee/web/tests/script-preview.test.ts::T12c script preview: hash gates Approve buildInboxApproval recomputes preview SHA-256 and refuses on mismatch
+ee/web/tests/script-preview.test.ts::T12c script preview: payload fields buildInboxApproval includes script_rel, script_sha256, preview_sha256
+ee/web/tests/script-preview.test.ts::T12c script preview: payload fields payload preview_sha256 is empty string when no script
+ee/web/tests/script-safety.test.ts::T12c script safety: allowed chars in body body with LF, CRLF and tab keeps Approve enabled when hash matches
+ee/web/tests/script-safety.test.ts::T12c script safety: approveEnabled with control chars in rel Deny stays allowed when rel has U+202E
+ee/web/tests/script-safety.test.ts::T12c script safety: approveEnabled with control chars in rel script.rel containing U+0009 (tab) disables Approve
+ee/web/tests/script-safety.test.ts::T12c script safety: approveEnabled with control chars in rel script.rel containing U+202E (RLO) disables Approve via approveEnabled
+ee/web/tests/script-safety.test.ts::T12c script safety: bidi, C1 and DEL in rel rel containing U+007F (DEL) disables Approve
+ee/web/tests/script-safety.test.ts::T12c script safety: bidi, C1 and DEL in rel rel containing U+0080 (C1 start) disables Approve
+ee/web/tests/script-safety.test.ts::T12c script safety: bidi, C1 and DEL in rel rel containing U+0085 (NEL, C1) disables Approve
+ee/web/tests/script-safety.test.ts::T12c script safety: bidi, C1 and DEL in rel rel containing U+009F (C1 end) disables Approve
+ee/web/tests/script-safety.test.ts::T12c script safety: bidi, C1 and DEL in rel rel containing U+061C (ALM, bidi) disables Approve
+ee/web/tests/script-safety.test.ts::T12c script safety: bidi, C1 and DEL in rel rel containing U+202A (LRE, bidi) disables Approve
+ee/web/tests/script-safety.test.ts::T12c script safety: bidi, C1 and DEL in rel rel containing U+2066 (LRI, bidi) disables Approve
+ee/web/tests/script-safety.test.ts::T12c script safety: buildInboxApproval defence in depth buildInboxApproval throws for approve when field has unsafe chars
+ee/web/tests/script-safety.test.ts::T12c script safety: control chars in body body containing U+0001 (SOH, C0) disables Approve
+ee/web/tests/script-safety.test.ts::T12c script safety: control chars in body body containing U+0085 (NEL, C1) disables Approve
+ee/web/tests/script-safety.test.ts::T12c script safety: control chars in body body containing U+061C (ALM, bidi) disables Approve
+ee/web/tests/script-safety.test.ts::T12c script safety: control chars in body body containing U+202A (LRE, bidi) disables Approve
+ee/web/tests/script-safety.test.ts::T12c script safety: control chars in body body containing U+2066 (LRI, bidi) disables Approve
+ee/web/tests/script-safety.test.ts::T12c script safety: escaped rendering line numbers assert exact '1  import os' prefix
+ee/web/tests/script-safety.test.ts::T12c script safety: escaped rendering rendered body shows U+0001 escaped as [U+0001], never the raw byte
+ee/web/tests/script-safety.test.ts::T12c script safety: escaped rendering rendered body shows U+0085 (NEL) escaped as [U+0085]
+ee/web/tests/script-safety.test.ts::T12c script safety: hash state pending hash state 'match' on clean esc allows Approve
+ee/web/tests/script-safety.test.ts::T12c script safety: hash state pending hash state 'pending' disables Approve
+ee/web/tests/script-safety.test.ts::T12c script safety: script without preview script present with script_preview null disables Approve
+ee/web/tests/script-safety.test.ts::T12c script safety: script without preview script present with script_preview null: buildInboxApproval throws
+ee/web/tests/script-safety.test.ts::T12c script safety: server hash validation uppercase server sha256 causes buildInboxApproval to throw
+ee/web/tests/signing.test.ts::D5.6 field set golden payload has exactly the D5.6 field set
+ee/web/tests/signing.test.ts::canonicalBytes (cross-language golden fixture) produces the same canonical JSON as Python for the golden payload
+ee/web/tests/signing.test.ts::canonicalBytes (cross-language golden fixture) produces the same canonical bytes as Python for the golden payload
+ee/web/tests/signing.test.ts::canonicalBytes (cross-language golden fixture) separates tag and payload with a null byte
+ee/web/tests/signing.test.ts::canonicalBytes (cross-language golden fixture) uses sort_keys and compact separators in canonical JSON
+ee/web/tests/signing.test.ts::canonicalBytes (cross-language golden fixture) uses the correct tag for remote approvals
+ee/web/tests/signing.test.ts::canonicalBytes (non-ASCII cross-language case) produces the same canonical bytes as Python for non-ASCII payload
+ee/web/tests/t12b2-review.test.ts::T12b-2 review S2-web: bidi controls are not displayed raw renderEscalationText neutralises U+202E and other bidi controls
+ee/web/tests/t12b2-review.test.ts::T12b-2 review S3: the signed payload carries the D5.6 field set approve payload has every field the server and connector require
+ee/web/tests/t12b2-review.test.ts::T12b-2 review S3: the signed payload carries the D5.6 field set deny payload has every field the server and connector require
+ee/web/tests/t12b2-review3.test.ts::T12b-2 re-review F4: NUL is shown, not deleted guard: a NUL marks the row unsafe (Approve disabled)
+ee/web/tests/t12b2-review3.test.ts::T12b-2 re-review F4: NUL is shown, not deleted renderEscalationText shows U+0000 visibly
