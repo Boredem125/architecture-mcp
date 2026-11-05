@@ -3,7 +3,7 @@
 Author: qa-engineer, 4 Nov 2026. Written before any M3 build commit (freeze rule). Scope and rulings: `docs/control-plane/M3_PLAN.md` (approved 4 Nov 2026; founder rulings 1, 10, 13 at the end). Market check: `docs/COMPETITIVE_CHECK_2026-11-04.md` (local, not committed; cited per ruling 14).
 
 - **Frozen at:** `360f4d5` (M3 plan approved). M2 is done (`M2_DONE.md`, gate approved 4 Nov at `67533cc`).
-- **Companions:** `M3_FROZEN_MANIFEST.sha256` (203 tracked files under `tests/`, `ee/tests/`, `ee/web/tests/` plus the four named files, sha256 of the LF git content so `sha256sum -c` passes on the Linux CI checkout), `M3_BASELINE_NODEIDS.txt` (2467 root ids, generated from Linux `python:3.12` with pytest 9.2.0), `M3_BASELINE_EE_NODEIDS.txt` (936 ee ids), `M3_BASELINE_WEB_NODEIDS.txt` (92 web ids from `vitest run --reporter=json`).
+- **Companions:** `M3_FROZEN_MANIFEST.sha256` (211 tracked files under `tests/`, `ee/tests/`, `ee/web/tests/` plus the four named files, sha256 of the LF git content so `sha256sum -c` passes on the Linux CI checkout), `M3_T0A_MANIFEST.sha256` (203-line seal of the T0a manifest, pinned by `test_m3_manifest_seal.py`), `M3_BASELINE_NODEIDS.txt` (2542 root ids, generated from Linux `python:3.12` with pytest 9.2.0), `M3_BASELINE_EE_NODEIDS.txt` (1026 ee ids), `M3_BASELINE_WEB_NODEIDS.txt` (92 web ids from `vitest run --reporter=json`).
 
 ## 1. Scope and rulings pointer
 
@@ -13,9 +13,16 @@ M3 builds the web app a design partner can operate alone, three backend items th
 
 ### 2.1 Manifest rules
 
-`M3_FROZEN_MANIFEST.sha256` holds the sha256 of the LF content for every tracked file under `tests/`, `ee/tests/` and `ee/web/tests/`, plus four named files: `ee/deploy/m2_gate.py`, `ee/deploy/demo.py`, `docs/control-plane/M2_BASELINE.md`, `docs/control-plane/M2_DEMO.md`. The CRLF-to-LF conversion matches M2's approach: hashes are of the LF git blob content, and `sha256sum -c` runs on the Linux CI checkout where files are already LF on disk. A Windows working copy has CRLF and cannot run `sha256sum -c` directly. Total: 203 entries (112 under `tests/`, 72 under `ee/tests/`, 11 under `ee/web/tests/`, 4 named files, plus the 4 new M3 T0a files: `tests/m3_pending.py`, `ee/tests/m3_pending.py`, `ee/web/tests/m3_pending.ts`, `tests/unit/test_m3_t0a_freeze.py`).
+`M3_FROZEN_MANIFEST.sha256` holds the sha256 of the LF content for every tracked file under `tests/`, `ee/tests/` and `ee/web/tests/`, plus four named files: `ee/deploy/m2_gate.py`, `ee/deploy/demo.py`, `docs/control-plane/M2_BASELINE.md`, `docs/control-plane/M2_DEMO.md`. The CRLF-to-LF conversion matches M2's approach: hashes are of the LF git blob content, and `sha256sum -c` runs on the Linux CI checkout where files are already LF on disk. A Windows working copy has CRLF and cannot run `sha256sum -c` directly. Total: 211 entries (117 under `tests/`, 78 under `ee/tests/`, 12 under `ee/web/tests/`, 4 named files; includes the 4 M3 T0a files and 8 new tests-first files).
 
 Changes to frozen files require a founder row in this document's section 3 (named exceptions), the same rule as M2.
+
+**How the manifest grows (one rule, 5 Nov 2026):**
+
+1. **Sealed set.** `M3_T0A_MANIFEST.sha256` is the 203-line manifest as committed at T0a (`c15aba3`). A line in it changes only by a founder row. `tests/unit/test_m3_manifest_seal.py` pins the seal's own sha256 and asserts every sealed line is unchanged in `M3_FROZEN_MANIFEST.sha256`.
+2. **Tests-first commit.** A task's tests-first commit adds its new test files, appends their manifest lines and appends their node ids to the node-id lists, in that one commit. Adding lines needs no founder row.
+3. **Build commit.** The build may remove only the strict-xfail markers from that task's own new test files, and that same commit updates only those files' manifest lines. Security or the orchestrator checks that the diff of each such file is marker lines only. Any other edit to a committed test file is a frozen change and needs a founder row.
+4. **Generation.** Manifest hashes are of LF content. The root node-id list is generated on Linux `python:3.12` with the pytest version CI installs, so the freeze test equals CI.
 
 ### 2.2 CI `sha256sum -c` step per job
 
@@ -48,13 +55,13 @@ Enforcement test: `TestCINodeIdSteps` in `test_m3_t0a_freeze.py` (2 nodes) parse
 
 | List | File | Count | Source |
 |---|---|---|---|
-| Root | `M3_BASELINE_NODEIDS.txt` | 2467 | Linux `python:3.12` container, `pytest -q --collect-only -p no:logging tests/`, sorted |
-| EE | `M3_BASELINE_EE_NODEIDS.txt` | 936 | Linux `python:3.12` container, `pytest -q --collect-only -p no:logging ee/tests/`, sorted |
+| Root | `M3_BASELINE_NODEIDS.txt` | 2542 | Linux `python:3.12` container, `pytest -q --collect-only -p no:logging tests/`, sorted |
+| EE | `M3_BASELINE_EE_NODEIDS.txt` | 1026 | Linux `python:3.12` container, `pytest -q --collect-only -p no:logging ee/tests/`, sorted |
 | Web | `M3_BASELINE_WEB_NODEIDS.txt` | 92 | `vitest run --reporter=json` in `ee/web`, paths prefixed `ee/web/tests/` |
 
-Root count: 2467 ids = 2446 collected before T0a (the 4 Nov run: 2438 passed + 7 skipped + 1 xfailed) + 21 in `test_m3_t0a_freeze.py` (15 original + 4 CI manifest step checks + 2 CI node-id equality step checks). The root node-id file is generated from a Linux `python:3.12` container with `pytest>=9.2.0` to match CI. Pytest 9.2.0 truncates very long parametrize IDs (`cmd1` instead of the full 4100-word string); the Windows venv must use pytest >= 9.2.0 for the node-id check to match.
+Root count: 2542 ids = 2467 at T0a + 75 new (9 in `test_m3_manifest_seal.py`, 17 in `test_m3_t3_signer.py`, 49 in `test_m3_t9a_fetch_decisions.py`). The root node-id file is generated from a Linux `python:3.12` container with `pytest>=9.2.0` to match CI.
 
-EE count: 936 ids = 933 passed + 3 skipped in the 4 Nov run. No ee test was added. Verified identical on py3.12 and py3.15 in Docker.
+EE count: 1026 ids = 936 at T0a + 90 new (20 in `test_m3_t1_admin_reads.py`, 2 in `test_m3_t1_record_hash.py`, 29 in `test_m3_t3_proposals.py`, 8 in `test_m3_t3_csrf_catalog.py`, 31 in `test_m3_t5_pilot.py`). Generated from Linux `python:3.12` container.
 
 ### Founder rows (changes to the frozen list)
 
@@ -131,21 +138,21 @@ Node ids are "pending" where no test exists yet. They are fixed at the task's te
 
 | # | Threat | Mitigation | Test task | Node id |
 |---|---|---|---|---|
-| 38 | Admin reads leak across tenants or by id guessing | FORCE RLS, org scope, uniform 404, cursor tokens bound to org | T1 | pending |
-| 39 | Enrollment code shown to the wrong user, logged or cached | Operator-only route, fresh session, shown once, `no-store`, never in `admin_audit` payloads or client storage | T3, T2 | pending |
-| 40 | Page shows one diff, the signer signs another | CLI computes its own diff from the bytes; page and CLI show the proposal hash; an approval has exactly one signature and is verified at the route; `approve-change` verifies the base row and runs `loosened` locally | T3, T2 | pending |
-| 41 | Forged, single, proposer, stale-base or wrong-registry approval published | D2.2 with the connector's code; registry from the server's own verified chain; unknown fields refused at proposal; stale base refused at approval and at publish | T4 | pending |
+| 38 | Admin reads leak across tenants or by id guessing | FORCE RLS, org scope, uniform 404, cursor tokens bound to org | T1 | `test_m3_t1_admin_reads::test_foreign_org_devices_404`, `::test_foreign_org_bundles_404`, `::test_cursor_bound_to_org`, `::test_no_session_devices_401`, `::test_non_member_refused`, `::test_guard_rls_catalog_unchanged` |
+| 39 | Enrollment code shown to the wrong user, logged or cached | Operator-only route, fresh session, shown once, `no-store`, never in `admin_audit` payloads or client storage | T3, T2 | `test_m3_t3_proposals::test_code_second_read_404_and_no_store_header`, `::test_code_value_absent_from_admin_audit`, `test_m3_t1_admin_reads::test_codes_list_status_only` |
+| 40 | Page shows one diff, the signer signs another | CLI computes its own diff from the bytes; page and CLI show the proposal hash; an approval has exactly one signature and is verified at the route; `approve-change` verifies the base row and runs `loosened` locally | T3, T2 | `test_m3_t3_proposals::test_proposal_has_hash_and_diff`, `test_m3_t3_signer::test_approve_change_signs_policy_change_v1`, `::test_approve_change_diff_from_local_bytes`, `::test_approval_exactly_one_signature` |
+| 41 | Forged, single, proposer, stale-base or wrong-registry approval published | D2.2 with the connector's code; registry from the server's own verified chain; unknown fields refused at proposal; stale base refused at approval and at publish | T4 | `test_m3_t3_proposals::test_propose_unknown_fields_refused`, `::test_proposer_approval_refused`, `::test_stale_base_refused_at_approval`, `::test_stale_base_refused_at_publish`, `::test_publisher_not_among_approvals` (T4 items pending) |
 | 42 | Evidence pack passed off as root-verified | Dedicated `evidence_signer_key` and tag; `--expect-root` mandatory; verifier separates root-verified items (registry chain, bundles, change and remote approvals, device checkpoints) from the server's word (audit rows, alerts, ack) | T7 | pending |
-| 43 | Pilot started with demo credentials, internal TLS or the direct-publish flag | `pilot.sh` refuses the demo profile; api refuses to start with the flag under pilot | T5 | pending |
-| 44 | Backup leaks keys or restores a torn state | One encrypted archive of `pg-data` and `secrets/`; key off the VM; T10 before-and-after asserts; upgrade refuses rows a connector would refuse and older signed tags; `restore` needs the recorded sha256; `PILOT.md` lists what a restore rewinds | T5, T10 | pending |
+| 43 | Pilot started with demo credentials, internal TLS or the direct-publish flag | `pilot.sh` refuses the demo profile; api refuses to start with the flag under pilot | T5 | `test_m3_t5_pilot::TestPilotMergedConfigNoDemo::test_no_demo_service`, `::TestPilotShRefusesDemo::test_pilot_sh_refuses_demo_profile`, `::TestPilotMergedConfigNoDemo::test_no_agg_allow_direct_publish`, `::TestPilotMergedConfigApiProfile::test_api_refuses_to_start_with_direct_publish_under_pilot` |
+| 44 | Backup leaks keys or restores a torn state | One encrypted archive of `pg-data` and `secrets/`; key off the VM; T10 before-and-after asserts; upgrade refuses rows a connector would refuse and older signed tags; `restore` needs the recorded sha256; `PILOT.md` lists what a restore rewinds | T5, T10 | pending (T10 items pending) |
 | 45 | Download URL carries a bearer | Same-origin cookie plus CSRF header via fetch and blob | T8 | pending |
 | 46 | Forged, replayed or flooding stop (T11) | Registry-key signature, `may_sign` row, nonce, 24 h cap, rate limit per key, audited | T11 | pending |
 | 47 | Release from quarantine by one person or by the server (T11) | Release is a two-CLI-user loosening bundle naming the stop id | T11 | pending |
-| 48 | CSRF on session writes (codes and revoke POSTs check no header today) | `X-CSRF-Token` on every session POST and DELETE; catalog test over `x-agg-rbac` | T3 | pending |
+| 48 | CSRF on session writes (codes and revoke POSTs check no header today) | `X-CSRF-Token` on every session POST and DELETE; catalog test over `x-agg-rbac` | T3 | `test_m3_t3_csrf_catalog::test_csrf_catalog_is_non_empty_and_includes_named_routes`, `::test_enrollment_codes_no_csrf_403`, `::test_devices_revoke_no_csrf_403`, `::test_untagged_post_delete_routes_in_allowlist` |
 | 49 | Script or injected markup rendered in the page; secrets reach the browser | Text rendering with rule 7 escaping; grep test; D1.3 never-rendered list; server strips `stdout`/`stderr` | T2, T8 | pending |
 | 50 | Malicious or torn upgrade | Verified release tag signature, not sha256, backup before migrate, downgrade refused, `npm ci --ignore-scripts` | T10 | pending |
-| 51 | Keycloak admin exposed on the public name | Secret-file admin password, admin paths unrouted, brute-force protection, own DB role | T5 | pending |
-| 52 | `doctor` bundle leaks secrets | Redaction list with a planted-secret test | T5 | pending |
+| 51 | Keycloak admin exposed on the public name | Secret-file admin password, admin paths unrouted, brute-force protection, own DB role | T5 | `test_m3_t5_pilot::TestKeycloakPilotRealm::test_keycloak_admin_paths_unrouted_on_public_name`, `::test_brute_force_protection_on`, `::test_keycloak_own_postgres_role_and_db` |
+| 52 | `doctor` bundle leaks secrets | Redaction list with a planted-secret test | T5 | `test_m3_t5_pilot::TestDoctorRedaction::test_doctor_redaction_planted_fake_secret` |
 | 53 | Partner-supplied certificate: private key leaks, or the stack falls back to another issuer | Key is a separate secret mounted by `proxy` only, written by the rotation helper; `auto_https disable_certs` on every listener; PEM private-key rule in `doctor`; ADR 0013 "Partner-supplied certificate path" | T10 | pending |
 
 ## 5b. T9b SHOULD rows
