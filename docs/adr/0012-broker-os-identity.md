@@ -5,7 +5,7 @@ Status: Proposed (4 Nov 2026, lead-architect, M3 T0b). Design and spike only; th
 ## Next action
 
 1. Lead: freeze the spike numbers below, as ruled by security on 5 Nov 2026, with a hash, before the first run. They are thresholds, not results: Windows behaviour is unmeasured.
-2. Security (L) and lead: run the spike as task T15 in the 30 Nov slice. The founder approved it on 5 Nov 2026 (ruling T0b-4): a standard local Windows user for Sp1, a broker account only as a fallback if a virtual service account fails, and one elevation on the founder's laptop, which the founder performs when the numbers are frozen.
+2. Security (L) and lead: run the spike as task T15. The founder approved it on 5 Nov 2026 (ruling T0b-4): a standard local Windows user for Sp1, a broker account only as a fallback if a virtual service account fails, and one elevation on the founder's laptop, which the founder performs when the numbers are frozen.
 3. M4 build precondition, unchanged: at least 2 of 5 discovery calls confirm that agents hold prod or payment credentials on laptops (0 of 5 done today), plus the answers to the MDM question.
 
 ## Context: the same-user bypass, stated precisely
@@ -89,4 +89,4 @@ If built: local enforcement gains a boundary the hook cannot give, and custody c
 
 1. Ruled by security, 5 Nov 2026: the restricted-token rule (design item 3) is a requirement; the broker identity alone does not suffice.
 2. Ruled by security, 5 Nov 2026: the exit numbers stand as changed above (39 probes, 5 containment probes, 18 of 20 under the restricted token), as thresholds until measured.
-3. Resolved by the founder, 5 Nov 2026 (ruling T0b-4): the spike is M3_PLAN task T15, owners security (L) and lead, about 2 days (an estimate), 30 Nov slice, measured with no build. Gate item 10 judges its record.
+3. Resolved by the founder, 5 Nov 2026 (ruling T0b-4): the spike is M3_PLAN task T15, owners security (L) and lead, about 2 days (an estimate), measured with no build. Gate item 10 judges its record.
