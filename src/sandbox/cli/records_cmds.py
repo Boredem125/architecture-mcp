@@ -4,9 +4,53 @@ Heavy imports stay inside the command bodies per house convention.
 """
 from __future__ import annotations
 
+import re
 import time
 
 import click
+
+
+# R2-13: control characters to strip from untrusted alert fields before display.
+# Mirrors _LOCAL_CTRL in connector_cmds.py and _CTRL_CHARS in process.py.
+_ALERT_CTRL = frozenset(
+    set(range(0x00, 0x20))       # C0 including TAB, LF, CR
+    | set(range(0x80, 0xA1))     # C1 including NBSP
+    | {0x7F}                     # DEL
+    | {0x202A, 0x202B, 0x202C, 0x202D, 0x202E}  # bidi
+    | {0x202F}                   # NNBSP
+    | set(range(0xD800, 0xE000)) # surrogates
+)
+
+_HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
+
+
+def _sanitize_alert_field(text: str) -> str:
+    """Strip control chars from untrusted alert field for display (R2-13)."""
+    if not isinstance(text, str):
+        return "" if text is None else str(text)
+    return "".join(c for c in text if ord(c) not in _ALERT_CTRL)
+
+
+def _sanitize_alert_record(record: dict) -> dict:
+    """Sanitize all string fields in an alert record for display (R2-13).
+
+    Non-hex key_id values are redacted from both the key_id field and
+    anywhere they appear in the reason text."""
+    out = {}
+    for k, v in record.items():
+        if isinstance(v, str):
+            out[k] = _sanitize_alert_field(v)
+        else:
+            out[k] = v
+    # Redact non-hex key_id from reason text
+    kid = record.get("key_id")
+    if isinstance(kid, str) and kid and not _HEX_RE.match(kid):
+        safe_kid = "invalid"
+        out["key_id"] = safe_kid
+        reason = out.get("reason", "")
+        if isinstance(reason, str) and kid in reason:
+            out["reason"] = reason.replace(kid, safe_kid)
+    return out
 
 
 def _layout(path: str):
@@ -80,6 +124,7 @@ def alerts_cmd(path: str, lines: int) -> None:
         click.echo("No alerts.")
         return
     for a in rows:
+        a = _sanitize_alert_record(a)
         stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(a.get("ts", 0)))
         risk = f" risk={a['risk_score']}" if a.get("risk_score") is not None else ""
         sent = f"  [{a['webhook']}]" if a.get("webhook") else ""

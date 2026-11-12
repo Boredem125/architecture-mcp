@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import random
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
@@ -106,6 +107,15 @@ class SyncError(Exception):
     """Raised when a sync cycle encounters a non-recoverable error."""
 
 
+class SyncHTTPError(SyncError):
+    """A SyncError with an HTTP status code and stage (R2-10)."""
+
+    def __init__(self, message: str, *, status: int = 0, stage: str = "") -> None:
+        super().__init__(message)
+        self.status = status
+        self.stage = stage
+
+
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
 
@@ -187,10 +197,22 @@ def _default_connect(
 
     try:
         body_dict = json.loads(resp_body) if resp_body else {}
-    except (json.JSONDecodeError, ValueError):
-        body_dict = {}
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        # T9A-2: a dict subclass that equals {} but is distinguishable,
+        # so _fetch_decisions can classify it as unparseable_body.
+        body_dict = _UnparseableBody()
 
     return (status, body_dict, resp_headers)
+
+
+class _UnparseableBody(dict):
+    """Marker for an unparseable response body (T9A-2).
+
+    Equals ``{}`` for backward compatibility (frozen test
+    ``test_m2_t15b_transport.py``), but carries ``_unparseable``
+    so ``_fetch_decisions`` can tell it apart from a real empty dict.
+    """
+    _unparseable = True
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +262,11 @@ class SyncProcess:
 
         #: Escalations the server accepted (2xx) in the last cycle.
         self.uploaded_count: int = 0
+
+        #: T9a: set by _fetch_decisions when it fails; run_once raises after
+        #: later steps (bundle, escalations, audit) have run.
+        self._decisions_failed: bool = False
+        self._decisions_fail_reason: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -291,12 +318,34 @@ def run_once(sync: SyncProcess) -> None:
     """
     try:
         # ---- 1. Token refresh ----
-        _refresh_token(sync)
+        try:
+            _refresh_token(sync)
+        except (ConnectionError, OSError, SyncError) as exc:
+            # T9A-1: record the failure at stage=token for alerting
+            _record_stage_failure(sync, "token", exc)
+            raise
+        except Exception as exc:
+            # R2-10: http.client.HTTPException and other non-OS exceptions
+            _record_stage_failure(sync, "token", exc)
+            raise SyncError(f"token error: {exc}") from exc
 
         # ---- 2. Fetch and persist registry updates (D4-1 step-5: before decisions) ----
-        _fetch_registry(sync)
+        try:
+            _fetch_registry(sync)
+        except (ConnectionError, OSError, SyncError) as exc:
+            # T9A-1: record the failure at stage=registry for alerting
+            _record_stage_failure(sync, "registry", exc)
+            raise
+        except Exception as exc:
+            # R2-10: http.client.HTTPException and other non-OS exceptions
+            _record_stage_failure(sync, "registry", exc)
+            raise SyncError(f"registry error: {type(exc).__name__}") from exc
 
         # ---- 3. Fetch decisions and apply through apply_external ----
+        # T9a: _fetch_decisions never raises Exception.  It sets
+        # sync._decisions_failed on failure; run_once raises AFTER later
+        # steps so a bad route cannot suppress upload.
+        sync._decisions_failed = False
         _fetch_decisions(sync)
 
         # ---- 4. Fetch and verify next bundle (ADR 0001 A1) ----
@@ -307,6 +356,11 @@ def run_once(sync: SyncProcess) -> None:
 
         # ---- 6. Upload audit records and checkpoint (managed only, T11) ----
         _upload_audit(sync)
+
+        # T9a: if decisions failed, raise now (after upload steps ran).
+        # The outer except handler increments _consecutive_failures.
+        if sync._decisions_failed:
+            raise SyncError("decisions fetch failed (after later steps ran)")
 
         # Success: reset failure counter
         sync._consecutive_failures = 0
@@ -348,12 +402,57 @@ def run_loop(sync: SyncProcess) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _record_stage_failure(sync: SyncProcess, stage: str, exc: Exception) -> None:
+    """Record a transport failure at token or registry stage (T9A-1).
+
+    Uses the decision state's network counter so outages at any stage
+    count toward the 3-cycle threshold.  Never raises anything but
+    ``SyncError`` (frozen test: ``test_server_down_escalated_call_stays_pending``).
+    """
+    import ssl
+    try:
+        ds = _load_decision_state(sync)
+        # Classify the error
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, ssl.SSLCertVerificationError) or isinstance(exc, ssl.SSLCertVerificationError):
+            code = "tls_verify_failed"
+            immediate = True
+        elif isinstance(exc, SyncHTTPError):
+            # R2-10: use the HTTP status to classify, not string matching
+            http_status = exc.status
+            if http_status == 401:
+                code = "token_rejected"
+            elif http_status == 403:
+                code = "token_forbidden"
+            elif 400 <= http_status < 500:
+                code = "http_4xx"
+            elif 500 <= http_status < 600:
+                code = "http_5xx"
+            else:
+                code = "transport_refused"
+            immediate = True
+        elif isinstance(exc, SyncError):
+            code = "transport_refused"
+            immediate = True
+        else:
+            code = "network_error"
+            immediate = False
+        _note_decisions_failure(sync, ds, code, stage,
+                                exc_type=type(exc).__name__, immediate=immediate)
+        ds.save()
+    except Exception:  # noqa: BLE001 -- never raise non-SyncError from here
+        pass
+
+
 def _record_server_time(sync: SyncProcess, resp_headers: dict) -> None:
     """Record the server time from an HTTP Date header (F1, D4.3).
 
     The state is written to ``server_time_state.json`` through
     ``sync.state.write_server_time_state``, atomic temp-file + rename.
     ``apply_external`` reads it to compute measured skew.
+
+    Raises on write failure so the caller (e.g., ``_record_decisions_server_time``)
+    can alert.  Callers outside the decisions path catch it silently.
     """
     if sync.layout is None:
         return
@@ -371,8 +470,455 @@ def _record_server_time(sync: SyncProcess, resp_headers: dict) -> None:
         return
 
     from sandbox.connector.sync.state import write_server_time_state
-
     write_server_time_state(sync.layout, server_time, _time.time())
+
+
+# ---------------------------------------------------------------------------
+# T9a: decision alert and state helpers
+# ---------------------------------------------------------------------------
+
+# T9A-4: alert priority order (spec section 4)
+_ALERT_ORDER = {
+    "decision_apply_failed": 0,
+    "decisions_fetch_failed": 1,
+    "decision_refused": 2,
+    "decisions_malformed": 3,
+}
+
+#: Refusal code -> human-readable sentence (spec section 3).
+#: Sentences live in process.py, not approval.py.
+_REFUSAL_SENTENCES: dict[str, str] = {
+    "not_object": "The approval envelope is malformed",
+    "wrong_tag": "The approval envelope is malformed",
+    "bad_payload": "The approval envelope is malformed",
+    "missing_fields": "The signed payload lacks required fields",
+    "signature_count": "An approval must carry exactly one signature",
+    "key_id_mismatch": "The payload and signature name different keys",
+    "no_registry": "No verified registry is available",
+    "unknown_key": "This key is not in the latest pinned registry (unknown or removed)",
+    "wrong_key_kind": "Device and bundle-signer keys cannot approve",
+    "role_missing": "This key has neither the approver nor the admin role",
+    "user_mismatch": "The payload user differs from the registry entry",
+    "bad_decision": "The decision is neither approve nor deny",
+    "prod_refused": "Remote approval is not allowed on prod",
+    "registry_expired": "The pinned registry has expired",
+    "kind_not_allowed": "This key kind may not sign this",
+    "policy_sequence_mismatch": "The approval names another policy sequence",
+    "not_after_invalid": "The expiry is not a finite number",
+    "approval_expired": "The approval expired",
+    "nonce_invalid": "The nonce is missing or too long",
+    "bad_signature": "The signature does not verify",
+    "verify_raised": "The envelope could not be checked",
+    "nonce_replay": "This nonce was already used for another request or payload",
+    "operator_self_approval": "The device operator cannot approve their own request",
+    "fingerprint_unavailable": "The binding fingerprint is unavailable",
+    "request_mismatch": "The approval is bound to a different request",
+    "fingerprint_mismatch": "The approval is bound to a different fingerprint",
+    "command_mismatch": "The approval is bound to a different command",
+    "device_mismatch": "The approval is bound to a different device",
+    "project_mismatch": "The approval is bound to a different project",
+    "org_mismatch": "The approval is bound to a different org",
+    "nonces_corrupt": "The nonce store is corrupt, so approvals are refused and denies still apply",
+    "clock_skew": "Clock skew is over 2 minutes",
+    "no_server_time": "No server time has been measured, so approvals are refused",
+    "same_user": "This user already counted, and one person counts once",
+    "same_identity": "This identity already counted",
+    "not_dual_eligible": "The registry version that added this key had fewer than 2 admin signatures, so it cannot count toward dual control",
+    "no_verified_state": "This device has no verified state, operator or device id, so remote approvals are refused",
+    "record_ahead_of_bundle": "The request is newer than this device policy",
+    "no_approvals_counted": "No approval counted",
+    "unknown_request": "This device does not hold this request",
+    "record_changed": "The pending record changed between read and claim",
+    "script_unbound": "The script content is not bound",
+    "script_preview_not_shown": "The script preview was not shown before approval",
+    "request_id_refused": "The request was refused",
+}
+
+# C0 (including TAB, LF, CR), C1 controls (including NBSP U+00A0),
+# DEL, bidi controls, surrogates.
+# Spec section 5: strip all C0, C1, DEL, NBSP, NNBSP and bidi from untrusted text.
+_CTRL_CHARS = frozenset(
+    set(range(0x00, 0x20))       # All C0 including TAB(09), LF(0A), CR(0D)
+    | set(range(0x80, 0xA1))     # C1 including NBSP (U+00A0)
+    | {0x7F}                     # DEL
+    | {0x202A, 0x202B, 0x202C, 0x202D, 0x202E}  # bidi
+    | {0x2066, 0x2067, 0x2068, 0x2069}            # bidi isolates
+    | {0x200E, 0x200F}                             # LRM / RLM
+    | {0x061C}                                     # ALM
+    | {0x202F}                                     # NNBSP
+    | set(range(0xD800, 0xE000))                   # surrogates
+)
+_SERVER_TEXT_CAP = 200
+_SERVER_TEXT_RAW_CAP = 4096
+_KEY_ID_EXPECTED_LENGTH = 64  # hex-encoded Ed25519 public key = 32 bytes = 64 hex chars
+
+
+def _valid_hex_key_id(kid: str) -> bool:
+    """Return True if kid is lowercase hex of the expected length."""
+    if not isinstance(kid, str):
+        return False
+    if len(kid) != _KEY_ID_EXPECTED_LENGTH:
+        return False
+    try:
+        int(kid, 16)
+    except ValueError:
+        return False
+    return kid == kid.lower()
+
+
+def _display_key_id(kid: str) -> str:
+    """Return a safe display form of a key_id: hex or 'invalid'.
+
+    Spec section 5: key id must be hex or prints 'invalid'.
+    Truncates valid hex to 12 chars for display.
+    """
+    if _valid_hex_key_id(kid):
+        return kid[:12]
+    return "invalid"
+
+
+def _sanitize_field(value: object) -> str:
+    """Sanitize untrusted text: strip C0, C1, DEL and bidi controls (H1).
+
+    Used on every server text, row field, or state value before it is
+    stored, displayed or alerted.  A non-string value is coerced.
+    """
+    if not isinstance(value, str):
+        if value is None:
+            return ""
+        value = str(value)
+    return "".join(c for c in value if ord(c) not in _CTRL_CHARS)
+
+
+def _safe_server_text(body: object) -> str:
+    """Extract, sanitize and cap server error text from a response body.
+
+    Order: cut to 4 KiB, strip C0/C1/DEL/bidi controls, scrub_text, cap 200.
+    A scrub failure drops the text entirely.  Only ``detail`` or ``error``
+    string fields are used.  Spec section 5 (T threat).
+    """
+    text = ""
+    if isinstance(body, dict):
+        candidate = body.get("detail") or body.get("error")
+        if isinstance(candidate, str):
+            text = candidate
+    if not text:
+        return ""
+    # Cut to raw cap first
+    text = text[:_SERVER_TEXT_RAW_CAP]
+    # Truncate at the first newline/CR to prevent fake-log-line injection
+    for _sep in ("\n", "\r"):
+        idx = text.find(_sep)
+        if idx >= 0:
+            text = text[:idx]
+    # Strip remaining control chars
+    text = "".join(c for c in text if ord(c) not in _CTRL_CHARS)
+    # Scrub secrets: import is safe (same package); a scrub failure drops text (R2-9)
+    from sandbox.connector.scrub import scrub_text as _scrub_fn
+    scrubbed = _scrub_fn(text)
+    text = scrubbed if isinstance(scrubbed, str) else ""
+    # Cap at 200
+    return text[:_SERVER_TEXT_CAP]
+
+
+def _record_decisions_server_time(sync: SyncProcess, hdrs: dict, ds) -> None:
+    """Record server time, alerting on failure (T9a).
+
+    Wraps ``_record_server_time`` so that an exception triggers a
+    ``decisions_fetch_failed`` / ``server_time_write_failed`` alert
+    through ``_decision_alert``.  Never raises.  The cycle continues:
+    approvals refuse by the skew rule.
+    """
+    try:
+        _record_server_time(sync, hdrs)
+    except Exception:  # noqa: BLE001
+        # Record the time failure alert. _note_decisions_failure does not
+        # set _decisions_failed for this code (T9A-8).
+        _note_decisions_failure(sync, ds, "server_time_write_failed", "decisions",
+                                immediate=True,
+                                sentence="server time state write failed")
+
+
+def _load_decision_state(sync: SyncProcess):
+    """Load or create the decision state for this cycle.
+
+    Never raises: a corrupt state file means empty (T9A-5).
+    When ``layout`` is None, returns a no-op stub that writes nothing (R2-8).
+    """
+    from sandbox.connector.sync.decision_state import DecisionState, NullDecisionState
+    if sync.layout is None:
+        return NullDecisionState()
+    logs_dir = sync.layout.root / ".sandbox" / "logs"
+    return DecisionState(logs_dir)
+
+
+def _note_decisions_failure(
+    sync: SyncProcess,
+    ds,
+    code: str,
+    stage: str,
+    *,
+    exc_type: str = "",
+    immediate: bool = False,
+    sentence: str = "",
+) -> None:
+    """Record a transport-level decisions failure.
+
+    Network errors (code ``network_error``) use a 3-cycle counter before
+    alerting.  TLS, transport, SyncError and HTTP errors alert immediately.
+    Sets ``sync._decisions_failed``.
+    """
+    import logging
+    _log = logging.getLogger(__name__)
+
+    # server_time_write_failed must not fail the cycle (T9A-8):
+    # approvals refuse by the skew rule, cycle continues OK.
+    if code != "server_time_write_failed":
+        sync._decisions_failed = True
+
+    if code == "network_error" and not immediate:
+        count = ds.note_net_failure()
+        _log.info("decisions fetch network_error at %s (%d in a row)", stage, count)
+        from sandbox.connector.sync.decision_state import DECISIONS_NET_ALERT_AFTER
+        if count < DECISIONS_NET_ALERT_AFTER:
+            return
+        _decision_alert(
+            sync, ds, "decisions_fetch_failed", code,
+            reason=f"decisions not fetched for {count} consecutive cycles: "
+                   f"network_error at {stage} ({exc_type})",
+            stage=stage, count=count,
+        )
+    else:
+        desc = sentence if sentence else exc_type
+        reason = f"decisions not fetched: {code} at {stage}"
+        if desc:
+            reason += f": {desc}"
+        _decision_alert(
+            sync, ds, "decisions_fetch_failed", code,
+            reason=reason, stage=stage,
+        )
+
+
+def _decision_alert(
+    sync: SyncProcess,
+    ds,
+    event: str,
+    code: str,
+    *,
+    reason: str = "",
+    stage: str = "",
+    status_code: int | None = None,
+    rid: str = "",
+    key_id: str = "",
+    count: int = 0,
+    queue_state: str = "",
+) -> None:
+    """Write a decision alert and an audit record (T9a, spec section 2).
+
+    Respects dedupe, per-cycle and per-hour caps from the decision state.
+    The alert path sits after the verdict; nothing reads the state file
+    to decide.
+    """
+    # Build dedupe key
+    if rid and key_id:
+        dedupe_key = (event, rid, code, key_id)
+    elif rid:
+        dedupe_key = (event, rid, code)
+    elif stage:
+        dedupe_key = (event, stage, str(status_code or ""), code)
+    else:
+        dedupe_key = (event, code)
+
+    entry = ds.note(dedupe_key, reason=reason)
+
+    # Decide whether to alert (T9A-4: same key later = no alert, no audit)
+    should = ds.should_alert(dedupe_key)
+    is_realert = entry.get("alerted", False) and should
+
+    if not should:
+        # Same key, not yet past re-alert window: no alert, no audit (T9A-4)
+        return
+
+    record = {
+        "event": event,
+        "reason_code": code,
+        "reason": reason,
+        "tool": "sync",
+        "ts": time.time(),
+    }
+    if stage:
+        record["stage"] = stage
+    if status_code is not None:
+        record["status"] = status_code
+    if rid:
+        record["request_id"] = rid
+    if key_id:
+        record["key_id"] = _sanitize_field(key_id)
+    if count:
+        record["count"] = count
+    if queue_state:
+        record["queue_state"] = queue_state
+    repeats = ds.get_repeats(dedupe_key)
+    # A re-alert that is about to be written adds 1 (mark_realerted runs after)
+    if is_realert:
+        repeats += 1
+    if repeats > 0:
+        record["repeats"] = repeats
+
+    # H3: bound both audit and alert writes per cycle (spec section 4)
+    # R2-3: cap check BEFORE mark_realerted so a capped re-alert does not
+    # reset last_alerted (which would silence the next window too).
+    if not ds.may_alert():
+        ds.record_suppressed()
+        return
+
+    # R2-4: audit and alert: only mark alerted on successful write
+    ok = _audit_decision_record(sync, record)
+    _emit_decision_alert(sync, record)
+    if ok:
+        if is_realert:
+            ds.mark_realerted(dedupe_key)
+        ds.mark_alerted(dedupe_key)
+        ds.record_alert()
+
+
+def _audit_decision_record(sync: SyncProcess, record: dict) -> bool:
+    """Write an audit record for a decision event. Returns True on success."""
+    if sync.layout is None:
+        return True
+    try:
+        from sandbox.connector.audit import FolderAudit
+        fa = FolderAudit(sync.layout.audit_dir, session_id="sync")
+        fa.append(record)
+        return True
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).error("decision audit append failed")
+        return False
+
+
+def _emit_decision_alert(sync: SyncProcess, record: dict) -> None:
+    """Write a decision alert through the alerts path."""
+    if sync.layout is None:
+        return
+    try:
+        from sandbox.connector.alerts import emit
+        emit(sync.layout, "sync", record)
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).error("decision alert emit failed")
+
+
+def _audit_decision_outcome_deduped(sync: SyncProcess, ds, rid: str, result: dict) -> None:
+    """Audit the outcome of ``apply_external``, deduped by (status, approvals, reason_codes).
+
+    ``sync_decision_applied`` is written only on a change (T9A-4).
+    ``executed`` and ``denied`` are never suppressed.  Never raises.
+    """
+    if sync.layout is None:
+        return
+    status = result.get("status", "unknown")
+
+    # Build outcome signature for dedupe
+    approvals_count = result.get("approvals")
+    refusals = result.get("refusals", [])
+    reason_codes = sorted({r.get("code", "") for r in refusals if r.get("code")})
+    reason_code = result.get("reason_code")
+
+    outcome_key = f"sync_decision_applied:{rid}"
+    outcome_sig = f"{status}:{approvals_count}:{reason_codes}:{reason_code}"
+
+    # Check if outcome changed since last record
+    entry = ds._entries.get(outcome_key)
+    # R2-6: executed and denied are never suppressed by dedupe
+    if status not in ("executed", "denied"):
+        if entry is not None and entry.get("outcome_sig") == outcome_sig:
+            # No change: skip audit (T9A-4)
+            return
+
+    record = {
+        "event": "sync_decision_applied",
+        "request_id": rid,
+        "status": status,
+        "ts": time.time(),
+    }
+    if approvals_count is not None:
+        record["approvals"] = approvals_count
+    if reason_codes:
+        record["reason_codes"] = reason_codes
+    if reason_code:
+        record["reason_code"] = reason_code
+
+    # R2-4: write the audit record FIRST; only mark as recorded on success
+    ok = _audit_decision_record(sync, record)
+    if ok:
+        ds._entries[outcome_key] = {
+            "outcome_sig": outcome_sig,
+            "last_seen": time.time(),
+            "count": 1,
+            "alerted": True,
+            "first_seen": time.time(),
+            "repeats": 0,
+        }
+
+
+def _emit_suppression_alert(sync: SyncProcess, ds) -> None:
+    """Emit a single decision_alerts_suppressed alert per hour (T9A-4)."""
+    suppression_key = ("decision_alerts_suppressed", "cap_exceeded")
+    if not ds.should_alert(suppression_key):
+        return
+    count = ds.suppressed_this_hour
+    record = {
+        "event": "decision_alerts_suppressed",
+        "reason_code": "cap_exceeded",
+        "reason": f"{count} decision alert(s) suppressed this hour",
+        "tool": "sync",
+        "ts": time.time(),
+        "count": count,
+    }
+    _audit_decision_record(sync, record)
+    _emit_decision_alert(sync, record)
+    ds.note(suppression_key)
+    ds.mark_alerted(suppression_key)
+
+
+def _classify_row_problem(row: dict) -> str:
+    """Classify why a row's envelope could not be rebuilt.
+
+    Pure classification: no I/O, no exceptions, no try/except.
+    """
+    payload_raw = row.get("signed_payload") or row.get("payload")
+    if payload_raw is None:
+        return "payload_unusable"
+    if isinstance(payload_raw, str):
+        # Check if it's valid JSON without try/except (use a helper)
+        parsed = _safe_json_loads(payload_raw)
+        if parsed is None:
+            return "payload_unusable"
+    sig = row.get("sig") or row.get("signature") or ""
+    key_id = row.get("key_id", "")
+    if not sig and not key_id:
+        sigs = row.get("signatures", [])
+        if not isinstance(sigs, list) or not sigs:
+            return "signature_missing"
+        s0 = sigs[0]
+        if not isinstance(s0, dict):
+            return "signature_missing"
+        sig = s0.get("sig", "")
+    if not sig:
+        return "signature_missing"
+    return "payload_unusable"
+
+
+def _safe_json_loads(text: str):
+    """Parse JSON, returning None on failure (no exception).
+
+    Catches ``RecursionError`` for deeply nested payloads (H2).
+    """
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        return None
 
 
 def _refresh_token(sync: SyncProcess) -> None:
@@ -409,9 +955,13 @@ def _refresh_token(sync: SyncProcess) -> None:
         token=None,
     )
     if status != 200:
-        raise SyncError(f"token refresh failed: HTTP {status}")
+        raise SyncHTTPError(f"token refresh failed: HTTP {status}",
+                            status=status, stage="token")
 
-    _record_server_time(sync, hdrs)
+    try:
+        _record_server_time(sync, hdrs)
+    except Exception:  # noqa: BLE001 -- write failure: skew rule applies
+        pass
 
     sync._token = body.get("token")
     expires_in = body.get("expires_in", 600)
@@ -434,8 +984,14 @@ def _fetch_registry(sync: SyncProcess) -> None:
     if status != 200:
         return
 
-    _record_server_time(sync, hdrs)
+    try:
+        _record_server_time(sync, hdrs)
+    except Exception:  # noqa: BLE001 -- write failure: skew rule applies
+        pass
 
+    # T9A-9: a non-dict 200 is a loud failure (not silently swallowed)
+    if not isinstance(body, dict):
+        raise SyncError("registry response is not an object")
     new_chain = body.get("registry")
     if not new_chain or not isinstance(new_chain, list):
         return
@@ -446,105 +1002,527 @@ def _fetch_registry(sync: SyncProcess) -> None:
 
 
 def _fetch_decisions(sync: SyncProcess) -> None:
-    """Poll for decisions (approvals/denies) from the server.
+    """Poll for decisions (approvals/denies) from the server (T9a).
+
+    **Never raises Exception.**  Must not catch BaseException.  On any
+    failure, sets ``sync._decisions_failed`` so ``run_once`` raises
+    *after* later steps (bundle, escalations, audit upload) have run.
 
     Downloads decisions from the server, groups them by request_id, and
     applies them through the existing ``apply_external`` path.  Pending
     escalations are **never** auto-approved here.  The approval path
     (``apply_external``) verifies signatures against the pinned registry.
+
+    Spec: T9A_SPEC.md sections 1-5.
     """
     import asyncio
+    import logging
+    import ssl
 
+    _log = logging.getLogger(__name__)
+
+    # Load persisted decision state (dedupe and caps).
+    ds = _load_decision_state(sync)
+    ds.begin_cycle()
+
+    # -- Transport --
     url = f"{sync.server_url}/api/v1/sync/decisions"
-    status, body, hdrs = sync._connect(
-        "GET", url, token=sync._token,
-    )
+    try:
+        status, body, hdrs = sync._connect(
+            "GET", url, token=sync._token,
+        )
+    except ssl.SSLCertVerificationError as exc:
+        _note_decisions_failure(sync, ds, "tls_verify_failed", "decisions",
+                                exc_type=type(exc).__name__, immediate=True)
+        ds.save()
+        return
+    except (ConnectionError, OSError) as exc:
+        # T9A-3: urllib wraps SSLCertVerificationError in URLError
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            _note_decisions_failure(sync, ds, "tls_verify_failed", "decisions",
+                                    exc_type=type(reason).__name__, immediate=True)
+            ds.save()
+            return
+        _note_decisions_failure(sync, ds, "network_error", "decisions",
+                                exc_type=type(exc).__name__)
+        ds.save()
+        return
+    except SyncError as exc:
+        _note_decisions_failure(sync, ds, "transport_refused", "decisions",
+                                exc_type=type(exc).__name__, immediate=True,
+                                sentence=str(exc))
+        ds.save()
+        return
+    except Exception as exc:  # noqa: BLE001
+        _note_decisions_failure(sync, ds, "transport_error", "decisions",
+                                exc_type=type(exc).__name__, immediate=True)
+        ds.save()
+        return
+
+    # -- Non-200 --
     if status != 200:
-        raise SyncError(f"decisions fetch failed: HTTP {status}")
+        try:
+            server_text = _safe_server_text(body)
+        except Exception:  # noqa: BLE001 -- scrub failure drops text
+            server_text = ""
+            _note_decisions_failure(
+                sync, ds, "scrub_failed", "decisions",
+                immediate=True, sentence="server text scrub failed",
+            )
+        if status == 401:
+            code = "token_rejected"
+            sync._token_expires = 0
+        elif status == 403:
+            code = "token_forbidden"
+            sync._token_expires = 0
+        elif 400 <= status < 500:
+            code = "http_4xx"
+        elif 500 <= status < 600:
+            code = "http_5xx"
+        elif 300 <= status < 400:
+            code = "http_3xx"
+        else:
+            code = "unexpected_status"
+        # R2-9: server text included for 4xx and 5xx as "(server says: <text>)",
+        # never for 3xx. The sentence is from _REFUSAL_SENTENCES, not type(code).__name__.
+        sentence = _REFUSAL_SENTENCES.get(code, code)
+        reason = f"decisions not fetched: HTTP {status} at decisions: {sentence}"
+        if server_text and 400 <= status < 600:
+            reason += f" (server says: {server_text})"
+        _decision_alert(
+            sync, ds, "decisions_fetch_failed", code,
+            reason=reason,
+            stage="decisions", status_code=status,
+        )
+        sync._decisions_failed = True
+        ds.save()
+        return
 
-    _record_server_time(sync, hdrs)
+    # -- 200: record server time --
+    _record_decisions_server_time(sync, hdrs, ds)
 
-    # Process decisions if the layout is available.
-    # Accept both {"decisions": [...]} (new API shape) and a bare list
-    # (backward compat with existing callers).
+    # Success on transport -> reset network counter
+    ds.reset_net_counter()
+
+    # T9A-2: detect unparseable body from _default_connect
+    if getattr(body, "_unparseable", False):
+        _decision_alert(
+            sync, ds, "decisions_malformed", "unparseable_body",
+            reason="decisions response malformed: unparseable_body: "
+                   "the response body is not valid JSON",
+        )
+        ds.save()
+        return
+
+    ds.clear_fetch_keys()
+
+    # -- Parse body --
+    _SENTINEL = object()
     if isinstance(body, list):
         decisions = body
     elif isinstance(body, dict):
-        decisions = body.get("decisions", [])
+        decisions = body.get("decisions", _SENTINEL)
+        if decisions is _SENTINEL:
+            # R2-7: dict without "decisions" key always alerts (no body guard).
+            # An empty {} is not one of the frozen empty shapes.
+            _decision_alert(
+                    sync, ds, "decisions_malformed", "decisions_key_missing",
+                    reason="decisions response malformed: decisions_key_missing: "
+                           "the response dict has no decisions key",
+                )
+            ds.save()
+            return
+        if not isinstance(decisions, list):
+            # decisions key present but not a list (null, int, str, dict)
+            _decision_alert(
+                sync, ds, "decisions_malformed", "decisions_not_list",
+                reason="decisions response malformed: decisions_not_list: "
+                       "the decisions field is not a list",
+            )
+            ds.save()
+            return
     else:
-        decisions = []
-    if not decisions or sync.layout is None:
+        _decision_alert(
+            sync, ds, "decisions_malformed", "not_object_or_list",
+            reason="decisions response malformed: not_object_or_list: "
+                   "the response body is neither a dict nor a list",
+        )
+        ds.save()
         return
 
-    # Group decisions by request_id and rebuild envelopes
-    from sandbox.connector.queue import valid_request_id
+    if not decisions or sync.layout is None:
+        if sync.layout is None and decisions:
+            _log.warning("_fetch_decisions: layout is None, skipping %d decisions",
+                         len(decisions))
+        # R2 Low: empty decisions on a 200 means no malformed rows; clear stale entries
+        ds.clear_malformed_keys()
+        ds.save()
+        return
 
+    # -- Process rows --
+    from sandbox.connector.queue import EscalationQueue, valid_request_id
+
+    queue = EscalationQueue(sync.layout)
+    bad_row_count = 0
+    bad_rid_count = 0
+    unknown_request_count = 0
     decisions_by_request: dict[str, list[dict]] = {}
+    pending_alerts: list[dict] = []  # Collected alerts, sorted and capped
+
     for row in decisions:
-        rid = row.get("request_id", "")
-        if not valid_request_id(rid):
+        if not isinstance(row, dict):
+            bad_row_count += 1
             continue
-        envelope = _rebuild_decision_envelope(row)
-        if envelope is not None:
-            decisions_by_request.setdefault(rid, []).append(envelope)
+
+        rid = row.get("request_id")
+        if not isinstance(rid, str) or not valid_request_id(rid):
+            bad_rid_count += 1
+            continue
+
+        # Validate envelope structure before checking local state:
+        # a malformed row is classified by its structural problem, not
+        # by whether the device holds the request.
+        envelope, rebuild_reason = _rebuild_envelope(row)
+        if envelope is None:
+            # Payload or signature unusable -- collect for sorted emit
+            pending_alerts.append({
+                "event": "decisions_malformed", "code": rebuild_reason,
+                "reason": f"1 decision row(s) dropped: {rebuild_reason}: "
+                          "the row has an unusable payload or signature",
+                "rid": rid,
+            })
+            continue
+
+        # Check local state: done or claimed -> silent skip (fixes E13)
+        # R2-6: executed/denied outcomes are never suppressed by dedupe,
+        # so re-audit them even when the request is already done.
+        local_status = queue.status(rid)
+        if local_status == "done":
+            outcome_key = f"sync_decision_applied:{rid}"
+            prev = ds._entries.get(outcome_key)
+            if prev is not None:
+                prev_sig = prev.get("outcome_sig", "")
+                prev_status = prev_sig.split(":")[0] if prev_sig else ""
+                if prev_status in ("executed", "denied"):
+                    _audit_decision_outcome_deduped(
+                        sync, ds, rid,
+                        {"status": prev_status,
+                         "approvals": prev_sig.split(":")[1] if ":" in prev_sig else None},
+                    )
+            continue
+        if local_status == "claimed":
+            continue
+        if local_status == "unknown":
+            unknown_request_count += 1
+            continue
+
+        decisions_by_request.setdefault(rid, []).append(envelope)
+
+    if bad_row_count > 0:
+        pending_alerts.append({
+            "event": "decisions_malformed", "code": "row_not_object",
+            "reason": f"{bad_row_count} decision row(s) dropped: row_not_object: "
+                      "the row is not an object",
+            "count": bad_row_count,
+        })
+
+    if bad_rid_count > 0:
+        pending_alerts.append({
+            "event": "decisions_malformed", "code": "request_id_invalid",
+            "reason": f"{bad_rid_count} decision row(s) dropped: request_id_invalid: "
+                      "the row has an invalid or missing request_id",
+            "count": bad_rid_count,
+        })
+
+    if unknown_request_count > 0:
+        pending_alerts.append({
+            "event": "decision_refused", "code": "unknown_request",
+            "reason": f"{unknown_request_count} decision(s) for requests this "
+                      "device does not hold",
+            "count": unknown_request_count,
+        })
 
     if not decisions_by_request:
+        # Still emit collected alerts (malformed rows, bad rids, unknown requests)
+        if pending_alerts:
+            pending_alerts.sort(key=lambda a: _ALERT_ORDER.get(a.get("event", ""), 9))
+            for pa in pending_alerts:
+                _decision_alert(
+                    sync, ds, pa["event"], pa["code"],
+                    reason=pa.get("reason", ""), rid=pa.get("rid", ""),
+                    key_id=pa.get("key_id", ""), count=pa.get("count", 0),
+                )
+            if ds.suppressed_this_hour > 0:
+                _emit_suppression_alert(sync, ds)
+        # R2 Low: clear malformed keys if this cycle had none
+        if not any(pa.get("event") == "decisions_malformed" for pa in pending_alerts):
+            ds.clear_malformed_keys()
+        ds.save()
         return
 
-    # Apply decisions through the existing apply_external path
+    # -- Apply decisions --
     from sandbox.connector.approval import apply_external
+    rids_to_clear: list[str] = []
 
     for rid, envelopes in decisions_by_request.items():
+        # R2-11: pre-check: empty pending file is request_id_refused.
+        # Non-empty corrupt files flow to apply_external which returns
+        # not_pending, then the pending_record_unreadable handler fires.
+        _pending_file = sync.layout.pending_dir / f"{rid}.json"
+        if _pending_file.exists():
+            try:
+                _pf_text = _pending_file.read_text(encoding="utf-8")
+                if not _pf_text.strip():
+                    pending_alerts.append({
+                        "event": "decision_refused", "code": "request_id_refused",
+                        "reason": f"{rid} refused: request_id_refused: "
+                                  f"the pending record is empty",
+                        "rid": rid,
+                    })
+                    continue
+            except OSError:
+                _decision_alert(
+                    sync, ds, "decision_refused", "request_id_refused",
+                    reason=f"{rid} refused: request_id_refused: "
+                           f"the pending record is unreadable",
+                    rid=rid,
+                )
+                continue
+
         try:
             result = asyncio.run(apply_external(
                 sync.layout, rid, envelopes,
                 clock=lambda: time.time(),
             ))
-            # Audit the outcome
-            try:
-                from sandbox.connector.audit import FolderAudit
-                audit = FolderAudit(sync.layout.audit_dir, session_id="sync")
-                audit.append({
-                    "event": "sync_decision_applied",
-                    "request_id": rid,
-                    "status": result.get("status", "unknown"),
-                    "ts": time.time(),
+        except Exception as exc:  # noqa: BLE001
+            q_status = queue.status(rid)
+            # If the record is still pending, the failure happened before
+            # execution (likely nonce save). Classify as nonce_save_failed.
+            if q_status == "pending":
+                pending_alerts.append({
+                    "event": "decision_apply_failed", "code": "nonce_save_failed",
+                    "reason": f"{rid} apply failed: nonce_save_failed: "
+                              "nonce persistence failed, nothing executes",
+                    "rid": rid,
                 })
-            except Exception:  # noqa: BLE001
-                pass
-        except Exception:  # noqa: BLE001
-            pass
+                continue
+            msg = (f"{rid} apply failed: apply_raised ({type(exc).__name__}), "
+                   f"record is {q_status}")
+            if q_status == "claimed":
+                msg += "; it will not run again, inspect by hand"
+            _decision_alert(
+                sync, ds, "decision_apply_failed", "apply_raised",
+                reason=msg, rid=rid, queue_state=q_status,
+            )
+            continue
+
+        result_status = result.get("status", "unknown")
+        result_refusals = result.get("refusals", [])
+        result_reason_code = result.get("reason_code")
+
+        # Audit the outcome only on a change of (status, approvals, reason_codes)
+        _audit_decision_outcome_deduped(sync, ds, rid, result)
+
+        # Defer clear_request to after refusal alerts are processed
+        # so that clear_request does not remove keys that refusal alerts
+        # are about to recreate via ds.note().
+        if result_status in ("executed", "denied", "not_pending"):
+            rids_to_clear.append(rid)
+
+        # Handle refusals from the verification step
+        for ref in result_refusals:
+            ref_code = ref.get("code", "unknown")
+            ref_kid_raw = ref.get("key_id", "")
+            ref_verified = ref.get("verified", False)
+            ref_uid = ref.get("user_id")
+            kid_display = _display_key_id(ref_kid_raw) if isinstance(ref_kid_raw, str) else "invalid"
+
+            # R2 Low: use real status, not always "awaiting_second"
+            display_status = result_status
+
+            # R2 Low: verify_raised includes the exception type name
+            sentence = _REFUSAL_SENTENCES.get(ref_code, "refused")
+            exc_type = ref.get("exc_type")
+            if ref_code == "verify_raised" and exc_type:
+                sentence = f"{sentence} ({exc_type})"
+
+            if ref_verified and ref_uid:
+                reason_line = (f"{rid} {display_status}: key {kid_display} "
+                               f"(user {ref_uid}) {ref_code}: "
+                               f"{sentence}")
+            else:
+                reason_line = (f"{rid} {display_status}: claimed key "
+                               f"{kid_display} {ref_code}: "
+                               f"{sentence}")
+
+            # R2-3: unverified refusal key is (kind, rid, code) -- no key_id
+            if ref_verified:
+                pa_key_id = ref_kid_raw
+            else:
+                pa_key_id = ""
+
+            pending_alerts.append({
+                "event": "decision_refused", "code": ref_code,
+                "reason": reason_line, "rid": rid,
+                "key_id": pa_key_id,
+                "verified": ref_verified,
+            })
+
+        # Handle request-level reason codes
+        if result_reason_code and result_status == "awaiting_second":
+            pending_alerts.append({
+                "event": "decision_refused", "code": result_reason_code,
+                "reason": f"{rid} awaiting_second: {result_reason_code}: "
+                          f"{_REFUSAL_SENTENCES.get(result_reason_code, 'refused')}",
+                "rid": rid,
+            })
+
+        # Handle apply failures returned as status
+        if result_status == "nonce_save_failed":
+            pending_alerts.append({
+                "event": "decision_apply_failed", "code": "nonce_save_failed",
+                "reason": f"{rid} apply failed: nonce_save_failed: "
+                          "nonce persistence failed, nothing executes",
+                "rid": rid,
+            })
+        elif result_status == "key_unavailable":
+            pending_alerts.append({
+                "event": "decision_apply_failed", "code": "key_unavailable",
+                "reason": f"{rid} apply failed: key_unavailable: "
+                          f"{result.get('reason', 'connector key not available')}",
+                "rid": rid,
+            })
+        elif result_status == "changed":
+            pending_alerts.append({
+                "event": "decision_refused", "code": "record_changed",
+                "reason": f"{rid} refused: record_changed: "
+                          "the pending record changed between read and claim",
+                "rid": rid,
+            })
+        elif result_status == "not_pending" and queue.status(rid) == "pending":
+            # T9A-8: pending_record_unreadable: queue says pending but apply says not
+            pending_alerts.append({
+                "event": "decision_apply_failed", "code": "pending_record_unreadable",
+                "reason": f"{rid} apply failed: pending_record_unreadable",
+                "rid": rid,
+            })
+        elif result_status in ("invalid_id", "not_pending"):
+            # R2-11: invalid_id must alert
+            pending_alerts.append({
+                "event": "decision_refused", "code": "request_id_refused",
+                "reason": f"{rid} refused: {result_status}: "
+                          f"{_REFUSAL_SENTENCES.get('request_id_refused', 'refused')}",
+                "rid": rid,
+            })
+        elif result_status == "refused":
+            reason_text = result.get("reason", "")
+            rc = result_reason_code or "request_id_refused"
+            if "script_unbound" in reason_text:
+                rc = "script_unbound"
+            elif "script preview" in reason_text:
+                rc = "script_preview_not_shown"
+            pending_alerts.append({
+                "event": "decision_refused", "code": rc,
+                "reason": f"{rid} refused: {rc}: {reason_text}",
+                "rid": rid,
+            })
+
+    # T9A-4: sort collected alerts by spec order; within decision_refused,
+    # verified first, then not yet alerted (R2-3).
+    pending_alerts.sort(key=lambda a: (
+        _ALERT_ORDER.get(a["event"], 9),
+        0 if a.get("verified") else 1,
+    ))
+
+    # T9A-6: count refusals per (rid, code) for status display.
+    # The alert dedupe key may collapse multiple refusals into one
+    # alert (R2-3: unverified refusals share a key), but the status
+    # display needs to know the total count for "+n more" truncation.
+    # Only create indexed entries when count > 1 (to avoid doubling
+    # single refusals with the dedup entry).
+    _refusal_counts: dict[str, int] = {}  # "rid:code" -> count
+    _refusal_reasons: dict[str, list[str]] = {}  # "rid:code" -> reasons
+    for pa in pending_alerts:
+        if pa.get("event") == "decision_refused" and pa.get("rid"):
+            _rk = f"{pa['rid']}:{pa['code']}"
+            _refusal_counts[_rk] = _refusal_counts.get(_rk, 0) + 1
+            _refusal_reasons.setdefault(_rk, []).append(pa.get("reason", ""))
+    for _rk, _cnt in _refusal_counts.items():
+        if _cnt > 1:
+            _parts = _rk.split(":", 1)
+            _rid_k, _code_k = _parts[0], _parts[1] if len(_parts) > 1 else ""
+            for idx in range(_cnt):
+                _reason = _refusal_reasons[_rk][idx] if idx < len(_refusal_reasons[_rk]) else ""
+                ds.note(
+                    ("decision_refused", _rid_k, _code_k, str(idx)),
+                    reason=_reason,
+                )
+
+    for pa in pending_alerts:
+        _decision_alert(
+            sync, ds, pa["event"], pa["code"],
+            reason=pa.get("reason", ""), rid=pa.get("rid", ""),
+            key_id=pa.get("key_id", ""), queue_state=pa.get("queue_state", ""),
+            count=pa.get("count", 0),
+        )
+
+    # T9A-4: clear request keys after refusal alerts are processed
+    # so clear_request does not remove keys that alerts just created.
+    for rid in rids_to_clear:
+        ds.clear_request(rid)
+
+    # R2 Low: clear malformed keys only when this cycle had no malformed rows.
+    # If the same bad row repeats, the key persists and dedup suppresses.
+    has_malformed = any(pa.get("event") == "decisions_malformed" for pa in pending_alerts)
+    if not has_malformed:
+        ds.clear_malformed_keys()
+
+    # Emit suppression alert if needed (at most once per hour)
+    if ds.suppressed_this_hour > 0:
+        _emit_suppression_alert(sync, ds)
+
+    ds.save()
 
 
-def _rebuild_decision_envelope(row: dict) -> dict | None:
+def _rebuild_envelope(row: dict) -> tuple[dict | None, str]:
     """Rebuild an agg/remote-approval/v1 envelope from a server decision row.
 
+    Returns ``(envelope, "")`` on success, ``(None, reason_code)`` on failure.
     The kind is fixed in code (never trust the server's kind column).
     The server's user_id column is ignored (comes from the registry).
+    No try/except: JSON parse uses ``_safe_json_loads``.
     """
     payload = row.get("signed_payload") or row.get("payload")
     if isinstance(payload, str):
-        try:
-            payload = json.loads(payload)
-        except (json.JSONDecodeError, ValueError):
-            return None
+        payload = _safe_json_loads(payload)
+        if payload is None:
+            return None, "payload_unusable"
     if not isinstance(payload, dict):
-        return None
+        return None, "payload_unusable"
     sig = row.get("sig") or row.get("signature") or ""
     key_id = row.get("key_id") or payload.get("key_id", "")
+    # H2: type-check key_id (non-string values must not reach display)
+    if not isinstance(key_id, str):
+        key_id = ""
+    # R2-1: do NOT sanitize key_id before sig check. The raw value must
+    # reach _verify_remote_approval so a control-char mismatch stays a
+    # mismatch. Sanitize for display only, never for lookup or verification.
+    if not isinstance(sig, str):
+        sig = ""
     if not sig or not key_id:
         sigs = row.get("signatures", [])
-        if isinstance(sigs, list) and sigs:
-            sig = sigs[0].get("sig", "")
-            key_id = sigs[0].get("key_id", key_id)
+        if isinstance(sigs, list) and sigs and isinstance(sigs[0], dict):
+            sig = sigs[0].get("sig", "") if isinstance(sigs[0].get("sig", ""), str) else ""
+            key_id = sigs[0].get("key_id", key_id) if isinstance(sigs[0].get("key_id", ""), str) else key_id
     if not sig:
-        return None
+        return None, "signature_missing"
     return {
         "kind": "agg/remote-approval/v1",  # fixed in code
         "sig_v": 1,
         "payload": payload,
         "signatures": [{"key_id": key_id, "alg": "ed25519", "sig": sig}],
-    }
+    }, ""
 
 
 def _fetch_bundle(sync: SyncProcess) -> None:
@@ -570,7 +1548,10 @@ def _fetch_bundle(sync: SyncProcess) -> None:
     url = f"{sync.server_url}/api/v1/sync/bundle?after={after}"
     status, body, hdrs = sync._connect("GET", url, token=sync._token)
 
-    _record_server_time(sync, hdrs)
+    try:
+        _record_server_time(sync, hdrs)
+    except Exception:  # noqa: BLE001 -- write failure: skew rule applies
+        pass
 
     if status == 204:
         return  # nothing to do

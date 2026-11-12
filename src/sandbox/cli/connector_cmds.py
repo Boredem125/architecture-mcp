@@ -430,7 +430,7 @@ def status_cmd(path: str, as_json: bool) -> None:
     managed = is_managed(layout)
     locked = is_locked(layout)
     if as_json:
-        click.echo(_json.dumps({
+        data = {
             "root": str(layout.root),
             "triggers": policy.triggers.model_dump(),
             "policy_version": version,
@@ -438,7 +438,14 @@ def status_cmd(path: str, as_json: bool) -> None:
             "pending": pending,
             "managed": managed,
             "locked": locked,
-        }, indent=2))
+        }
+        # T9a: additive top-level keys for managed workspaces
+        if managed:
+            ds_info = _decisions_status_info(layout)
+            if ds_info:
+                data["decisions"] = ds_info.get("decisions", {})
+                data["decisions_fetch"] = ds_info.get("decisions_fetch", {})
+        click.echo(_json.dumps(data, indent=2))
         return
 
     click.echo(f"Root:     {layout.root}")
@@ -448,9 +455,61 @@ def status_cmd(path: str, as_json: bool) -> None:
     click.echo(f"Managed:  {'yes' if managed else 'no'}")
     click.echo(f"Locked:   {'yes' if locked else 'no'}")
     click.echo(f"Pending:  {len(pending)}")
+    # T9a: load decision state for per-request refusals
+    ds_entries = {}
+    if managed:
+        ds_entries = _load_decision_state_entries(layout)
+    from sandbox.connector.sync.decision_state import MAX_REASONS_PER_REQUEST as _MAX_R
     for rec in pending:
-        dual = f"  [dual control {len(rec.get('approvals') or [])}/2]" if rec.get("requires_dual") else ""
+        rid = rec.get("request_id", "")
+        # R2-12: use approvals count from decision_state outcome when available
+        ds_approvals_count = 0
+        outcome_key = f"sync_decision_applied:{rid}"
+        outcome = ds_entries.get(outcome_key)
+        if isinstance(outcome, dict):
+            sig = outcome.get("outcome_sig", "")
+            if "awaiting_second" in sig:
+                parts_sig = sig.split(":")
+                if len(parts_sig) > 1:
+                    try:
+                        ds_approvals_count = max(0, int(parts_sig[1]))
+                    except (ValueError, TypeError):
+                        pass
+        local_approvals = len(rec.get("approvals") or [])
+        dual_count = max(local_approvals, ds_approvals_count)
+        dual = f"  [dual control {dual_count}/2]" if rec.get("requires_dual") else ""
         click.echo(f"  [{rec['request_id']}] {rec.get('command', '')}{dual}")
+        # T9a: show per-request refusals from decision state
+        # Show "N of 2 counted" from outcome when N > 0
+        if ds_approvals_count > 0:
+            click.echo(f"      awaiting_second: {ds_approvals_count} of 2 counted; a different approver must sign")
+        rid_refusals = []
+        for key, entry in ds_entries.items():
+            if not isinstance(key, str) or not isinstance(entry, dict):
+                continue
+            if f":{rid}:" in key or key.endswith(f":{rid}"):
+                parts_k = key.split(":")
+                event = parts_k[0] if parts_k else ""
+                code = parts_k[2] if len(parts_k) > 2 else (parts_k[-1] if len(parts_k) > 1 else "")
+                if event == "decision_refused" and code:
+                    rid_refusals.append((_sanitize_display(code), entry))
+                elif event == "decision_apply_failed" and code:
+                    click.echo(f"      apply failed: {_sanitize_display(code)}")
+        # T9A-6: cap at MAX_REASONS_PER_REQUEST, verified first
+        rid_refusals.sort(key=lambda x: (0 if x[1].get("verified") else 1, x[0]))
+        shown_r = 0
+        for code, entry in rid_refusals:
+            if shown_r >= _MAX_R:
+                remaining = len(rid_refusals) - _MAX_R
+                click.echo(f"      +{remaining} more")
+                break
+            reason = _sanitize_display(entry.get("reason", ""))
+            click.echo(f"      awaiting_second: {code}: {reason}")
+            shown_r += 1
+
+    # T9a: decisions fetch status (managed only)
+    if managed:
+        _show_decisions_status(layout, pending)
 
 
 def _enforced_runners(layout) -> list[str]:
@@ -462,6 +521,142 @@ def _enforced_runners(layout) -> list[str]:
         return list(policy.shell.allow_runners) if info.get("state") in ("approved", "drift") else []
     except Exception:  # noqa: BLE001
         return []
+
+
+def _sanitize_display(text: str) -> str:
+    """Strip C0, C1, DEL and bidi controls from untrusted text for display (H1)."""
+    if not isinstance(text, str):
+        return "" if text is None else str(text)
+    return "".join(c for c in text if ord(c) not in _LOCAL_CTRL)
+
+
+def _load_decision_state_safe(layout) -> dict:
+    """Load decision_state.json once, with type validation (T9A-5, T9A-6).
+
+    Returns ``{"entries": dict, "net_consecutive": int, ...}`` or empty
+    defaults on any error.  This is the single reader for all display paths.
+    """
+    import json as _j
+    state_path = layout.root / ".sandbox" / "logs" / "decision_state.json"
+    try:
+        raw = state_path.read_text(encoding="utf-8")
+        data = _j.loads(raw)
+    except (OSError, ValueError, RecursionError):
+        return {"entries": {}, "net_consecutive": 0}
+    if not isinstance(data, dict):
+        return {"entries": {}, "net_consecutive": 0}
+    entries = data.get("entries", {})
+    if not isinstance(entries, dict):
+        entries = {}
+    net = data.get("net_consecutive", 0)
+    if not isinstance(net, (int, float)) or isinstance(net, bool):
+        net = 0
+    return {"entries": entries, "net_consecutive": int(net),
+            "alerts_this_hour": data.get("alerts_this_hour", 0),
+            "hour_start": data.get("hour_start", 0.0),
+            "suppressed_this_hour": data.get("suppressed_this_hour", 0)}
+
+
+def _load_decision_state_entries(layout) -> dict:
+    """Load entries from decision_state.json."""
+    return _load_decision_state_safe(layout).get("entries", {})
+
+
+def _decisions_status_info(layout) -> dict:
+    """Read decision_state.json for the status display."""
+    state = _load_decision_state_safe(layout)
+    entries = state.get("entries", {})
+    net = state.get("net_consecutive", 0)
+    result = {"decisions": {}, "decisions_fetch": {}}
+    if net > 0:
+        result["decisions_fetch"]["status"] = f"fetch failed: network_error, {net} in a row"
+    # Collect per-request refusals by reading the reason field
+    for key, entry in entries.items():
+        if not isinstance(key, str) or not isinstance(entry, dict):
+            continue
+        parts = key.split(":")
+        if len(parts) >= 3 and parts[0] in ("decision_refused", "decision_apply_failed"):
+            rid = parts[1] if len(parts) > 1 else ""
+            code = parts[2] if len(parts) > 2 else parts[1]
+            if rid:
+                result["decisions"].setdefault(rid, []).append({
+                    "code": _sanitize_display(code),
+                    "count": entry.get("count", 1),
+                })
+    return result
+
+
+def _show_decisions_status(layout, pending: list) -> None:
+    """Display decisions status lines for managed workspaces (T9a).
+
+    Single reader: uses ``_load_decision_state_safe`` and stores fields
+    (code, rid, key_id, verified, reason) in entries.  Never parses a key.
+    """
+    from sandbox.connector.sync.decision_state import MAX_REASONS_PER_REQUEST
+
+    state = _load_decision_state_safe(layout)
+    entries = state.get("entries", {})
+    net = state.get("net_consecutive", 0)
+    if net > 0:
+        click.echo(f"  Decisions: fetch failed: network_error, {net} in a row")
+    # Show fetch-level and malformed entries
+    shown = set()
+    for key, entry in sorted(entries.items()):
+        if not isinstance(key, str) or not isinstance(entry, dict):
+            continue
+        parts = key.split(":")
+        if len(parts) < 2:
+            continue
+        event = parts[0]
+        if event == "decisions_fetch_failed":
+            stage = parts[1] if len(parts) > 1 else ""
+            code = parts[-1] if len(parts) > 2 else stage
+            line_key = f"fetch:{stage}:{code}"
+            if line_key not in shown:
+                reason = _sanitize_display(entry.get("reason", ""))
+                status_num = ""
+                if reason:
+                    # Extract HTTP status from reason if present
+                    import re as _re
+                    m = _re.search(r"HTTP (\d+)", reason)
+                    if m:
+                        status_num = f"HTTP {m.group(1)} at {stage}: "
+                    else:
+                        status_num = ""
+                click.echo(f"  Decisions: fetch failed: {status_num}{_sanitize_display(code)} at {_sanitize_display(stage)}")
+                shown.add(line_key)
+        elif event == "decisions_malformed":
+            code = parts[-1]
+            line_key = f"malformed:{code}"
+            if line_key not in shown:
+                click.echo(f"  Decisions: last response malformed: {_sanitize_display(code)}")
+                shown.add(line_key)
+    # Show claimed records (T9A-6: E10 fix)
+    from sandbox.connector.queue import EscalationQueue
+    queue = EscalationQueue(layout)
+    claimed_dir = layout.claimed_dir
+    if claimed_dir.is_dir():
+        for f in claimed_dir.iterdir():
+            if not f.name.endswith(".json"):
+                continue
+            rid = f.stem
+            reason_text = ""
+            for key, entry in entries.items():
+                if isinstance(entry, dict) and f":{rid}:" in key and "apply_raised" in key:
+                    reason_text = _sanitize_display(entry.get("reason", ""))
+                    break
+            if reason_text and "inspect by hand" in reason_text.lower():
+                click.echo(f"  Decisions: {_sanitize_display(rid)} apply failed, "
+                           f"record is claimed; it will not run again, inspect by hand")
+            elif reason_text and "apply_raised" in reason_text.lower():
+                click.echo(f"  Decisions: {_sanitize_display(rid)} apply failed, "
+                           f"record is claimed; it will not run again, inspect by hand")
+            elif queue.status(rid) == "claimed":
+                # R2-12: a merely claimed record is in progress, not failed
+                click.echo(f"  Decisions: {_sanitize_display(rid)} is claimed, "
+                           f"approval in progress")
+    # Per-request refusals for pending requests are shown in the pending
+    # section above; do not duplicate them here (T9A-6).
 
 
 def _describe_runners(layout) -> str:

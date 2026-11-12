@@ -41,6 +41,12 @@ _ALWAYS = {
     "audit_truncation_local": "audit_truncation_local",
     "audit_upload_failed": "audit_upload_failed",
     "server_head_mismatch": "server_head_mismatch",
+    # T9a: _fetch_decisions never swallows (five new decision kinds).
+    "decisions_fetch_failed": "decisions_fetch_failed",
+    "decisions_malformed": "decisions_malformed",
+    "decision_refused": "decision_refused",
+    "decision_apply_failed": "decision_apply_failed",
+    "decision_alerts_suppressed": "decision_alerts_suppressed",
 }
 # Escalations alert only when critical or dual control.
 _ESCALATIONS = {"shell_escalated", "tool_call_escalated", "escalate_redirect"}
@@ -87,6 +93,11 @@ def build(layout: FolderLayout, session_id: str, record: dict[str, Any], kind: s
     for sha_key in ("expected_sha256", "actual_sha256"):
         if record.get(sha_key):
             alert[sha_key] = record[sha_key]
+    # T9a: carry decision-specific fields through to the alert file.
+    for extra in ("repeats", "count", "stage", "queue_state", "key_id", "status"):
+        val = record.get(extra)
+        if val is not None and extra not in alert:
+            alert[extra] = val
     return alert
 
 
