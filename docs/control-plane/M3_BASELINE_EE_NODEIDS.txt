@@ -540,6 +540,131 @@ ee/tests/test_m3_t1_admin_reads.py::test_non_member_refused
 ee/tests/test_m3_t1_admin_reads.py::test_verify_per_project
 ee/tests/test_m3_t1_record_hash.py::test_changed_float_exponent_hash_mismatch
 ee/tests/test_m3_t1_record_hash.py::test_guard_correct_upload_lands
+ee/tests/test_m3_t1_security.py::test_guard_t1sec_alice_can_list_bundles
+ee/tests/test_m3_t1_security.py::test_guard_t1sec_server_ready
+ee/tests/test_m3_t1_security.py::test_t1_10_device_detail_fields
+ee/tests/test_m3_t1_security.py::test_t1_10_verify_response_fields
+ee/tests/test_m3_t1_security.py::test_t1_11_body_column_is_json_not_jsonb
+ee/tests/test_m3_t1_security.py::test_t1_11_exponent_changed_value_400
+ee/tests/test_m3_t1_security.py::test_t1_11_exponent_same_value_different_spelling_200
+ee/tests/test_m3_t1_security.py::test_t1_11_foreign_org_alerts_404
+ee/tests/test_m3_t1_security.py::test_t1_11_foreign_org_bundle_detail_404
+ee/tests/test_m3_t1_security.py::test_t1_11_foreign_org_codes_404
+ee/tests/test_m3_t1_security.py::test_t1_11_foreign_org_device_detail_404
+ee/tests/test_m3_t1_security.py::test_t1_11_foreign_org_export_404
+ee/tests/test_m3_t1_security.py::test_t1_11_foreign_org_verify_404
+ee/tests/test_m3_t1_security.py::test_t1_11_no_update_grant_on_sync_alerts
+ee/tests/test_m3_t1_security.py::test_t1_11_rls_force_on_all_route_tables
+ee/tests/test_m3_t1_security.py::test_t1_11_verification_check_constraint
+ee/tests/test_m3_t1_security.py::test_t1_11_verified_at_coupling
+ee/tests/test_m3_t1_security.py::test_t1_12_record_session_id_equal_allowed
+ee/tests/test_m3_t1_security.py::test_t1_12_record_session_id_mismatch_400
+ee/tests/test_m3_t1_security.py::test_t1_13_concurrent_upload_no_false_alert
+ee/tests/test_m3_t1_security.py::test_t1_13_duplicate_record_409_deterministic
+ee/tests/test_m3_t1_security.py::test_t1_14_partial_batch_nan_rolls_back
+ee/tests/test_m3_t1_security.py::test_t1_15_chain_length_type_400[1.0]
+ee/tests/test_m3_t1_security.py::test_t1_15_chain_length_type_400[list]
+ee/tests/test_m3_t1_security.py::test_t1_15_chain_length_type_400[object]
+ee/tests/test_m3_t1_security.py::test_t1_15_chain_length_type_400[string]
+ee/tests/test_m3_t1_security.py::test_t1_15_chain_length_type_400[true]
+ee/tests/test_m3_t1_security.py::test_t1_15_deep_nesting_400_not_500
+ee/tests/test_m3_t1_security.py::test_t1_16_row_limit_sets_flag
+ee/tests/test_m3_t1_security.py::test_t1_17_export_memory_bounded_behavioral
+ee/tests/test_m3_t1_security.py::test_t1_17_export_no_fetchall_uses_cursor
+ee/tests/test_m3_t1_security.py::test_t1_17_export_peak_memory
+ee/tests/test_m3_t1_security.py::test_t1_17_fetch_count_pinned
+ee/tests/test_m3_t1_security.py::test_t1_17_meta_line_reservation
+ee/tests/test_m3_t1_security.py::test_t1_17_verify_peak_memory
+ee/tests/test_m3_t1_security.py::test_t1_18_bad_session_id_400[>256]
+ee/tests/test_m3_t1_security.py::test_t1_18_bad_session_id_400[NUL]
+ee/tests/test_m3_t1_security.py::test_t1_18_bad_session_id_400[surrogate]
+ee/tests/test_m3_t1_security.py::test_t1_18_device_sessions_limited_with_truncated
+ee/tests/test_m3_t1_security.py::test_t1_18_hash_field_validation[previous_hash]
+ee/tests/test_m3_t1_security.py::test_t1_18_hash_field_validation[record_hash]
+ee/tests/test_m3_t1_security.py::test_t1_18_repeated_refused_uploads_one_alert
+ee/tests/test_m3_t1_security.py::test_t1_18_verify_gaps_limited_with_truncated
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_org_part[alerts]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_org_part[bundles]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_org_part[devices]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_org_part[enrollment-codes]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[alerts-braces]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[alerts-no-hyphens]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[alerts-non-ascii-digits]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[alerts-underscore]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[alerts-urn:uuid:]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[bundles-braces]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[bundles-no-hyphens]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[bundles-non-ascii-digits]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[bundles-underscore]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[bundles-urn:uuid:]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[devices-braces]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[devices-no-hyphens]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[devices-non-ascii-digits]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[devices-underscore]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[devices-urn:uuid:]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[enrollment-codes-braces]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[enrollment-codes-no-hyphens]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[enrollment-codes-non-ascii-digits]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[enrollment-codes-underscore]
+ee/tests/test_m3_t1_security.py::test_t1_19_bad_cursor_position[enrollment-codes-urn:uuid:]
+ee/tests/test_m3_t1_security.py::test_t1_1_absent_body_refused
+ee/tests/test_m3_t1_security.py::test_t1_1_non_dict_body_refused
+ee/tests/test_m3_t1_security.py::test_t1_20_since_until_edge_never_500[comma]
+ee/tests/test_m3_t1_security.py::test_t1_20_since_until_edge_never_500[offset]
+ee/tests/test_m3_t1_security.py::test_t1_20_since_until_edge_never_500[week]
+ee/tests/test_m3_t1_security.py::test_t1_21_corrupt_blob_never_500[deep-nesting-payload]
+ee/tests/test_m3_t1_security.py::test_t1_21_corrupt_blob_never_500[json-list]
+ee/tests/test_m3_t1_security.py::test_t1_21_corrupt_blob_never_500[json-string]
+ee/tests/test_m3_t1_security.py::test_t1_21_corrupt_blob_never_500[nan-payload]
+ee/tests/test_m3_t1_security.py::test_t1_21_corrupt_blob_never_500[non-object-payload]
+ee/tests/test_m3_t1_security.py::test_t1_21_corrupt_blob_never_500[non-utf8]
+ee/tests/test_m3_t1_security.py::test_t1_22_project_auditor_200_verify_export
+ee/tests/test_m3_t1_security.py::test_t1_23_cli_audit_verify_bad_project
+ee/tests/test_m3_t1_security.py::test_t1_23_cli_audit_verify_real_project
+ee/tests/test_m3_t1_security.py::test_t1_25_escalation_status_filter_pending
+ee/tests/test_m3_t1_security.py::test_t1_26_nesting_dedup_40_repeats
+ee/tests/test_m3_t1_security.py::test_t1_26_nesting_limit_1000_accept
+ee/tests/test_m3_t1_security.py::test_t1_26_nesting_limit_1001_refuse
+ee/tests/test_m3_t1_security.py::test_t1_26_parser_limit_huge_array
+ee/tests/test_m3_t1_security.py::test_t1_28_cli_ignores_database_url
+ee/tests/test_m3_t1_security.py::test_t1_2_infinity_refused_named_400
+ee/tests/test_m3_t1_security.py::test_t1_2_lone_surrogate_no_500
+ee/tests/test_m3_t1_security.py::test_t1_2_nan_refused_named_400
+ee/tests/test_m3_t1_security.py::test_t1_2_property_accepted_records_verify
+ee/tests/test_m3_t1_security.py::test_t1_3_admin_route_refuses_non_admin[GET /api/v1/admin/bundles-approver]
+ee/tests/test_m3_t1_security.py::test_t1_3_admin_route_refuses_non_admin[GET /api/v1/admin/bundles-auditor]
+ee/tests/test_m3_t1_security.py::test_t1_3_admin_route_refuses_non_admin[GET /api/v1/admin/bundles-author]
+ee/tests/test_m3_t1_security.py::test_t1_3_admin_route_refuses_non_admin[GET /api/v1/admin/bundles-viewer]
+ee/tests/test_m3_t1_security.py::test_t1_3_admin_route_refuses_non_admin[GET /api/v1/admin/bundles/1-approver]
+ee/tests/test_m3_t1_security.py::test_t1_3_admin_route_refuses_non_admin[GET /api/v1/admin/bundles/1-auditor]
+ee/tests/test_m3_t1_security.py::test_t1_3_admin_route_refuses_non_admin[GET /api/v1/admin/bundles/1-author]
+ee/tests/test_m3_t1_security.py::test_t1_3_admin_route_refuses_non_admin[GET /api/v1/admin/bundles/1-viewer]
+ee/tests/test_m3_t1_security.py::test_t1_3_admin_route_refuses_non_admin[GET /api/v1/admin/enrollment-codes-approver]
+ee/tests/test_m3_t1_security.py::test_t1_3_admin_route_refuses_non_admin[GET /api/v1/admin/enrollment-codes-auditor]
+ee/tests/test_m3_t1_security.py::test_t1_3_admin_route_refuses_non_admin[GET /api/v1/admin/enrollment-codes-author]
+ee/tests/test_m3_t1_security.py::test_t1_3_admin_route_refuses_non_admin[GET /api/v1/admin/enrollment-codes-viewer]
+ee/tests/test_m3_t1_security.py::test_t1_4_auditor_allowed_export
+ee/tests/test_m3_t1_security.py::test_t1_4_auditor_allowed_verify
+ee/tests/test_m3_t1_security.py::test_t1_4_non_admin_refused_export[approver]
+ee/tests/test_m3_t1_security.py::test_t1_4_non_admin_refused_export[author]
+ee/tests/test_m3_t1_security.py::test_t1_4_non_admin_refused_export[viewer]
+ee/tests/test_m3_t1_security.py::test_t1_4_non_admin_refused_verify[approver]
+ee/tests/test_m3_t1_security.py::test_t1_4_non_admin_refused_verify[author]
+ee/tests/test_m3_t1_security.py::test_t1_4_non_admin_refused_verify[viewer]
+ee/tests/test_m3_t1_security.py::test_t1_5_cursor_walks_all_pages_on_multiworker
+ee/tests/test_m3_t1_security.py::test_t1_7_approval_signature_verified_false
+ee/tests/test_m3_t1_security.py::test_t1_8_export_byte_cap
+ee/tests/test_m3_t1_security.py::test_t1_8_export_has_connector_id
+ee/tests/test_m3_t1_security.py::test_t1_8_export_stable_order
+ee/tests/test_m3_t1_security.py::test_t1_8_export_truncation_marker
+ee/tests/test_m3_t1_security.py::test_t1_9_alerts_have_pagination
+ee/tests/test_m3_t1_security.py::test_t1_9_bad_since_400
+ee/tests/test_m3_t1_security.py::test_t1_9_bad_until_400
+ee/tests/test_m3_t1_security.py::test_t1_9_bundles_have_pagination
+ee/tests/test_m3_t1_security.py::test_t1_9_codes_have_pagination
+ee/tests/test_m3_t1_security.py::test_t1_9_corrupt_blob_marked
+ee/tests/test_m3_t1_security.py::test_t1_9_skipped_sequence_diff
+ee/tests/test_m3_t1_security.py::test_t1_9_urn_uuid_no_500
 ee/tests/test_m3_t3_csrf_catalog.py::test_csrf_catalog_is_non_empty_and_includes_named_routes
 ee/tests/test_m3_t3_csrf_catalog.py::test_devices_revoke_no_csrf_403
 ee/tests/test_m3_t3_csrf_catalog.py::test_enrollment_codes_no_csrf_403
@@ -608,6 +733,7 @@ ee/tests/test_m3_t5_pilot.py::TestPilotShMisc::test_pilot_sh_is_lf_and_executabl
 ee/tests/test_m3_t5_pilot.py::TestPilotShMisc::test_upgrade_fails_closed_until_release_key_pinned
 ee/tests/test_m3_t5_pilot.py::TestPilotShRefusesDemo::test_pilot_sh_refuses_demo_profile
 ee/tests/test_m3_t5_pilot.py::TestPreflightNoFallback::test_preflight_never_falls_back_to_tls_internal
+ee/tests/test_m3_t9a_e2e.py::TestT9aE2E::test_exit_e2e_carol_admin_key_real_server
 ee/tests/test_migrate_url.py::TestResolveDbUrl::test_direct_env_wins_over_file
 ee/tests/test_migrate_url.py::TestResolveDbUrl::test_empty_file_raises
 ee/tests/test_migrate_url.py::TestResolveDbUrl::test_error_does_not_leak_url
@@ -1023,4 +1149,9 @@ ee/tests/test_t9_review.py::test_project_admin_removal_sole_org_admin_204
 ee/tests/test_t9_review.py::test_viewer_delete_sole_admin_binding_404
 ee/tests/test_t9_routes.py::test_all_api_routes_declare_rbac
 ee/tests/test_t9_routes.py::test_frozen_route_set
+ee/tests/test_t9_routes.py::test_planted_extra_route_detected
+ee/tests/test_t9_routes.py::test_planted_removed_route_detected
 ee/tests/test_t9_routes.py::test_planted_undeclared_route_detected
+ee/tests/test_t9_routes.py::test_reviewed_routes_admin_entries_are_admin
+ee/tests/test_t9_routes.py::test_reviewed_routes_no_overlap_with_earlier_frozen
+ee/tests/test_t9_routes.py::test_reviewed_routes_role_scope_match_rbac

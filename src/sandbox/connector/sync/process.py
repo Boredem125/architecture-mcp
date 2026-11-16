@@ -116,6 +116,14 @@ class SyncHTTPError(SyncError):
         self.stage = stage
 
 
+class SyncLocalKeyError(SyncError):
+    """Raised when the local device key is unusable (R4-2).
+
+    Not a transport or network error: the key is a local configuration
+    problem.  No stage failure is recorded and no alert is written.
+    """
+
+
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
 
@@ -320,6 +328,9 @@ def run_once(sync: SyncProcess) -> None:
         # ---- 1. Token refresh ----
         try:
             _refresh_token(sync)
+        except SyncLocalKeyError:
+            # R4-2: local key problem -- no stage failure, no alert.
+            raise
         except (ConnectionError, OSError, SyncError) as exc:
             # T9A-1: record the failure at stage=token for alerting
             _record_stage_failure(sync, "token", exc)
@@ -327,7 +338,7 @@ def run_once(sync: SyncProcess) -> None:
         except Exception as exc:
             # R2-10: http.client.HTTPException and other non-OS exceptions
             _record_stage_failure(sync, "token", exc)
-            raise SyncError(f"token error: {exc}") from exc
+            raise SyncError(f"token error: {type(exc).__name__}") from exc
 
         # ---- 2. Fetch and persist registry updates (D4-1 step-5: before decisions) ----
         try:
@@ -370,7 +381,7 @@ def run_once(sync: SyncProcess) -> None:
         raise SyncError(f"sync cycle failed: {exc}") from exc
     except Exception as exc:
         sync._consecutive_failures += 1
-        raise SyncError(f"sync cycle failed: {exc}") from exc
+        raise SyncError(f"sync cycle failed: {type(exc).__name__}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -434,9 +445,17 @@ def _record_stage_failure(sync: SyncProcess, stage: str, exc: Exception) -> None
         elif isinstance(exc, SyncError):
             code = "transport_refused"
             immediate = True
-        else:
+        elif isinstance(exc, OSError):
+            # R4-1: OSError at token/registry is network_error (3-cycle counter),
+            # not transport_error.  URLError, ConnectionError and TimeoutError
+            # are all OSError subclasses; TLS stays first.
             code = "network_error"
             immediate = False
+        else:
+            # R3-6: non-OS/non-SyncError at token/registry is transport_error,
+            # immediate (not network_error with 3-cycle counter).
+            code = "transport_error"
+            immediate = True
         _note_decisions_failure(sync, ds, code, stage,
                                 exc_type=type(exc).__name__, immediate=immediate)
         ds.save()
@@ -677,7 +696,7 @@ def _note_decisions_failure(
         sync._decisions_failed = True
 
     if code == "network_error" and not immediate:
-        count = ds.note_net_failure()
+        count = ds.note_net_failure(stage)
         _log.info("decisions fetch network_error at %s (%d in a row)", stage, count)
         from sandbox.connector.sync.decision_state import DECISIONS_NET_ALERT_AFTER
         if count < DECISIONS_NET_ALERT_AFTER:
@@ -712,6 +731,7 @@ def _decision_alert(
     key_id: str = "",
     count: int = 0,
     queue_state: str = "",
+    verified: bool = False,
 ) -> None:
     """Write a decision alert and an audit record (T9a, spec section 2).
 
@@ -729,7 +749,9 @@ def _decision_alert(
     else:
         dedupe_key = (event, code)
 
-    entry = ds.note(dedupe_key, reason=reason)
+    entry = ds.note(dedupe_key, reason=reason, code=code, rid=rid,
+                     key_id=key_id, stage=stage, status=status_code,
+                     verified=verified)
 
     # Decide whether to alert (T9A-4: same key later = no alert, no audit)
     should = ds.should_alert(dedupe_key)
@@ -882,34 +904,6 @@ def _emit_suppression_alert(sync: SyncProcess, ds) -> None:
     ds.mark_alerted(suppression_key)
 
 
-def _classify_row_problem(row: dict) -> str:
-    """Classify why a row's envelope could not be rebuilt.
-
-    Pure classification: no I/O, no exceptions, no try/except.
-    """
-    payload_raw = row.get("signed_payload") or row.get("payload")
-    if payload_raw is None:
-        return "payload_unusable"
-    if isinstance(payload_raw, str):
-        # Check if it's valid JSON without try/except (use a helper)
-        parsed = _safe_json_loads(payload_raw)
-        if parsed is None:
-            return "payload_unusable"
-    sig = row.get("sig") or row.get("signature") or ""
-    key_id = row.get("key_id", "")
-    if not sig and not key_id:
-        sigs = row.get("signatures", [])
-        if not isinstance(sigs, list) or not sigs:
-            return "signature_missing"
-        s0 = sigs[0]
-        if not isinstance(s0, dict):
-            return "signature_missing"
-        sig = s0.get("sig", "")
-    if not sig:
-        return "signature_missing"
-    return "payload_unusable"
-
-
 def _safe_json_loads(text: str):
     """Parse JSON, returning None on failure (no exception).
 
@@ -936,6 +930,12 @@ def _refresh_token(sync: SyncProcess) -> None:
     from nacl.signing import SigningKey
     from sandbox.protocol.domains import DEVICE_ASSERT
     from sandbox.protocol.envelope import sign_envelope
+
+    # R4-2: validate device key before nacl touches it.  A bad key is a
+    # local configuration problem, not a transport error.
+    if not isinstance(sync.device_key, (bytes, bytearray)) or len(sync.device_key) != 32:
+        raise SyncLocalKeyError(
+            "device key unusable: an Ed25519 seed must be exactly 32 bytes")
 
     sk = SigningKey(sync.device_key)
     assertion_payload = {
@@ -1167,6 +1167,7 @@ def _fetch_decisions(sync: SyncProcess) -> None:
     bad_row_count = 0
     bad_rid_count = 0
     unknown_request_count = 0
+    malformed_counts: dict[str, int] = {}  # R3-8: one alert per code per cycle
     decisions_by_request: dict[str, list[dict]] = {}
     pending_alerts: list[dict] = []  # Collected alerts, sorted and capped
 
@@ -1185,31 +1186,13 @@ def _fetch_decisions(sync: SyncProcess) -> None:
         # by whether the device holds the request.
         envelope, rebuild_reason = _rebuild_envelope(row)
         if envelope is None:
-            # Payload or signature unusable -- collect for sorted emit
-            pending_alerts.append({
-                "event": "decisions_malformed", "code": rebuild_reason,
-                "reason": f"1 decision row(s) dropped: {rebuild_reason}: "
-                          "the row has an unusable payload or signature",
-                "rid": rid,
-            })
+            # R3-8: count per code, one alert per code at end of cycle
+            malformed_counts[rebuild_reason] = malformed_counts.get(rebuild_reason, 0) + 1
             continue
 
         # Check local state: done or claimed -> silent skip (fixes E13)
-        # R2-6: executed/denied outcomes are never suppressed by dedupe,
-        # so re-audit them even when the request is already done.
         local_status = queue.status(rid)
         if local_status == "done":
-            outcome_key = f"sync_decision_applied:{rid}"
-            prev = ds._entries.get(outcome_key)
-            if prev is not None:
-                prev_sig = prev.get("outcome_sig", "")
-                prev_status = prev_sig.split(":")[0] if prev_sig else ""
-                if prev_status in ("executed", "denied"):
-                    _audit_decision_outcome_deduped(
-                        sync, ds, rid,
-                        {"status": prev_status,
-                         "approvals": prev_sig.split(":")[1] if ":" in prev_sig else None},
-                    )
             continue
         if local_status == "claimed":
             continue
@@ -1218,6 +1201,15 @@ def _fetch_decisions(sync: SyncProcess) -> None:
             continue
 
         decisions_by_request.setdefault(rid, []).append(envelope)
+
+    # R3-8: one alert per malformed code per cycle, with count
+    for mcode, mcount in sorted(malformed_counts.items()):
+        pending_alerts.append({
+            "event": "decisions_malformed", "code": mcode,
+            "reason": f"{mcount} decision row(s) dropped: {mcode}: "
+                      "the row has an unusable payload or signature",
+            "count": mcount,
+        })
 
     if bad_row_count > 0:
         pending_alerts.append({
@@ -1266,30 +1258,8 @@ def _fetch_decisions(sync: SyncProcess) -> None:
     rids_to_clear: list[str] = []
 
     for rid, envelopes in decisions_by_request.items():
-        # R2-11: pre-check: empty pending file is request_id_refused.
-        # Non-empty corrupt files flow to apply_external which returns
-        # not_pending, then the pending_record_unreadable handler fires.
-        _pending_file = sync.layout.pending_dir / f"{rid}.json"
-        if _pending_file.exists():
-            try:
-                _pf_text = _pending_file.read_text(encoding="utf-8")
-                if not _pf_text.strip():
-                    pending_alerts.append({
-                        "event": "decision_refused", "code": "request_id_refused",
-                        "reason": f"{rid} refused: request_id_refused: "
-                                  f"the pending record is empty",
-                        "rid": rid,
-                    })
-                    continue
-            except OSError:
-                _decision_alert(
-                    sync, ds, "decision_refused", "request_id_refused",
-                    reason=f"{rid} refused: request_id_refused: "
-                           f"the pending record is unreadable",
-                    rid=rid,
-                )
-                continue
-
+        # R4-6: no pre-check of the pending file.  apply_external's own
+        # read is the single authority on the file's state.
         try:
             result = asyncio.run(apply_external(
                 sync.layout, rid, envelopes,
@@ -1297,16 +1267,9 @@ def _fetch_decisions(sync: SyncProcess) -> None:
             ))
         except Exception as exc:  # noqa: BLE001
             q_status = queue.status(rid)
-            # If the record is still pending, the failure happened before
-            # execution (likely nonce save). Classify as nonce_save_failed.
-            if q_status == "pending":
-                pending_alerts.append({
-                    "event": "decision_apply_failed", "code": "nonce_save_failed",
-                    "reason": f"{rid} apply failed: nonce_save_failed: "
-                              "nonce persistence failed, nothing executes",
-                    "rid": rid,
-                })
-                continue
+            # R4-5: every raise -> apply_raised with the exception type
+            # and record queue state.  nonce_save_failed stays on the
+            # returned status (process.py ~1351).
             msg = (f"{rid} apply failed: apply_raised ({type(exc).__name__}), "
                    f"record is {q_status}")
             if q_status == "claimed":
@@ -1407,11 +1370,17 @@ def _fetch_decisions(sync: SyncProcess) -> None:
                 "reason": f"{rid} apply failed: pending_record_unreadable",
                 "rid": rid,
             })
-        elif result_status in ("invalid_id", "not_pending"):
-            # R2-11: invalid_id must alert
+        elif result_status == "invalid_id":
+            # R4-7: a real "invalid_id" -> decision_refused / request_id_refused
             pending_alerts.append({
                 "event": "decision_refused", "code": "request_id_refused",
-                "reason": f"{rid} refused: {result_status}: "
+                "reason": f"{rid} refused: request_id_refused: {result_status}",
+                "rid": rid,
+            })
+        elif result_status == "not_pending":
+            pending_alerts.append({
+                "event": "decision_refused", "code": "request_id_refused",
+                "reason": f"{rid} refused: not_pending: "
                           f"{_REFUSAL_SENTENCES.get('request_id_refused', 'refused')}",
                 "rid": rid,
             })
@@ -1429,7 +1398,7 @@ def _fetch_decisions(sync: SyncProcess) -> None:
             })
 
     # T9A-4: sort collected alerts by spec order; within decision_refused,
-    # verified first, then not yet alerted (R2-3).
+    # verified first (H2, R4-8).
     pending_alerts.sort(key=lambda a: (
         _ALERT_ORDER.get(a["event"], 9),
         0 if a.get("verified") else 1,
@@ -1464,7 +1433,7 @@ def _fetch_decisions(sync: SyncProcess) -> None:
             sync, ds, pa["event"], pa["code"],
             reason=pa.get("reason", ""), rid=pa.get("rid", ""),
             key_id=pa.get("key_id", ""), queue_state=pa.get("queue_state", ""),
-            count=pa.get("count", 0),
+            count=pa.get("count", 0), verified=pa.get("verified", False),
         )
 
     # T9A-4: clear request keys after refusal alerts are processed
@@ -1492,6 +1461,12 @@ def _rebuild_envelope(row: dict) -> tuple[dict | None, str]:
     The kind is fixed in code (never trust the server's kind column).
     The server's user_id column is ignored (comes from the registry).
     No try/except: JSON parse uses ``_safe_json_loads``.
+
+    R3-1: keep 975e2bc truthiness and fallback exactly.
+    - ``need_fallback = not sig or not key_id`` on the RAW values.
+    - Pass raw values to the verifier (non-strings stay as-is).
+    - Refuse the row (signature_missing) only where 975e2bc would have
+      crashed (``signatures[0]`` not an object).
     """
     payload = row.get("signed_payload") or row.get("payload")
     if isinstance(payload, str):
@@ -1500,23 +1475,27 @@ def _rebuild_envelope(row: dict) -> tuple[dict | None, str]:
             return None, "payload_unusable"
     if not isinstance(payload, dict):
         return None, "payload_unusable"
+    # R3-1: use 975e2bc's exact truthiness logic on RAW values.
+    # ``or ""`` coerces None to "", keeping 975e2bc behaviour.
     sig = row.get("sig") or row.get("signature") or ""
     key_id = row.get("key_id") or payload.get("key_id", "")
-    # H2: type-check key_id (non-string values must not reach display)
-    if not isinstance(key_id, str):
-        key_id = ""
-    # R2-1: do NOT sanitize key_id before sig check. The raw value must
-    # reach _verify_remote_approval so a control-char mismatch stays a
-    # mismatch. Sanitize for display only, never for lookup or verification.
-    if not isinstance(sig, str):
-        sig = ""
+    # R3-1: decide need_fallback on the raw values, before any type check.
+    # 975e2bc: ``if not sig or not key_id:`` on these exact values.
     if not sig or not key_id:
         sigs = row.get("signatures", [])
-        if isinstance(sigs, list) and sigs and isinstance(sigs[0], dict):
-            sig = sigs[0].get("sig", "") if isinstance(sigs[0].get("sig", ""), str) else ""
-            key_id = sigs[0].get("key_id", key_id) if isinstance(sigs[0].get("key_id", ""), str) else key_id
+        if isinstance(sigs, list) and sigs:
+            s0 = sigs[0]
+            if not isinstance(s0, dict):
+                # 975e2bc: sigs[0].get() would crash -> signature_missing
+                return None, "signature_missing"
+            sig = s0.get("sig", "")
+            key_id = s0.get("key_id", key_id)
+    # R3-1: after fallback, 975e2bc checked ``if not sig: return None``.
     if not sig:
         return None, "signature_missing"
+    # R2-1: do NOT sanitize key_id before sig check.  The raw value
+    # reaches _verify_remote_approval so a control-char mismatch stays
+    # a mismatch.  Sanitize for display only, never for lookup.
     return {
         "kind": "agg/remote-approval/v1",  # fixed in code
         "sig_v": 1,

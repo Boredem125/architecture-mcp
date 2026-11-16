@@ -13,7 +13,7 @@ M3 builds the web app a design partner can operate alone, three backend items th
 
 ### 2.1 Manifest rules
 
-`M3_FROZEN_MANIFEST.sha256` holds the sha256 of the LF content for every tracked file under `tests/`, `ee/tests/` and `ee/web/tests/`, plus four named files: `ee/deploy/m2_gate.py`, `ee/deploy/demo.py`, `docs/control-plane/M2_BASELINE.md`, `docs/control-plane/M2_DEMO.md`. The CRLF-to-LF conversion matches M2's approach: hashes are of the LF git blob content, and `sha256sum -c` runs on the Linux CI checkout where files are already LF on disk. A Windows working copy has CRLF and cannot run `sha256sum -c` directly. Total: 211 entries (117 under `tests/`, 78 under `ee/tests/`, 12 under `ee/web/tests/`, 4 named files; includes the 4 M3 T0a files and 8 new tests-first files).
+`M3_FROZEN_MANIFEST.sha256` holds the sha256 of the LF content for every tracked file under `tests/`, `ee/tests/` and `ee/web/tests/`, plus four named files: `ee/deploy/m2_gate.py`, `ee/deploy/demo.py`, `docs/control-plane/M2_BASELINE.md`, `docs/control-plane/M2_DEMO.md`. The CRLF-to-LF conversion matches M2's approach: hashes are of the LF git blob content, and `sha256sum -c` runs on the Linux CI checkout where files are already LF on disk. A Windows working copy has CRLF and cannot run `sha256sum -c` directly. Total: 215 entries (118 under `tests/`, 81 under `ee/tests/`, 12 under `ee/web/tests/`, 4 named files; includes the 4 M3 T0a files, 8 earlier tests-first files, 2 T1 tests-first files, and 2 T9a tests-first files).
 
 Changes to frozen files require a founder row in this document's section 3 (named exceptions), the same rule as M2.
 
@@ -55,19 +55,25 @@ Enforcement test: `TestCINodeIdSteps` in `test_m3_t0a_freeze.py` (2 nodes) parse
 
 | List | File | Count | Source |
 |---|---|---|---|
-| Root | `M3_BASELINE_NODEIDS.txt` | 2542 | Linux `python:3.12` container, `pytest -q --collect-only -p no:logging tests/`, sorted |
-| EE | `M3_BASELINE_EE_NODEIDS.txt` | 1026 | Linux `python:3.12` container, `pytest -q --collect-only -p no:logging ee/tests/`, sorted |
+| Root | `M3_BASELINE_NODEIDS.txt` | 2734 | Linux `python:3.12` container, `pytest -q --collect-only -p no:logging tests/`, sorted |
+| EE | `M3_BASELINE_EE_NODEIDS.txt` | 1157 | Linux `python:3.12` container, `pytest -q --collect-only -p no:logging ee/tests/`, sorted |
 | Web | `M3_BASELINE_WEB_NODEIDS.txt` | 92 | `vitest run --reporter=json` in `ee/web`, paths prefixed `ee/web/tests/` |
 
-Root count: 2542 ids = 2467 at T0a + 75 new (9 in `test_m3_manifest_seal.py`, 17 in `test_m3_t3_signer.py`, 49 in `test_m3_t9a_fetch_decisions.py`). The root node-id file is generated from a Linux `python:3.12` container with `pytest>=9.2.0` to match CI.
+Root count: 2734 ids = 2603 at pre-commit + 131 new (130 in `test_m3_t9a_security.py` from T9a rounds 2-5 marker removal plus R5 tests, 1 in `test_m3_manifest_seal.py::TestSealedLinesUnchanged::test_replaced_lines_carry_pinned_hash`). The root node-id file is generated from a Linux `python:3.12` container with `pytest>=9.2.0` to match CI.
 
-EE count: 1026 ids = 936 at T0a + 90 new (20 in `test_m3_t1_admin_reads.py`, 2 in `test_m3_t1_record_hash.py`, 29 in `test_m3_t3_proposals.py`, 8 in `test_m3_t3_csrf_catalog.py`, 31 in `test_m3_t5_pilot.py`). Generated from Linux `python:3.12` container.
+EE count: 1157 ids = 1086 at pre-commit + 71 new (71 in `test_m3_t1_security.py` from T1 marker removal plus rounds 3-4 test additions). Generated from Linux `python:3.12` container.
 
 ### Founder rows (changes to the frozen list)
 
 | Date | Row | Source |
 |---|---|---|
 | 5 Nov 2026 | Frozen item 4 allows tags `agg/cp-evidence/v1` (T7), `agg/device-binding/v1` (T9b, F3) and `agg/stop/v1` (T11 only), and the bundle field `approval.require_operator_binding` (T9b, F3). No frozen test file changes. | `M3_PLAN.md` ruling T0b-2 |
+| 5 Nov 2026 | `ee/tests/test_t9_routes.py::test_frozen_route_set` gains one set loaded from one reviewed data file of literal routes (`T1_SECURITY_REVIEW.md`, "Frozen route set"). This file is exempt from the seal check; `tests/unit/test_m3_manifest_seal.py` gets one edit to say so. No other sealed line is affected. | `M3_PLAN.md` ruling T0b-11 |
+| 5 Nov 2026 | `ee/tests/test_m3_t1_admin_reads.py::test_bundles_detail_applied_by_devices` changes to assert `applied_by: null` with `applied_by_status: "not_reported"`. | `M3_PLAN.md` ruling T0b-12 |
+| 5 Nov 2026 | `tests/security/test_m3_t9a_fetch_decisions.py` gets three fixture edits, no assertion changed (`T9A_SECURITY_REVIEW.md` sections 3 T9A-9 and 4): all 41 `{"Date": "Wed, 05 Nov 2026 10:00:00 GMT"}` become a clock-computed `_date_hdr()`; `test_done_request_rows_write_nothing_on_repeat_polls` calls `apply_external` with two approvers; the stub in `test_500_still_uploads_escalations_and_audit_then_raises` returns `{"registry": []}`. | `M3_PLAN.md` ruling T0b-13 |
+| 5 Nov 2026 | `ee/tests/test_m3_t1_admin_reads.py::test_devices_list_returns_devices` walks every page with `cursor` until the seeded device is found; the assertion is unchanged. Devices sort by random UUID, so looking at page 1 only depended on test order. | `M3_PLAN.md` ruling T0b-14 |
+| 9 Nov 2026 | `ee/tests/test_m2_t11_audit.py::test_load_20_connectors_200_records` sends the same `session_id` in the batch and in its records (`sess-load-{i}`); before, the batch named `sess-load-<device id prefix>` while the records named `sess-load-{i}`. No assertion changed. Security ruling T1-12 refuses a record `session_id` that differs from the batch (400 `bad_body`), so the old fixture was inconsistent with the audit contract (ADR 0001 5.2). Security (L) confirms the diff in T1 round 3. | `M3_PLAN.md` ruling T0b-15 |
+| 16 Nov 2026 | `docs/control-plane/M2_DEMO.md` (sealed line 2) gets two correction notes for finding T1-23: the step 10 server-side `python -m agg_cp.cli audit verify` row (line 101) and the section 6 stack-check row (line 158) recorded a PASS that never ran (no `__main__` guard). The original rows stay; each correction gives the 16 Nov fresh-stack rerun (`m2_gate.py` 88/0/0, `demo.py` 47/0, CLI output `{"org": "acme", "ok": true, "reason": ""}`). The manifest line for this file changes once; `tests/unit/test_m3_manifest_seal.py` pins the new hash for this path only. | Founder yes, 16 Nov 2026 (desktop app) |
 
 ### Named skip lists (carried from M2)
 
@@ -161,6 +167,10 @@ Each D5 SHOULD item gets a row here at its tests-first commit with a node id or 
 
 | Item | Status | Node id or limit | Founder row |
 |---|---|---|---|
+| Unstorable local audit record stalls its session (from T1 round 3). A record the connector writes but the server refuses (a non-finite number, or nesting above the T1-26 ingest limit) is refused on every cycle: the rest of that session never reaches the server, and the connector raises `audit_upload_failed` once per cycle (the server writes one deduplicated `audit_record_unstorable` alert). Fix on the connector: apply the server's ingest limits when the record is written, before it is hashed, so such a value is never written; the server keeps refusing. | proposed by security (L), 9 Nov 2026; not started | tests-first node to be named at the T9b commit: a record carrying such a value, written through `FolderAudit`, does not stop that session's upload | not approved by the founder (9 Nov 2026, desktop app); **founder yes, 16 Nov 2026 (desktop app): in T9b** |
+| Repeated fork attempts write one quarantine row and one `fork` alert each (T1-18; T11 behaviour). Measured: 20 refused fork uploads for one position wrote 20 rows of each. Deduplicate per connector, session and position, the same as `audit_record_unstorable`. | proposed by security (L), 9 Nov 2026; not started | tests-first node to be named at the T9b commit | not approved by the founder (9 Nov 2026, desktop app); **founder yes, 16 Nov 2026 (desktop app): in T9b** |
+| The connector maps a 409 `duplicate_record` to `audit_fork` (`src/sandbox/connector/sync/audit_upload.py`, the `status == 409` branch). Two concurrent uploads of the same honest record are labelled a fork on the laptop (measured: 17 of 200 racing uploads got 409 `duplicate_record`). Either the server re-reads after the unique violation and returns the no-op 200 when the stored hash is equal, or the connector tells `duplicate_record` from `fork`. | proposed by security (L), 9 Nov 2026; not started | tests-first node to be named at the T9b commit | founder yes, 9 Nov 2026 (desktop app) |
+| Connector-side nesting limit (from T1 round 4, ADR 0001 A4 item 6). The server refuses a record body nested deeper than 1,000 levels (`MAX_NESTING_DEPTH`, `ee/src/agg_cp/sync/audit.py`) and a bundle envelope deeper than 1,000 is `corrupt_bundle`. The connector applies the same 1,000-level limit when it writes a record, before hashing, so no session stalls on a body the server will refuse (row 1 of this table names the effect; this row names the limit). | added by the lead, 12 Nov 2026; not started | tests-first node to be named at the T9b commit: a 1,001-level body written through `FolderAudit` is refused locally with a named alert and the session's upload continues | **founder yes, 16 Nov 2026 (desktop app), with row 1: in T9b** |
 
 ## 6. Frozen pilot scenario (`m3_pilot.py` steps 1-9, per Q7)
 

@@ -535,26 +535,25 @@ def _load_decision_state_safe(layout) -> dict:
 
     Returns ``{"entries": dict, "net_consecutive": int, ...}`` or empty
     defaults on any error.  This is the single reader for all display paths.
+
+    R3-3: shares the validated loader with DecisionState._load() -- any
+    corrupt value (NaN, Inf, non-string outcome_sig, etc.) is coerced or
+    dropped before display code touches it.
     """
-    import json as _j
-    state_path = layout.root / ".sandbox" / "logs" / "decision_state.json"
+    from sandbox.connector.sync.decision_state import DecisionState
+    logs_dir = layout.root / ".sandbox" / "logs"
     try:
-        raw = state_path.read_text(encoding="utf-8")
-        data = _j.loads(raw)
-    except (OSError, ValueError, RecursionError):
+        ds = DecisionState(logs_dir)
+    except Exception:  # noqa: BLE001 -- never crash the CLI
         return {"entries": {}, "net_consecutive": 0}
-    if not isinstance(data, dict):
-        return {"entries": {}, "net_consecutive": 0}
-    entries = data.get("entries", {})
-    if not isinstance(entries, dict):
-        entries = {}
-    net = data.get("net_consecutive", 0)
-    if not isinstance(net, (int, float)) or isinstance(net, bool):
-        net = 0
-    return {"entries": entries, "net_consecutive": int(net),
-            "alerts_this_hour": data.get("alerts_this_hour", 0),
-            "hour_start": data.get("hour_start", 0.0),
-            "suppressed_this_hour": data.get("suppressed_this_hour", 0)}
+    return {
+        "entries": dict(ds._entries),
+        "net_consecutive": ds._net_consecutive,
+        "net_stage": ds._net_stage,
+        "alerts_this_hour": ds._alerts_this_hour,
+        "hour_start": ds._hour_start,
+        "suppressed_this_hour": ds._suppressed_this_hour,
+    }
 
 
 def _load_decision_state_entries(layout) -> dict:
@@ -569,7 +568,9 @@ def _decisions_status_info(layout) -> dict:
     net = state.get("net_consecutive", 0)
     result = {"decisions": {}, "decisions_fetch": {}}
     if net > 0:
-        result["decisions_fetch"]["status"] = f"fetch failed: network_error, {net} in a row"
+        net_stage = state.get("net_stage", "")
+        stage_suffix = f" at {net_stage}" if net_stage else ""
+        result["decisions_fetch"]["status"] = f"fetch failed: network_error{stage_suffix}, {net} in a row"
     # Collect per-request refusals by reading the reason field
     for key, entry in entries.items():
         if not isinstance(key, str) or not isinstance(entry, dict):
@@ -598,8 +599,12 @@ def _show_decisions_status(layout, pending: list) -> None:
     entries = state.get("entries", {})
     net = state.get("net_consecutive", 0)
     if net > 0:
-        click.echo(f"  Decisions: fetch failed: network_error, {net} in a row")
+        # R4-10: use the persisted net_stage (not a scan of entries)
+        net_stage = _sanitize_display(str(state.get("net_stage", "")))
+        stage_suffix = f" at {net_stage}" if net_stage else ""
+        click.echo(f"  Decisions: fetch failed: network_error{stage_suffix}, {net} in a row")
     # Show fetch-level and malformed entries
+    # R3-7: read code/stage from entry fields, never split the key.
     shown = set()
     for key, entry in sorted(entries.items()):
         if not isinstance(key, str) or not isinstance(entry, dict):
@@ -609,24 +614,25 @@ def _show_decisions_status(layout, pending: list) -> None:
             continue
         event = parts[0]
         if event == "decisions_fetch_failed":
-            stage = parts[1] if len(parts) > 1 else ""
-            code = parts[-1] if len(parts) > 2 else stage
+            # R3-7: prefer entry fields over key splitting
+            stage = _sanitize_display(str(entry.get("stage", ""))) if entry.get("stage") else (parts[1] if len(parts) > 1 else "")
+            code = _sanitize_display(str(entry.get("code", ""))) if entry.get("code") else (parts[-1] if len(parts) > 2 else stage)
+            # R4-10: the network_error summary line is already printed
+            # above from the persisted net_consecutive / net_stage.
+            # Do not print a second line for network_error entries.
+            if code == "network_error":
+                continue
             line_key = f"fetch:{stage}:{code}"
             if line_key not in shown:
-                reason = _sanitize_display(entry.get("reason", ""))
-                status_num = ""
-                if reason:
-                    # Extract HTTP status from reason if present
-                    import re as _re
-                    m = _re.search(r"HTTP (\d+)", reason)
-                    if m:
-                        status_num = f"HTTP {m.group(1)} at {stage}: "
-                    else:
-                        status_num = ""
-                click.echo(f"  Decisions: fetch failed: {status_num}{_sanitize_display(code)} at {_sanitize_display(stage)}")
+                status_val = entry.get("status")
+                if isinstance(status_val, int) and 100 <= status_val < 600:
+                    # R3-7: HTTP line printed once, no double "at <stage>"
+                    click.echo(f"  Decisions: fetch failed: HTTP {status_val} at {stage}: {code}")
+                else:
+                    click.echo(f"  Decisions: fetch failed: {code} at {stage}")
                 shown.add(line_key)
         elif event == "decisions_malformed":
-            code = parts[-1]
+            code = entry.get("code", parts[-1])
             line_key = f"malformed:{code}"
             if line_key not in shown:
                 click.echo(f"  Decisions: last response malformed: {_sanitize_display(code)}")

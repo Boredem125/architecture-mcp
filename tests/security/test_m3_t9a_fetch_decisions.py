@@ -38,7 +38,7 @@ from pathlib import Path
 import click.testing
 import pytest
 
-from tests.m3_pending import M3T9Pending, require_m3
+from tests.m3_pending import require_m3
 
 # Reuse T12 helpers (frozen file: do NOT edit)
 from tests.security.test_m2_t12_remote import (
@@ -80,6 +80,11 @@ def _need(reason: str = "") -> None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _date_hdr() -> dict:
+    from email.utils import formatdate
+    return {"Date": formatdate(usegmt=True)}
+
 
 def _make_connect_stub(responses: list[tuple[int, dict | list | str | int, dict]]):
     """Return a connect callable that returns responses in order, cycling."""
@@ -322,7 +327,7 @@ class TestGuardNodes:
 
         # Non-200 status triggers SyncError today (line 462-463)
         connect = _make_connect_stub([
-            (500, {"detail": "server error"}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"}),
+            (500, {"detail": "server error"}, _date_hdr()),
         ])
 
         device_sk = _keygen()
@@ -497,8 +502,6 @@ class TestFetchDecisionsAST:
     a ``Raise`` or a call to ``_decision_alert`` or ``_note_decisions_failure``.
     """
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: except handlers must record or raise")
     def test_except_handlers_in_fetch_decisions_record_or_raise(self):
         """Every except handler in ``_fetch_decisions`` and its helpers must
         contain a Raise or a call to ``_decision_alert`` or
@@ -561,8 +564,6 @@ class TestFetchDecisionsAST:
 class TestNetworkErrorCycles:
     """Network error handling per spec section 2 failure table."""
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: network error cycle handling")
     def test_network_error_cycles_1_2_no_alert_status_line(
         self, tmp_path, monkeypatch,
     ):
@@ -583,7 +584,7 @@ class TestNetworkErrorCycles:
         def connect_net_fail(method, url, body=None, headers=None, token=None):
             if "/sync/decisions" in url:
                 raise ConnectionError("network unreachable")
-            return (200, {}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+            return (200, {}, _date_hdr())
 
         device_sk = _keygen()
         sync = SyncProcess(
@@ -622,8 +623,6 @@ class TestNetworkErrorCycles:
         # Request still pending
         assert rid in _pending_request_ids(lay)
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: third consecutive network error alerts")
     def test_network_error_third_cycle_alerts_once(
         self, tmp_path, monkeypatch,
     ):
@@ -643,7 +642,7 @@ class TestNetworkErrorCycles:
         def connect_net_fail(method, url, body=None, headers=None, token=None):
             if "/sync/decisions" in url:
                 raise ConnectionError("network unreachable")
-            return (200, {}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+            return (200, {}, _date_hdr())
 
         device_sk = _keygen()
 
@@ -674,8 +673,6 @@ class TestNetworkErrorCycles:
         )
         assert rid in _pending_request_ids(lay)
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: network counter survives new process")
     def test_network_counter_survives_new_process(
         self, tmp_path, monkeypatch,
     ):
@@ -693,7 +690,7 @@ class TestNetworkErrorCycles:
         def connect_net_fail(method, url, body=None, headers=None, token=None):
             if "/sync/decisions" in url:
                 raise ConnectionError("network unreachable")
-            return (200, {}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+            return (200, {}, _date_hdr())
 
         device_sk = _keygen()
 
@@ -720,8 +717,6 @@ class TestNetworkErrorCycles:
             "counter must persist across SyncProcess instances"
         )
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: network counter reset by 200")
     def test_network_counter_reset_by_200(
         self, tmp_path, monkeypatch,
     ):
@@ -743,7 +738,7 @@ class TestNetworkErrorCycles:
             def connect_fail(method, url, body=None, headers=None, token=None):
                 if "/sync/decisions" in url:
                     raise ConnectionError("network unreachable")
-                return (200, {}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+                return (200, {}, _date_hdr())
 
             sync = SyncProcess(
                 layout=lay,
@@ -759,7 +754,7 @@ class TestNetworkErrorCycles:
 
         # 1 success (200 with empty decisions)
         def connect_ok(method, url, body=None, headers=None, token=None):
-            return (200, {"decisions": []}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+            return (200, {"decisions": []}, _date_hdr())
 
         sync_ok = SyncProcess(
             layout=lay,
@@ -778,7 +773,7 @@ class TestNetworkErrorCycles:
             def connect_fail2(method, url, body=None, headers=None, token=None):
                 if "/sync/decisions" in url:
                     raise ConnectionError("network unreachable")
-                return (200, {}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+                return (200, {}, _date_hdr())
 
             sync2 = SyncProcess(
                 layout=lay,
@@ -809,8 +804,6 @@ class TestNetworkErrorCycles:
 class TestHTTP403:
     """HTTP 403 from the decisions endpoint."""
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: HTTP 403 alert with token_forbidden")
     def test_http_403_token_forbidden(self, tmp_path, monkeypatch):
         """HTTP 403 -> ``decisions_fetch_failed`` / ``token_forbidden``;
         ``_token_expires`` reset to 0.  Spec section 2."""
@@ -819,7 +812,7 @@ class TestHTTP403:
         from sandbox.connector.sync.process import SyncProcess, _fetch_decisions
 
         connect = _make_connect_stub([
-            (403, {"detail": "forbidden"}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"}),
+            (403, {"detail": "forbidden"}, _date_hdr()),
         ])
         sync, ws = _build_sync_process(tmp_path, monkeypatch, connect)
         lay = ws["lay"]
@@ -837,14 +830,12 @@ class TestHTTP403:
 class TestHTTP4xx:
     """Other HTTP 4xx errors."""
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: HTTP 404 alert with http_4xx")
     def test_http_404_http_4xx(self, tmp_path, monkeypatch):
         """HTTP 404 -> ``decisions_fetch_failed`` / ``http_4xx``."""
         _need("HTTP 404 alert not built")
 
         connect = _make_connect_stub([
-            (404, {}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"}),
+            (404, {}, _date_hdr()),
         ])
         sync, ws = _build_sync_process(tmp_path, monkeypatch, connect)
         lay = ws["lay"]
@@ -862,14 +853,12 @@ class TestHTTP4xx:
 class TestHTTP5xx:
     """HTTP 5xx errors."""
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: HTTP 500 alert with http_5xx")
     def test_http_500_http_5xx(self, tmp_path, monkeypatch):
         """HTTP 500 -> ``decisions_fetch_failed`` / ``http_5xx``."""
         _need("HTTP 500 alert not built")
 
         connect = _make_connect_stub([
-            (500, {"detail": "internal server error"}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"}),
+            (500, {"detail": "internal server error"}, _date_hdr()),
         ])
         sync, ws = _build_sync_process(tmp_path, monkeypatch, connect)
         lay = ws["lay"]
@@ -883,14 +872,12 @@ class TestHTTP5xx:
         _assert_one(lay, "decisions_fetch_failed", "http_5xx", status=500)
         assert rid in _pending_request_ids(lay)
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: HTTP 502 alert with http_5xx")
     def test_http_502_http_5xx(self, tmp_path, monkeypatch):
         """HTTP 502 -> ``decisions_fetch_failed`` / ``http_5xx``."""
         _need("HTTP 502 alert not built")
 
         connect = _make_connect_stub([
-            (502, {}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"}),
+            (502, {}, _date_hdr()),
         ])
         sync, ws = _build_sync_process(tmp_path, monkeypatch, connect)
         lay = ws["lay"]
@@ -908,15 +895,13 @@ class TestHTTP5xx:
 class TestHTTP401:
     """HTTP 401 -> token_rejected."""
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: HTTP 401 alert with token_rejected")
     def test_http_401_token_rejected(self, tmp_path, monkeypatch):
         """HTTP 401 -> ``decisions_fetch_failed`` / ``token_rejected``;
         ``_token_expires`` reset to 0."""
         _need("HTTP 401 alert not built")
 
         connect = _make_connect_stub([
-            (401, {"detail": "unauthorized"}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"}),
+            (401, {"detail": "unauthorized"}, _date_hdr()),
         ])
         sync, ws = _build_sync_process(tmp_path, monkeypatch, connect)
         lay = ws["lay"]
@@ -940,8 +925,6 @@ class TestHTTP401:
 class TestTLSVerifyFailure:
     """TLS verification failure alerts immediately."""
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: TLS verify failure alerts immediately")
     def test_tls_verify_failure_alerts_immediately(self, tmp_path, monkeypatch):
         """TLS verification failure -> immediate ``decisions_fetch_failed``
         / ``tls_verify_failed``.  Spec section 2."""
@@ -954,7 +937,7 @@ class TestTLSVerifyFailure:
         def connect_tls_fail(method, url, body=None, headers=None, token=None):
             if "/sync/decisions" in url:
                 raise ssl.SSLCertVerificationError("certificate verify failed")
-            return (200, {}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+            return (200, {}, _date_hdr())
 
         ws = _setup_managed_workspace(tmp_path, monkeypatch)
         lay = ws["lay"]
@@ -985,15 +968,13 @@ class TestTLSVerifyFailure:
 class TestMalformedBody:
     """200 with malformed or unexpected body shapes."""
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: non-object body alert")
     @pytest.mark.parametrize("body", [42, "x", True], ids=["int", "str", "bool"])
     def test_non_object_body_alerts(self, tmp_path, monkeypatch, body):
         """200 with scalar body -> ``decisions_malformed`` / ``not_object_or_list``."""
         _need("non-object body alert not built")
 
         connect = _make_connect_stub([
-            (200, body, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"}),
+            (200, body, _date_hdr()),
         ])
         sync, ws = _build_sync_process(tmp_path, monkeypatch, connect)
         lay = ws["lay"]
@@ -1004,15 +985,13 @@ class TestMalformedBody:
 
         _assert_one(lay, "decisions_malformed", "not_object_or_list")
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: decisions key missing alert")
     def test_decisions_key_missing(self, tmp_path, monkeypatch):
         """200 dict without ``decisions`` key -> ``decisions_malformed`` /
         ``decisions_key_missing``."""
         _need("decisions key missing alert not built")
 
         connect = _make_connect_stub([
-            (200, {"other": "data"}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"}),
+            (200, {"other": "data"}, _date_hdr()),
         ])
         sync, ws = _build_sync_process(tmp_path, monkeypatch, connect)
         lay = ws["lay"]
@@ -1023,8 +1002,6 @@ class TestMalformedBody:
 
         _assert_one(lay, "decisions_malformed", "decisions_key_missing")
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: decisions not list alert")
     @pytest.mark.parametrize("val", [42, "abc", {}, None],
                              ids=["int", "str", "dict", "null"])
     def test_decisions_key_not_list_never_raises(
@@ -1035,7 +1012,7 @@ class TestMalformedBody:
         _need("decisions_not_list alert not built")
 
         connect = _make_connect_stub([
-            (200, {"decisions": val}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"}),
+            (200, {"decisions": val}, _date_hdr()),
         ])
         sync, ws = _build_sync_process(tmp_path, monkeypatch, connect)
         lay = ws["lay"]
@@ -1056,8 +1033,6 @@ class TestMalformedBody:
 class TestMalformedRows:
     """One bad row among good rows; good rows still apply."""
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: bad row among good rows")
     @pytest.mark.parametrize("bad_row,code", [
         ("not_a_dict", "row_not_object"),
         (42, "row_not_object"),
@@ -1103,8 +1078,8 @@ class TestMalformedRows:
         def connect(method, url, body=None, headers=None, token=None):
             if "/sync/decisions" in url:
                 return (200, {"decisions": decisions_body},
-                        {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
-            return (200, {}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+                        _date_hdr())
+            return (200, {}, _date_hdr())
 
         from sandbox.connector.sync.process import SyncProcess, _fetch_decisions
 
@@ -1143,8 +1118,6 @@ class TestMalformedRows:
 class TestUnknownKeyRefused:
     """A decision with an unknown key is refused."""
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: unknown key refused with reason")
     def test_unknown_key_refused_with_reason(self, tmp_path, monkeypatch):
         """The key is not in the registry -> ``decision_refused`` /
         ``unknown_key``.  Line says ``claimed key`` and no user name."""
@@ -1170,8 +1143,8 @@ class TestUnknownKeyRefused:
         def connect(method, url, body=None, headers=None, token=None):
             if "/sync/decisions" in url:
                 return (200, {"decisions": [bad_row]},
-                        {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
-            return (200, {}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+                        _date_hdr())
+            return (200, {}, _date_hdr())
 
         from sandbox.connector.sync.process import SyncProcess, _fetch_decisions
 
@@ -1207,8 +1180,6 @@ class TestUnknownKeyRefused:
 class TestBadSignatureRefused:
     """A decision with a valid key but corrupted signature is refused."""
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: bad signature refused with reason")
     def test_bad_signature_refused_with_reason(self, tmp_path, monkeypatch):
         """Registry key, signature XOR 0x01 with assert new != old ->
         ``decision_refused`` / ``bad_signature``."""
@@ -1250,8 +1221,8 @@ class TestBadSignatureRefused:
         def connect(method, url, body=None, headers=None, token=None):
             if "/sync/decisions" in url:
                 return (200, {"decisions": [bad_row]},
-                        {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
-            return (200, {}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+                        _date_hdr())
+            return (200, {}, _date_hdr())
 
         from sandbox.connector.sync.process import SyncProcess, _fetch_decisions
 
@@ -1296,8 +1267,6 @@ class TestNonCountingApproval:
     returns False for carol's key.
     """
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: non-counting approval awaiting_second in status")
     def test_non_counting_approval_shows_awaiting_second_in_status(
         self, tmp_path, monkeypatch,
     ):
@@ -1331,8 +1300,8 @@ class TestNonCountingApproval:
         def connect(method, url, body=None, headers=None, token=None):
             if "/sync/decisions" in url:
                 return (200, {"decisions": [server_row]},
-                        {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
-            return (200, {}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+                        _date_hdr())
+            return (200, {}, _date_hdr())
 
         from sandbox.connector.sync.process import SyncProcess, _fetch_decisions
 
@@ -1364,8 +1333,6 @@ class TestNonCountingApproval:
             f"status must show not_dual_eligible, got: {status_output}"
         )
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: non-counting approval in alerts")
     def test_non_counting_approval_shows_in_alerts(
         self, tmp_path, monkeypatch,
     ):
@@ -1396,8 +1363,8 @@ class TestNonCountingApproval:
         def connect(method, url, body=None, headers=None, token=None):
             if "/sync/decisions" in url:
                 return (200, {"decisions": [server_row]},
-                        {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
-            return (200, {}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+                        _date_hdr())
+            return (200, {}, _date_hdr())
 
         from sandbox.connector.sync.process import SyncProcess, _fetch_decisions
 
@@ -1442,8 +1409,6 @@ class TestCycleShape:
     """Cycle shape from spec section 2: later steps still run after
     _fetch_decisions failure."""
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: 500 still uploads then raises")
     def test_500_still_uploads_escalations_and_audit_then_raises(
         self, tmp_path, monkeypatch,
     ):
@@ -1470,20 +1435,20 @@ class TestCycleShape:
             call_log.append(url)
             if "/sync/decisions" in url:
                 return (500, {"detail": "server error"},
-                        {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+                        _date_hdr())
             # Token, registry, bundle, escalations, audit all succeed
             if "/sync/token" in url:
                 return (200, {"access_token": "tok", "expires_in": 3600},
-                        {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+                        _date_hdr())
             if "/sync/registry" in url:
-                return (200, [], {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+                return (200, {"registry": []}, _date_hdr())
             if "/sync/bundle" in url:
                 return (204, {}, {})
             if "/sync/escalations" in url:
                 return (200, {}, {})
             if "/sync/audit" in url:
                 return (200, {}, {})
-            return (200, {}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+            return (200, {}, _date_hdr())
 
         device_sk = _keygen()
         sync = SyncProcess(
@@ -1528,8 +1493,6 @@ class TestCycleShape:
 class TestApplyExternalRaises:
     """apply_external raises -> decision_apply_failed alert."""
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: apply_external raises -> alert")
     def test_apply_external_raises_alert_and_later_requests_apply(
         self, tmp_path, monkeypatch,
     ):
@@ -1581,8 +1544,8 @@ class TestApplyExternalRaises:
         def connect(method, url, body=None, headers=None, token=None):
             if "/sync/decisions" in url:
                 return (200, {"decisions": [row1, row2a, row2b]},
-                        {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
-            return (200, {}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+                        _date_hdr())
+            return (200, {}, _date_hdr())
 
         from sandbox.connector.sync.process import SyncProcess, _fetch_decisions
 
@@ -1624,8 +1587,6 @@ class TestApplyExternalRaises:
 class TestDoneRequestRows:
     """Done and unknown request handling."""
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: done request rows write nothing")
     def test_done_request_rows_write_nothing_on_repeat_polls(
         self, tmp_path, monkeypatch,
     ):
@@ -1642,17 +1603,22 @@ class TestDoneRequestRows:
                                       requires_dual=False)
         fp = rec["fingerprint"]
 
-        # Apply and complete the request through apply_external
+        # Apply and complete the request through apply_external (two approvers)
         bob_kid = admin_sks[0][2]
         bob_uid = f"admin-{bob_kid[:8]}"
         bob_approval = _make_remote_approval(
             admin_sks[0][0], request_id=rid, command="echo done-test",
             fingerprint=fp, user_id=bob_uid,
         )
+        carol_kid = admin_sks[1][2]
+        carol_approval = _make_remote_approval(
+            admin_sks[1][0], request_id=rid, command="echo done-test",
+            fingerprint=fp, user_id=f"admin-{carol_kid[:8]}",
+        )
 
         import asyncio
         from sandbox.connector.approval import apply_external
-        asyncio.run(apply_external(lay, rid, [bob_approval],
+        asyncio.run(apply_external(lay, rid, [bob_approval, carol_approval],
                                    clock=lambda: time.time()))
 
         # Request should now be done/not pending
@@ -1664,8 +1630,8 @@ class TestDoneRequestRows:
         def connect(method, url, body=None, headers=None, token=None):
             if "/sync/decisions" in url:
                 return (200, {"decisions": [server_row]},
-                        {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
-            return (200, {}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+                        _date_hdr())
+            return (200, {}, _date_hdr())
 
         from sandbox.connector.sync.process import SyncProcess, _fetch_decisions
 
@@ -1696,8 +1662,6 @@ class TestDoneRequestRows:
         ]
         assert not decision_new, f"done request rows must not write alerts: {decision_new}"
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: unknown request rows aggregate")
     def test_unknown_request_rows_aggregate(
         self, tmp_path, monkeypatch,
     ):
@@ -1729,8 +1693,8 @@ class TestDoneRequestRows:
         def connect(method, url, body=None, headers=None, token=None):
             if "/sync/decisions" in url:
                 return (200, {"decisions": rows},
-                        {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
-            return (200, {}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+                        _date_hdr())
+            return (200, {}, _date_hdr())
 
         from sandbox.connector.sync.process import SyncProcess, _fetch_decisions
 
@@ -1767,8 +1731,6 @@ class TestDoneRequestRows:
 class TestServerTextSanitization:
     """Server text capped at 200 chars, scrubbed, no controls, no secrets."""
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: server text capped and scrubbed")
     def test_server_text_capped_scrubbed_no_controls(
         self, tmp_path, monkeypatch,
     ):
@@ -1783,7 +1745,7 @@ class TestServerTextSanitization:
 
         connect = _make_connect_stub([
             (500, {"detail": long_text},
-             {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"}),
+             _date_hdr()),
         ])
         sync, ws = _build_sync_process(tmp_path, monkeypatch, connect)
         lay = ws["lay"]
@@ -1802,15 +1764,13 @@ class TestServerTextSanitization:
             assert ch not in alerts_output, \
                 f"control character {ch!r} must not appear in alerts"
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: non-string detail omitted")
     def test_non_string_detail_omitted(self, tmp_path, monkeypatch):
         """A non-string ``detail`` in the error response is omitted."""
         _need("non-string detail handling not built")
 
         connect = _make_connect_stub([
             (500, {"detail": {"nested": "data"}},
-             {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"}),
+             _date_hdr()),
         ])
         sync, ws = _build_sync_process(tmp_path, monkeypatch, connect)
         lay = ws["lay"]
@@ -1824,8 +1784,6 @@ class TestServerTextSanitization:
         assert "nested" not in alerts_output, \
             "non-string detail must not appear in alerts"
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: row user_id never printed when unverified")
     def test_row_user_id_never_printed_when_unverified(
         self, tmp_path, monkeypatch,
     ):
@@ -1856,8 +1814,8 @@ class TestServerTextSanitization:
         def connect(method, url, body=None, headers=None, token=None):
             if "/sync/decisions" in url:
                 return (200, {"decisions": [bad_row]},
-                        {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
-            return (200, {}, {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"})
+                        _date_hdr())
+            return (200, {}, _date_hdr())
 
         from sandbox.connector.sync.process import SyncProcess, _fetch_decisions
 
@@ -1895,8 +1853,6 @@ class TestServerTextSanitization:
             f"alerts={alerts}, audit={audit}"
         )
 
-    @pytest.mark.xfail(strict=True, raises=M3T9Pending,
-                       reason="T9a: no token in any record")
     def test_no_token_in_any_record(self, tmp_path, monkeypatch):
         """No bearer token appears in any alert or audit record."""
         _need("token scrubbing not built")
@@ -1905,7 +1861,7 @@ class TestServerTextSanitization:
 
         connect = _make_connect_stub([
             (401, {"detail": "token expired"},
-             {"Date": "Wed, 05 Nov 2026 10:00:00 GMT"}),
+             _date_hdr()),
         ])
         sync, ws = _build_sync_process(tmp_path, monkeypatch, connect)
         lay = ws["lay"]

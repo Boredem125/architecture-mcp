@@ -17,8 +17,16 @@ _ALERT_CTRL = frozenset(
     | set(range(0x80, 0xA1))     # C1 including NBSP
     | {0x7F}                     # DEL
     | {0x202A, 0x202B, 0x202C, 0x202D, 0x202E}  # bidi
-    | {0x202F}                   # NNBSP
-    | set(range(0xD800, 0xE000)) # surrogates
+    | {0x2066, 0x2067, 0x2068, 0x2069}            # bidi isolates
+    | {0x200E, 0x200F}                             # LRM / RLM
+    | {0x061C}                                     # ALM
+    | {0x202F}                                     # NNBSP
+    | set(range(0xD800, 0xE000))                   # surrogates
+    | {0x2028}                                     # LINE SEPARATOR
+    | {0x2029}                                     # PARAGRAPH SEPARATOR
+    | {0x200B}                                     # ZERO WIDTH SPACE
+    | {0xFEFF}                                     # BOM
+    | {0x00AD}                                     # SOFT HYPHEN
 )
 
 _HEX_RE = re.compile(r"^[0-9a-fA-F]+$")

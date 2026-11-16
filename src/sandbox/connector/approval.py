@@ -659,15 +659,26 @@ def _validate_request_id(layout: FolderLayout, request_id: str) -> str | None:
     return None
 
 
+# T9A-7: post-signature codes are verified (signature passed)
+_POST_SIG_CODES = frozenset({
+    "nonce_replay", "operator_self_approval",
+    "fingerprint_unavailable", "request_mismatch",
+    "fingerprint_mismatch", "command_mismatch",
+    "device_mismatch", "project_mismatch", "org_mismatch",
+    "nonces_corrupt", "clock_skew", "no_server_time",
+    "same_user", "same_identity", "not_dual_eligible",
+})
+
+
 # -- apply_external (T12b rewrite, ADR 0010) --------------------------------
 
-def apply_external(
+async def apply_external(
     layout: FolderLayout,
     request_id: str,
     approvals: list[dict[str, Any]],
     *,
     clock: Callable[[], float] | None = None,
-) -> Any:
+) -> dict[str, Any]:
     """Apply remote decisions to a pending escalation (D6.3, T12b TCB).
 
     T12b (ADR 0010): trust kwargs removed (F1=A).  Registry, environment,
@@ -675,317 +686,196 @@ def apply_external(
     ``verified_state``.  H1 binding, H3 id validation, nonce redesign,
     done-record signing via queue.finish with connector:<device_id> key.
 
-    Returns a coroutine that yields ``{"status": ...}`` like ``approve()``.
+    Returns ``{"status": ...}`` like ``approve()``.
     """
-    async def _impl() -> dict[str, Any]:
-        from sandbox.connector.broker import FolderBroker
+    from sandbox.connector.broker import FolderBroker
 
-        effective_clock = clock or time.time
+    effective_clock = clock or time.time
 
-        # H3: validate request_id before any file access
-        id_error = _validate_request_id(layout, request_id)
-        if id_error is not None:
-            return {"status": id_error}
+    # H3: validate request_id before any file access
+    id_error = _validate_request_id(layout, request_id)
+    if id_error is not None:
+        return {"status": id_error}
 
-        # C3: check if already done or claimed (done is terminal)
-        queue = EscalationQueue(layout)
-        req_status = queue.status(request_id)
-        if req_status == "done":
-            return {"status": "not_pending"}
-        if req_status == "claimed":
-            return {"status": "not_pending"}
+    # C3: check if already done or claimed (done is terminal)
+    queue = EscalationQueue(layout)
+    req_status = queue.status(request_id)
+    if req_status == "done":
+        return {"status": "not_pending"}
+    if req_status == "claimed":
+        return {"status": "not_pending"}
 
-        # Load verified state (H2, M2, C6, C7 -- ADR 0010 s2)
-        from sandbox.connector.sync.verified_state import load_verified_state
-        vs = load_verified_state(layout)
+    # Load verified state (H2, M2, C6, C7 -- ADR 0010 s2)
+    from sandbox.connector.sync.verified_state import load_verified_state
+    vs = load_verified_state(layout)
 
-        # Verified state required for approvals; denies may still apply without it
-        reg = vs.registry if vs else None
-        effective_env = vs.environment if vs else "prod"
-        effective_seq = vs.policy_sequence if vs else 0
-        effective_ea = vs.enforced_approval if vs else {}
-        operator_uid = vs.operator_user_id if vs else None
-        device_id_val = vs.device_id if vs else ""
-        project_id_val = vs.project_id if vs else ""
-        org_id_val = vs.org_id if vs else ""
+    # Verified state required for approvals; denies may still apply without it
+    reg = vs.registry if vs else None
+    effective_env = vs.environment if vs else "prod"
+    effective_seq = vs.policy_sequence if vs else 0
+    effective_ea = vs.enforced_approval if vs else {}
+    operator_uid = vs.operator_user_id if vs else None
+    device_id_val = vs.device_id if vs else ""
+    project_id_val = vs.project_id if vs else ""
+    org_id_val = vs.org_id if vs else ""
 
-        # Fail closed: a missing enrollment on a managed workspace means
-        # remote approvals are refused (no silent skip of operator exclusion).
-        # Security round 4 (Q6): either missing value refuses; an operator id
-        # that cannot be read must never skip the operator exclusion (S8).
-        if vs is None or operator_uid is None or not device_id_val:
-            return {"status": "awaiting_second", "approvals": 0,
-                    "reason_code": "no_verified_state"}
+    # Fail closed: a missing enrollment on a managed workspace means
+    # remote approvals are refused (no silent skip of operator exclusion).
+    # Security round 4 (Q6): either missing value refuses; an operator id
+    # that cannot be read must never skip the operator exclusion (S8).
+    if vs is None or operator_uid is None or not device_id_val:
+        return {"status": "awaiting_second", "approvals": 0,
+                "reason_code": "no_verified_state"}
 
-        # Read the pending record (no claim yet -- count approvals first)
-        # Check .sandbox/pending/ first (where the hook writes), then escalations/pending/
-        pending_file = None
-        for candidate in [
-            layout.root / ".sandbox" / "pending" / f"{request_id}.json",
-            layout.pending_dir / f"{request_id}.json",
-        ]:
-            if candidate.exists():
-                pending_file = candidate
-                break
-        if pending_file is None:
-            return {"status": "not_pending"}
+    # Read the pending record (no claim yet -- count approvals first)
+    # Check .sandbox/pending/ first (where the hook writes), then escalations/pending/
+    pending_file = None
+    for candidate in [
+        layout.root / ".sandbox" / "pending" / f"{request_id}.json",
+        layout.pending_dir / f"{request_id}.json",
+    ]:
+        if candidate.exists():
+            pending_file = candidate
+            break
+    if pending_file is None:
+        return {"status": "not_pending"}
 
-        # H3: refuse symlinks
-        if pending_file.is_symlink():
-            return {"status": "invalid_id"}
+    # H3: refuse symlinks
+    if pending_file.is_symlink():
+        return {"status": "invalid_id"}
+
+    try:
+        pending_rec = json.loads(pending_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"status": "not_pending"}
+
+    # H1: recompute the binding fingerprint from the pending record
+    expected_fp = _binding_fingerprint(pending_rec)
+    if not expected_fp:
+        return {"status": "not_pending"}
+
+    # T12c (ADR 0010 s9): refuse records that cannot be remotely approved.
+    _su = pending_rec.get("script_unbound", "")
+    if _su:
+        return {"status": "refused",
+                "reason": f"script_unbound: {_su}",
+                "reason_code": "script_unbound"}
+    _script_rec = pending_rec.get("script")
+    _preview_rec = pending_rec.get("script_preview")
+    if _script_rec is not None and isinstance(_preview_rec, dict):
+        if not _preview_rec.get("shown", False):
+            return {"status": "refused",
+                    "reason": "script preview not shown",
+                    "reason_code": "script_preview_not_shown"}
+
+    # R3b: policy_sequence must be >= the record's bundle_sequence
+    rec_bundle_seq = pending_rec.get("bundle_sequence", 0)
+    if isinstance(rec_bundle_seq, int) and effective_seq < rec_bundle_seq:
+        return {"status": "awaiting_second", "approvals": 0,
+                "reason_code": "record_ahead_of_bundle"}
+
+    # Load persisted nonces for cross-call replay detection (C1-C3)
+    seen_nonces, nonces_corrupt = _load_seen_nonces(layout)
+
+    # Verify each remote approval against the registry and pending record
+    valid_approvals: list[dict[str, Any]] = []
+    valid_denies: list[dict[str, Any]] = []
+    refusals: list[dict[str, Any]] = []  # T9a: additive key
+
+    for a in approvals:
+        # T9a: per-envelope refuse callback collects refusal codes
+        _per_env_refusals: list[str] = []
+
+        sig_key_id_hint = ""
+        sigs_hint = a.get("signatures", []) if isinstance(a, dict) else []
+        if isinstance(sigs_hint, list) and sigs_hint:
+            s0 = sigs_hint[0]
+            if isinstance(s0, dict):
+                sig_key_id_hint = s0.get("key_id", "")
 
         try:
-            pending_rec = json.loads(pending_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {"status": "not_pending"}
+            verified = _verify_remote_approval(
+                a, reg,
+                policy_sequence=effective_seq,
+                environment=effective_env,
+                operator_user_id=operator_uid,
+                enforced_approval=effective_ea,
+                clock=effective_clock,
+                seen_nonces=seen_nonces,
+                pending_record=pending_rec,
+                device_id=device_id_val,
+                project_id=project_id_val,
+                org_id=org_id_val,
+                refuse=_per_env_refusals.append,
+            )
+        except Exception as _vr_exc:  # noqa: BLE001 -- L2: one bad envelope must not block others
+            refusals.append({"key_id": sig_key_id_hint, "code": "verify_raised",
+                             "verified": False,
+                             "exc_type": type(_vr_exc).__name__})
+            continue
 
-        # H1: recompute the binding fingerprint from the pending record
-        expected_fp = _binding_fingerprint(pending_rec)
-        if not expected_fp:
-            return {"status": "not_pending"}
+        if verified is None:
+            for rc in _per_env_refusals:
+                is_verified = rc in _POST_SIG_CODES
+                ref_entry = {"key_id": sig_key_id_hint, "code": rc,
+                             "verified": is_verified}
+                if is_verified:
+                    # Look up user_id from registry for post-signature codes
+                    try:
+                        reg_entry = reg._keys.get(sig_key_id_hint, {})
+                        ref_entry["user_id"] = reg_entry.get("user_id", "")
+                    except Exception:  # noqa: BLE001
+                        pass
+                refusals.append(ref_entry)
+            continue
+        if nonces_corrupt and verified["decision"] != "deny":
+            # T9A-7: record the nonces_corrupt refusal
+            refusals.append({"key_id": sig_key_id_hint, "code": "nonces_corrupt",
+                             "verified": True, "user_id": verified.get("user_id", "")})
+            continue  # Corrupt nonces: refuse all approvals, allow denies
+        if verified["decision"] == "deny":
+            valid_denies.append(verified)
+        else:
+            valid_approvals.append(verified)
 
-        # T12c (ADR 0010 s9): refuse records that cannot be remotely approved.
-        _su = pending_rec.get("script_unbound", "")
-        if _su:
-            return {"status": "refused",
-                    "reason": f"script_unbound: {_su}",
-                    "reason_code": "script_unbound"}
-        _script_rec = pending_rec.get("script")
-        _preview_rec = pending_rec.get("script_preview")
-        if _script_rec is not None and isinstance(_preview_rec, dict):
-            if not _preview_rec.get("shown", False):
-                return {"status": "refused",
-                        "reason": "script preview not shown",
-                        "reason_code": "script_preview_not_shown"}
+    # C1: write-ahead -- persist nonces BEFORE any claim or execution
+    nonce_saved = _save_seen_nonces(layout, seen_nonces, effective_clock)
+    if not nonce_saved:
+        # Nonce save failed: nothing executes (C1)
+        return {"status": "nonce_save_failed", "refusals": refusals, "reason_code": "nonce_save_failed"}
 
-        # R3b: policy_sequence must be >= the record's bundle_sequence
-        rec_bundle_seq = pending_rec.get("bundle_sequence", 0)
-        if isinstance(rec_bundle_seq, int) and effective_seq < rec_bundle_seq:
-            return {"status": "awaiting_second", "approvals": 0,
-                    "reason_code": "record_ahead_of_bundle"}
-
-        # Load persisted nonces for cross-call replay detection (C1-C3)
-        seen_nonces, nonces_corrupt = _load_seen_nonces(layout)
-
-        # Verify each remote approval against the registry and pending record
-        valid_approvals: list[dict[str, Any]] = []
-        valid_denies: list[dict[str, Any]] = []
-        refusals: list[dict[str, Any]] = []  # T9a: additive key
-
-        for a in approvals:
-            # T9a: per-envelope refuse callback collects refusal codes
-            _per_env_refusals: list[str] = []
-
-            def _refuse_cb(code: str, *, _buf=_per_env_refusals) -> None:
-                _buf.append(code)
-
-            sig_key_id_hint = ""
-            sigs_hint = a.get("signatures", []) if isinstance(a, dict) else []
-            if isinstance(sigs_hint, list) and sigs_hint:
-                s0 = sigs_hint[0]
-                if isinstance(s0, dict):
-                    sig_key_id_hint = s0.get("key_id", "")
-
+    # F1: Skew check -- measured against server time
+    measured_skew = _measure_skew(layout, effective_clock)
+    if measured_skew is not None and measured_skew > _SKEW_THRESHOLD_S:
+        if valid_approvals:
             try:
-                verified = _verify_remote_approval(
-                    a, reg,
-                    policy_sequence=effective_seq,
-                    environment=effective_env,
-                    operator_user_id=operator_uid,
-                    enforced_approval=effective_ea,
-                    clock=effective_clock,
-                    seen_nonces=seen_nonces,
-                    pending_record=pending_rec,
-                    device_id=device_id_val,
-                    project_id=project_id_val,
-                    org_id=org_id_val,
-                    refuse=_refuse_cb,
-                )
-            except Exception as _vr_exc:  # noqa: BLE001 -- L2: one bad envelope must not block others
-                refusals.append({"key_id": sig_key_id_hint, "code": "verify_raised",
-                                 "verified": False,
-                                 "exc_type": type(_vr_exc).__name__})
-                continue
-
-            if verified is None:
-                # T9A-7: post-signature codes are verified (signature passed)
-                _POST_SIG_CODES = frozenset({
-                    "nonce_replay", "operator_self_approval",
-                    "fingerprint_unavailable", "request_mismatch",
-                    "fingerprint_mismatch", "command_mismatch",
-                    "device_mismatch", "project_mismatch", "org_mismatch",
-                    "nonces_corrupt", "clock_skew", "no_server_time",
-                    "same_user", "same_identity", "not_dual_eligible",
+                from sandbox.connector.policy_versions import audit as _audit
+                _audit(layout, {
+                    "event": "clock_skew", "ts": time.time(),
+                    "reason_code": "CLOCK_SKEW", "request_id": request_id,
+                    "skew_s": round(measured_skew, 1),
+                    "reason": "clock skew over 2 min; remote approvals refused, "
+                              "denies still apply (D4.3)",
                 })
-                for rc in _per_env_refusals:
-                    is_verified = rc in _POST_SIG_CODES
-                    ref_entry = {"key_id": sig_key_id_hint, "code": rc,
-                                 "verified": is_verified}
-                    if is_verified:
-                        # Look up user_id from registry for post-signature codes
-                        try:
-                            reg_entry = reg._keys.get(sig_key_id_hint, {})
-                            ref_entry["user_id"] = reg_entry.get("user_id", "")
-                        except Exception:  # noqa: BLE001
-                            pass
-                    refusals.append(ref_entry)
-                continue
-            if nonces_corrupt and verified["decision"] != "deny":
-                # T9A-7: record the nonces_corrupt refusal
-                refusals.append({"key_id": sig_key_id_hint, "code": "nonces_corrupt",
-                                 "verified": True, "user_id": verified.get("user_id", "")})
-                continue  # Corrupt nonces: refuse all approvals, allow denies
-            if verified["decision"] == "deny":
-                valid_denies.append(verified)
-            else:
-                valid_approvals.append(verified)
-
-        # C1: write-ahead -- persist nonces BEFORE any claim or execution
-        nonce_saved = _save_seen_nonces(layout, seen_nonces, effective_clock)
-        if not nonce_saved:
-            # Nonce save failed: nothing executes (C1)
-            return {"status": "nonce_save_failed", "refusals": refusals, "reason_code": "nonce_save_failed"}
-
-        # F1: Skew check -- measured against server time
-        measured_skew = _measure_skew(layout, effective_clock)
-        if measured_skew is not None and measured_skew > _SKEW_THRESHOLD_S:
-            if valid_approvals:
-                try:
-                    from sandbox.connector.policy_versions import audit as _audit
-                    _audit(layout, {
-                        "event": "clock_skew", "ts": time.time(),
-                        "reason_code": "CLOCK_SKEW", "request_id": request_id,
-                        "skew_s": round(measured_skew, 1),
-                        "reason": "clock skew over 2 min; remote approvals refused, "
-                                  "denies still apply (D4.3)",
-                    })
-                except Exception:  # noqa: BLE001
-                    pass
+            except Exception:  # noqa: BLE001
+                pass
+        for va in valid_approvals:
+            refusals.append({"key_id": va.get("key_id", ""), "code": "clock_skew",
+                             "verified": True, "user_id": va.get("user_id", "")})
+        valid_approvals.clear()
+    elif measured_skew is None:
+        from sandbox.connector.sync.state import is_managed as _check_managed
+        if _check_managed(layout):
             for va in valid_approvals:
-                refusals.append({"key_id": va.get("key_id", ""), "code": "clock_skew",
+                refusals.append({"key_id": va.get("key_id", ""), "code": "no_server_time",
                                  "verified": True, "user_id": va.get("user_id", "")})
             valid_approvals.clear()
-        elif measured_skew is None:
-            from sandbox.connector.sync.state import is_managed as _check_managed
-            if _check_managed(layout):
-                for va in valid_approvals:
-                    refusals.append({"key_id": va.get("key_id", ""), "code": "no_server_time",
-                                     "verified": True, "user_id": va.get("user_id", "")})
-                valid_approvals.clear()
 
-        # Deny needs only one valid signed decision (D6.5)
-        if valid_denies:
-            claimed = queue.claim(request_id, valid_denies[0]["user_id"])
-            if claimed is None:
-                # Try old pending dir
-                old_src = layout.root / ".sandbox" / "pending" / f"{request_id}.json"
-                if old_src.exists() and not old_src.is_symlink():
-                    try:
-                        claimed_dir = layout.claimed_dir
-                        claimed_dir.mkdir(parents=True, exist_ok=True)
-                        dst = claimed_dir / f"{request_id}.json"
-                        os.rename(str(old_src), str(dst))
-                        claimed = json.loads(dst.read_text(encoding="utf-8"))
-                    except (OSError, json.JSONDecodeError):
-                        return {"status": "not_pending"}
-                else:
-                    return {"status": "not_pending"}
-            result = {
-                "request_id": request_id,
-                "decision": "deny",
-                "state": "denied",
-                "reviewer_id": valid_denies[0]["user_id"],
-                "command": claimed.get("command", ""),
-                "fingerprint": claimed.get("fingerprint", ""),
-            }
-            queue.finish(request_id, result)
-            return {"status": "denied", "refusals": refusals}
-
-        # No verified state and no denies: fail closed
-        if vs is None:
-            return {"status": "awaiting_second", "approvals": 0, "refusals": refusals}
-
-        # Registry expired: refuse all approvals (D8, D6.5)
-        if reg is not None and time.time() > reg._expires_at:
-            for va in valid_approvals:
-                refusals.append({"key_id": va.get("key_id", ""), "code": "registry_expired",
-                                 "verified": True, "user_id": va.get("user_id", "")})
-            return {"status": "awaiting_second", "approvals": 0,
-                    "reason_code": "registry_expired", "refusals": refusals}
-
-        # H1: dedup by registry user_id (ADR 0010 s1)
-        seen_users: dict[str, dict[str, Any]] = {}
-        deduped: list[dict[str, Any]] = []
-        for va in valid_approvals:
-            uid = va["user_id"]  # This is the registry user_id
-            if uid in seen_users:
-                refusals.append({"key_id": va["key_id"], "code": "same_user",
-                                 "verified": True, "user_id": uid})
-                continue
-            seen_users[uid] = va
-            deduped.append(va)
-
-        # Dedup by (iss, sub): distinct identities required (threat 14)
-        seen_identity: dict[tuple[str, str], str] = {}
-        identity_deduped: list[dict[str, Any]] = []
-        for va in deduped:
-            iss_sub = (va["iss"], va["sub"])
-            if iss_sub in seen_identity:
-                refusals.append({"key_id": va["key_id"], "code": "same_identity",
-                                 "verified": True, "user_id": va["user_id"]})
-                continue
-            seen_identity[iss_sub] = va["user_id"]
-            identity_deduped.append(va)
-
-        # S9: single_admin_registry keys don't count for dual control
-        dual_eligible: list[dict[str, Any]] = []
-        for va in identity_deduped:
-            if reg is not None and not reg.counts_for_dual(va["key_id"]):
-                refusals.append({"key_id": va["key_id"], "code": "not_dual_eligible",
-                                 "verified": True, "user_id": va["user_id"]})
-                continue
-            dual_eligible.append(va)
-
-        # requires_dual = classify(command, verified folder_policy).requires_dual
-        # OR record.requires_dual.  If the bundle cannot classify the command,
-        # default to dual (fail closed).  S9 only decides which keys count
-        # toward dual (dual_eligible vs identity_deduped), never the floor.
-        rec_requires_dual = pending_rec.get("requires_dual", True)
-        policy_requires_dual = True  # fail closed default
-        if vs is not None:
-            fp = vs.bundle_payload.get("folder_policy", {})
-            if not fp:
-                policy_requires_dual = True
-        effective_requires_dual = policy_requires_dual or rec_requires_dual
-        if effective_requires_dual and len(dual_eligible) < 2:
-            return {"status": "awaiting_second", "approvals": len(dual_eligible),
-                    "refusals": refusals}
-
-        # Nothing runs without at least one valid approval (F7)
-        approvers_list = dual_eligible if effective_requires_dual else identity_deduped
-        if not approvers_list:
-            return {"status": "awaiting_second", "approvals": 0,
-                    "refusals": refusals, "reason_code": "no_approvals_counted"}
-
-        # C8: load the connector key BEFORE the claim; if unavailable, nothing runs.
-        connector_reviewer_id = f"connector:{device_id_val}" if device_id_val else "connector:unknown"
-        try:
-            from sandbox.connector.signing import _seed_path
-            from sandbox.connector.keyhome import KeyHomeError
-            seed = _seed_path(layout, connector_reviewer_id, create=False)
-            if not seed.exists():
-                return {"status": "key_unavailable",
-                        "reason": "connector key not found; nothing executes",
-                        "refusals": refusals}
-        except Exception:
-            return {"status": "key_unavailable",
-                    "reason": "connector key unavailable; nothing executes",
-                    "refusals": refusals}
-
-        # NOW claim the pending record (try canonical dir first, then old dir)
-        claimed_rec = queue.claim(request_id, connector_reviewer_id)
-        if claimed_rec is None:
-            # Try claiming from old pending dir
+    # Deny needs only one valid signed decision (D6.5)
+    if valid_denies:
+        claimed = queue.claim(request_id, valid_denies[0]["user_id"])
+        if claimed is None:
+            # Try old pending dir
             old_src = layout.root / ".sandbox" / "pending" / f"{request_id}.json"
             if old_src.exists() and not old_src.is_symlink():
                 try:
@@ -993,69 +883,176 @@ def apply_external(
                     claimed_dir.mkdir(parents=True, exist_ok=True)
                     dst = claimed_dir / f"{request_id}.json"
                     os.rename(str(old_src), str(dst))
-                    claimed_rec = json.loads(dst.read_text(encoding="utf-8"))
-                    claimed_rec["reviewer_id"] = connector_reviewer_id
-                    claimed_rec["claimed_at"] = time.time()
+                    claimed = json.loads(dst.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError):
                     return {"status": "not_pending"}
             else:
                 return {"status": "not_pending"}
-
-        # H1 C4: recompute fingerprint on the CLAIMED copy
-        claimed_fp = _binding_fingerprint(claimed_rec)
-        if claimed_fp != expected_fp:
-            # TOCTOU: record was edited between read and claim
-            queue.release(request_id, claimed_rec)
-            return {"status": "changed", "refusals": refusals}
-
-        # Execute via the broker (C8: uses the record's cwd and root)
-        reviewer_id = approvers_list[0]["user_id"]
-        result = await FolderBroker().execute(claimed_rec, reviewer_id, "")
-        result.setdefault("approved_at", time.time())
-        result["remote_approvals"] = [d["envelope"] for d in approvers_list]
-        result["approved_by"] = [
-            {"user_id": d["user_id"], "key_kind": d["key_kind"]}
-            for d in approvers_list
-            if not d["user_id"].startswith("connector:")
-        ]
-        result["requires_dual"] = effective_requires_dual
-        result["environment"] = effective_env
-
-        # M3/C8: finish via queue.finish (scrub + sign with connector key)
-        result["reviewer_id"] = connector_reviewer_id
+        result = {
+            "request_id": request_id,
+            "decision": "deny",
+            "state": "denied",
+            "reviewer_id": valid_denies[0]["user_id"],
+            "command": claimed.get("command", ""),
+            "fingerprint": claimed.get("fingerprint", ""),
+        }
         queue.finish(request_id, result)
+        return {"status": "denied", "refusals": refusals}
 
-        # C8: write the done-record hash to the audit chain
-        try:
-            from sandbox.connector.audit import FolderAudit
-            done_file = layout.done_dir / f"{request_id}.json"
-            if done_file.exists():
-                done_bytes = done_file.read_bytes()
-                done_hash = hashlib.sha256(done_bytes).hexdigest()
-                audit = FolderAudit(layout.audit_dir, session_id="remote")
-                entry = {
-                    "event": "remote_done",
-                    "request_id": request_id,
-                    "done_hash": done_hash,
-                    "reviewer_id": connector_reviewer_id,
-                    "ts": time.time(),
-                }
-                audit.append(entry)
-                # Also write to top-level audit chain for grepping
-                chain_file = layout.audit_dir / "remote_done.jsonl"
-                try:
-                    layout.audit_dir.mkdir(parents=True, exist_ok=True)
-                    with open(chain_file, "a", encoding="utf-8") as f:
-                        f.write(json.dumps(entry) + "\n")
-                except OSError:
-                    pass
-        except Exception:  # noqa: BLE001 -- audit is additive
-            pass
+    # No verified state and no denies: fail closed
+    if vs is None:
+        return {"status": "awaiting_second", "approvals": 0, "refusals": refusals}
 
-        # T12c: a refusal from the broker is terminal
-        broker_state = result.get("state", "executed")
-        if broker_state == "refused":
-            return {"status": broker_state, "result": result, "refusals": refusals}
-        return {"status": "executed", "result": result, "refusals": refusals}
+    # Registry expired: refuse all approvals (D8, D6.5)
+    if reg is not None and time.time() > reg._expires_at:
+        for va in valid_approvals:
+            refusals.append({"key_id": va.get("key_id", ""), "code": "registry_expired",
+                             "verified": True, "user_id": va.get("user_id", "")})
+        return {"status": "awaiting_second", "approvals": 0,
+                "reason_code": "registry_expired", "refusals": refusals}
 
-    return _impl()
+    # H1: dedup by registry user_id (ADR 0010 s1)
+    seen_users: dict[str, dict[str, Any]] = {}
+    deduped: list[dict[str, Any]] = []
+    for va in valid_approvals:
+        uid = va["user_id"]  # This is the registry user_id
+        if uid in seen_users:
+            refusals.append({"key_id": va["key_id"], "code": "same_user",
+                             "verified": True, "user_id": uid})
+            continue
+        seen_users[uid] = va
+        deduped.append(va)
+
+    # Dedup by (iss, sub): distinct identities required (threat 14)
+    seen_identity: dict[tuple[str, str], str] = {}
+    identity_deduped: list[dict[str, Any]] = []
+    for va in deduped:
+        iss_sub = (va["iss"], va["sub"])
+        if iss_sub in seen_identity:
+            refusals.append({"key_id": va["key_id"], "code": "same_identity",
+                             "verified": True, "user_id": va["user_id"]})
+            continue
+        seen_identity[iss_sub] = va["user_id"]
+        identity_deduped.append(va)
+
+    # S9: single_admin_registry keys don't count for dual control
+    dual_eligible: list[dict[str, Any]] = []
+    for va in identity_deduped:
+        if reg is not None and not reg.counts_for_dual(va["key_id"]):
+            refusals.append({"key_id": va["key_id"], "code": "not_dual_eligible",
+                             "verified": True, "user_id": va["user_id"]})
+            continue
+        dual_eligible.append(va)
+
+    # requires_dual = classify(command, verified folder_policy).requires_dual
+    # OR record.requires_dual.  If the bundle cannot classify the command,
+    # default to dual (fail closed).  S9 only decides which keys count
+    # toward dual (dual_eligible vs identity_deduped), never the floor.
+    rec_requires_dual = pending_rec.get("requires_dual", True)
+    policy_requires_dual = True  # fail closed default
+    if vs is not None:
+        fp = vs.bundle_payload.get("folder_policy", {})
+        if not fp:
+            policy_requires_dual = True
+    effective_requires_dual = policy_requires_dual or rec_requires_dual
+    if effective_requires_dual and len(dual_eligible) < 2:
+        return {"status": "awaiting_second", "approvals": len(dual_eligible),
+                "refusals": refusals}
+
+    # Nothing runs without at least one valid approval (F7)
+    approvers_list = dual_eligible if effective_requires_dual else identity_deduped
+    if not approvers_list:
+        return {"status": "awaiting_second", "approvals": 0,
+                "refusals": refusals, "reason_code": "no_approvals_counted"}
+
+    # C8: load the connector key BEFORE the claim; if unavailable, nothing runs.
+    connector_reviewer_id = f"connector:{device_id_val}" if device_id_val else "connector:unknown"
+    try:
+        from sandbox.connector.signing import _seed_path
+        from sandbox.connector.keyhome import KeyHomeError
+        seed = _seed_path(layout, connector_reviewer_id, create=False)
+        if not seed.exists():
+            return {"status": "key_unavailable",
+                    "reason": "connector key not found; nothing executes",
+                    "refusals": refusals}
+    except Exception:
+        return {"status": "key_unavailable",
+                "reason": "connector key unavailable; nothing executes",
+                "refusals": refusals}
+
+    # NOW claim the pending record (try canonical dir first, then old dir)
+    claimed_rec = queue.claim(request_id, connector_reviewer_id)
+    if claimed_rec is None:
+        # Try claiming from old pending dir
+        old_src = layout.root / ".sandbox" / "pending" / f"{request_id}.json"
+        if old_src.exists() and not old_src.is_symlink():
+            try:
+                claimed_dir = layout.claimed_dir
+                claimed_dir.mkdir(parents=True, exist_ok=True)
+                dst = claimed_dir / f"{request_id}.json"
+                os.rename(str(old_src), str(dst))
+                claimed_rec = json.loads(dst.read_text(encoding="utf-8"))
+                claimed_rec["reviewer_id"] = connector_reviewer_id
+                claimed_rec["claimed_at"] = time.time()
+            except (OSError, json.JSONDecodeError):
+                return {"status": "not_pending"}
+        else:
+            return {"status": "not_pending"}
+
+    # H1 C4: recompute fingerprint on the CLAIMED copy
+    claimed_fp = _binding_fingerprint(claimed_rec)
+    if claimed_fp != expected_fp:
+        # TOCTOU: record was edited between read and claim
+        queue.release(request_id, claimed_rec)
+        return {"status": "changed", "refusals": refusals}
+
+    # Execute via the broker (C8: uses the record's cwd and root)
+    reviewer_id = approvers_list[0]["user_id"]
+    result = await FolderBroker().execute(claimed_rec, reviewer_id, "")
+    result.setdefault("approved_at", time.time())
+    result["remote_approvals"] = [d["envelope"] for d in approvers_list]
+    result["approved_by"] = [
+        {"user_id": d["user_id"], "key_kind": d["key_kind"]}
+        for d in approvers_list
+        if not d["user_id"].startswith("connector:")
+    ]
+    result["requires_dual"] = effective_requires_dual
+    result["environment"] = effective_env
+
+    # M3/C8: finish via queue.finish (scrub + sign with connector key)
+    result["reviewer_id"] = connector_reviewer_id
+    queue.finish(request_id, result)
+
+    # C8: write the done-record hash to the audit chain
+    try:
+        from sandbox.connector.audit import FolderAudit
+        done_file = layout.done_dir / f"{request_id}.json"
+        if done_file.exists():
+            done_bytes = done_file.read_bytes()
+            done_hash = hashlib.sha256(done_bytes).hexdigest()
+            audit = FolderAudit(layout.audit_dir, session_id="remote")
+            entry = {
+                "event": "remote_done",
+                "request_id": request_id,
+                "done_hash": done_hash,
+                "reviewer_id": connector_reviewer_id,
+                "ts": time.time(),
+            }
+            audit.append(entry)
+            # Also write to top-level audit chain for grepping
+            chain_file = layout.audit_dir / "remote_done.jsonl"
+            try:
+                layout.audit_dir.mkdir(parents=True, exist_ok=True)
+                with open(chain_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry) + "\n")
+            except OSError:
+                pass
+    except Exception:  # noqa: BLE001 -- audit is additive
+        pass
+
+    # T12c: a refusal from the broker is terminal
+    broker_state = result.get("state", "executed")
+    if broker_state == "refused":
+        return {"status": broker_state, "result": result, "refusals": refusals}
+    return {"status": "executed", "result": result, "refusals": refusals}
+

@@ -172,8 +172,22 @@ It is **display and rate-limit state only**. No decision path reads it. Corrupt 
 | E | Turn an alert into an approval | None: the alert path sits after the verdict and nothing reads the state file to decide |
 | Limit | Withhold rows behind a 200 | Undetectable. The request stays pending and fails closed. Existing compromised-server limit |
 | Limit | Confusable Unicode inside the 200 characters | Not addressed. The prefix and label are the bound |
+| Limit | Hand edit of `decision_state.json` | **Named limit.** The file is unsigned. See below |
 
 A local agent editing the state file can only change what is displayed or rate-limited. `.sandbox/` is already write-protected from the agent, and the chain and the verdict do not depend on the file.
+
+**Named limit: the state file is not tamper-evident.** Whoever can write `.sandbox/logs/` (a human or an already-escaped process, not a contained agent) can, per edit:
+
+- delay one refusal's alert and its `decision_refused` audit record by at most one `DECISION_REALERT_SECONDS` window (1 hour), while the refusal persists;
+- use up the hourly cap, which delays the capped kinds for at most the rest of that hour;
+- hide a non-terminal `sync_decision_applied` record until that request's outcome changes;
+- fake or remove lines in `sandbox status`.
+
+Editing again repeats the delay. Nothing bounds an editor who keeps writing, and nothing detects it.
+
+It cannot approve, count, run or consume anything. It cannot suppress the `sync_decision_applied` record for `executed` or `denied`, or change the chain. A field of the wrong type drops the whole file. A non-finite number or a timestamp later than now counts as absent. Neither can stop a cycle, stop audit upload, or silence a key for longer than the bound above.
+
+This paragraph is the requirement. `T9A_SECURITY_REVIEW.md` Round 2, R2-5 and R2-6, lists what the build must change for it to hold.
 
 ## 6. Guard nodes the build must keep green
 

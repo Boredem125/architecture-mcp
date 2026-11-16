@@ -83,8 +83,29 @@ class TestSealHash:
 # ---------------------------------------------------------------------------
 
 
+# Paths exempt from the seal check (founder row required for each).
+# Ruling T0b-11: ee/tests/test_t9_routes.py gains one set from a reviewed
+# data file; its manifest hash changes at each task that adds routes.
+_SEAL_EXEMPT_PATHS = frozenset({
+    "ee/tests/test_t9_routes.py",
+})
+
+# Sealed lines replaced once, each pinned to its new hash (founder row
+# required for each).  Founder row 16 Nov 2026 (M3_BASELINE.md section 3,
+# finding T1-23): M2_DEMO.md gains two correction notes.  Founder row
+# 9 Nov 2026 (ruling T0b-15): test_m2_t11_audit.py sends one session_id in
+# its batch and records (fixture edit, no assertion changed).
+_SEAL_REPLACED = {
+    "docs/control-plane/M2_DEMO.md":
+        "47b119debee049e72ec26fdc19cea4602eced60eac3c74f90f5eee0dca04acf0",
+    "ee/tests/test_m2_t11_audit.py":
+        "4984851d288f4886ccfe73fa416d09949bd1e7d4113552bdd72240e7f6f789d0",
+}
+
+
 class TestSealedLinesUnchanged:
-    """Every line in the seal appears byte-identical in the current manifest."""
+    """Every line in the seal appears byte-identical in the current manifest,
+    except for paths listed in ``_SEAL_EXEMPT_PATHS``."""
 
     def test_manifest_exists(self) -> None:
         assert MANIFEST.is_file(), f"Missing manifest: {MANIFEST}"
@@ -96,11 +117,31 @@ class TestSealedLinesUnchanged:
         seal_lines = set(_parse_lines(seal_text))
         manifest_lines = set(_parse_lines(manifest_text))
 
-        missing = seal_lines - manifest_lines
+        # Filter out exempt paths from the sealed set
+        exempt_seal_lines = {
+            line for line in seal_lines
+            if _parse_path(line) in _SEAL_EXEMPT_PATHS
+            or _parse_path(line) in _SEAL_REPLACED
+        }
+        checked_seal_lines = seal_lines - exempt_seal_lines
+
+        missing = checked_seal_lines - manifest_lines
         assert not missing, (
             f"{len(missing)} sealed lines missing or changed in manifest:\n"
             + "\n".join(sorted(missing)[:10])
         )
+
+    def test_replaced_lines_carry_pinned_hash(self) -> None:
+        """Each replaced sealed path is in the manifest with exactly its
+        pinned new hash, and was in the seal to begin with."""
+        seal_paths = {_parse_path(l) for l in _parse_lines(
+            _lf_bytes(SEAL).decode("utf-8"))}
+        manifest_lines = set(_parse_lines(_lf_bytes(MANIFEST).decode("utf-8")))
+        for path, digest in _SEAL_REPLACED.items():
+            assert path in seal_paths, f"{path} is not a sealed path"
+            assert f"{digest}  {path}" in manifest_lines, (
+                f"{path}: manifest must carry the pinned hash {digest}"
+            )
 
     def test_manifest_is_superset_of_seal(self) -> None:
         """The manifest may have more lines (new tasks) but never fewer sealed ones."""
@@ -111,6 +152,21 @@ class TestSealedLinesUnchanged:
         manifest_count = len(_parse_lines(manifest_text))
         assert manifest_count >= seal_count, (
             f"Manifest ({manifest_count} lines) must be >= seal ({seal_count} lines)"
+        )
+
+    def test_only_named_paths_are_exempt(self) -> None:
+        """Prove that no path other than the named ones is exempt.  Any
+        addition to ``_SEAL_EXEMPT_PATHS`` needs a founder row."""
+        assert _SEAL_EXEMPT_PATHS == {"ee/tests/test_t9_routes.py"}, (
+            f"Only ee/tests/test_t9_routes.py may be exempt; "
+            f"got {_SEAL_EXEMPT_PATHS}"
+        )
+        assert set(_SEAL_REPLACED) == {
+            "docs/control-plane/M2_DEMO.md",
+            "ee/tests/test_m2_t11_audit.py",
+        }, (
+            f"Only M2_DEMO.md and test_m2_t11_audit.py may be replaced; "
+            f"got {set(_SEAL_REPLACED)}"
         )
 
 

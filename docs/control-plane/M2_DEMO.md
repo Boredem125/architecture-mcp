@@ -99,6 +99,7 @@ Source: `m2_gate.py` results.json (88 checks) and stdout log. Measured detail is
 | 10 | registry chain persists (3 versions, same fingerprint) | PASS | versions=3 | - |
 | 10 | bundles persist (GET /sync/bundle serves the latest sequence) | PASS | seq=1 | - |
 | 10 | python -m agg_cp.cli audit verify --org acme exits 0 (T16d-1) | PASS | rc=0 | 1.55 s |
+| 10 | **Correction, 16 Nov 2026 (founder row, `M3_BASELINE.md` section 3; finding T1-23):** the row above proved nothing. `agg_cp/cli.py` had no `if __name__ == "__main__":` guard, so `python -m agg_cp.cli` did nothing and exited 0. The same holds for the server-side `audit verify` rows of steps 6 and 7 and `demo.py` step 5. Rerun on a fresh stack with the guard (HEAD `81fda66` plus the M3 T1 tree): `m2_gate.py` 88 PASS / 0 FAIL / 0 NOT RUN, `demo.py` 47 PASS / 0 FAIL; by hand, `--org acme` printed `{"org": "acme", "ok": true, "reason": ""}` rc=0 and `--org nonexistent` printed `org_not_found` rc=1 | PASS | rc=0 | 16 Nov 2026 |
 | 10 | connector syncs after the restart | PASS | rc=0 | 17.43 s |
 | 10 | bob can log in again after the restart (users persist, Keycloak subjects stable) | PASS | callback=200 <!doctype html> <html lang="en"> <head> <meta charset="UTF-8" /> < /me=200 | 4.84 s |
 | 8 | sync state deleted: connector stays on the last bundle (steal-env still escalates, no fallback) | PASS | decision=deny reason=SANDBOX: escalated as request d3ddc59e68f3aaf6 — no human decision yet. Ask th… | 55.93 s |
@@ -155,7 +156,7 @@ None in run 2 (0 NOT RUN).
 |---|---|
 | Fresh stack to `/ready` 200 | 126 s first build, 39 s rebuilds (5 fresh stacks this session) |
 | `init-secrets` on an existing `secrets/` | skips the 4 existing files (`O_EXCL`), stack still healthy |
-| `python -m agg_cp.cli audit verify --org acme` after `down`/`up` | exit 0 |
+| `python -m agg_cp.cli audit verify --org acme` after `down`/`up` | exit 0. **Correction, 16 Nov 2026 (T1-23):** that exit 0 proved nothing, because the module had no `__main__` guard. Rerun with the guard on a fresh stack: `{"org": "acme", "ok": true, "reason": ""}`, exit 0 (see the step 10 correction row in section 2) |
 | Registry chain after `down`/`up` | 3 versions, fingerprint unchanged |
 
 ## 7. Security rulings (1 Nov, T16 findings)

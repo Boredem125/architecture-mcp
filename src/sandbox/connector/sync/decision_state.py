@@ -41,17 +41,30 @@ class DecisionState:
         self._hour_start: float = 0.0
         self._suppressed_this_hour: int = 0
         self._net_consecutive: int = 0
+        self._net_stage: str = ""
         self._load()
 
     # -- persistence --
 
+    # R3-3: ints above this magnitude cannot safely convert to float
+    # (OverflowError in math.isnan/isinf). Guard before math calls.
+    _INT_GUARD = 2**63
+
     @staticmethod
     def _finite_int(val: object, default: int = 0) -> int:
-        """Convert a numeric value to int, returning *default* for NaN/Inf/non-numeric."""
+        """Convert a numeric value to int, returning *default* for NaN/Inf/non-numeric.
+
+        R3-3: huge ints (> 2**63) return default -- they would OverflowError
+        in math.isnan/isinf, and no valid state field needs values that large.
+        """
         import math
         if isinstance(val, bool):
             return default
-        if isinstance(val, (int, float)):
+        if isinstance(val, int):
+            if abs(val) > DecisionState._INT_GUARD:
+                return default
+            return val
+        if isinstance(val, float):
             if math.isnan(val) or math.isinf(val):
                 return default
             return int(val)
@@ -59,20 +72,28 @@ class DecisionState:
 
     @staticmethod
     def _finite_float(val: object, default: float = 0.0) -> float:
-        """Convert a numeric value to float, returning *default* for NaN/Inf/non-numeric."""
+        """Convert a numeric value to float, returning *default* for NaN/Inf/non-numeric.
+
+        R3-3: huge ints (> 2**63) return default.
+        """
         import math
         if isinstance(val, bool):
             return default
-        if isinstance(val, (int, float)):
-            if math.isnan(val) or math.isinf(val):
+        if isinstance(val, int):
+            if abs(val) > DecisionState._INT_GUARD:
                 return default
             return float(val)
+        if isinstance(val, float):
+            if math.isnan(val) or math.isinf(val):
+                return default
+            return val
         return default
 
     def _load(self) -> None:
         """Load from disk; corrupt or missing -> empty (more alerts, never fewer).
 
-        Type-checks every field.  Any wrong type drops the whole file.
+        Any present field of the wrong type drops the whole file (R4-4).
+        Counters must be ``int`` (not ``bool``), ``0 <= v <= 2**63`` (R4-3).
         Non-finite numbers (NaN, Inf) are treated as absent (R2-5).
         Future timestamps (later than now) are treated as absent so a
         hand-edited ``hour_start`` or ``last_alerted`` cannot silence alerts.
@@ -81,54 +102,149 @@ class DecisionState:
         try:
             raw = self._path.read_text(encoding="utf-8")
             data = json.loads(raw)
-        except (OSError, ValueError, KeyError, RecursionError):
+        except Exception:  # noqa: BLE001 -- corrupt state -> empty (T9A-5, R3-3)
             return
         if not isinstance(data, dict):
             return
-        # -- type-check scalar fields; any wrong type -> drop file --
+        # R4-4: wrap all validation in try/except so any wrong type
+        # drops the file (caller catches -> empty state).
+        try:
+            self._validate(data)
+        except Exception:  # noqa: BLE001 -- corrupt -> empty
+            self._entries = {}
+
+    def _validate(self, data: dict) -> None:
+        """Validate and apply loaded state (R3-3, R4-3, R4-4).
+
+        Any present field of the wrong type raises, and ``_load`` catches
+        it, giving empty state.  No coercion defaults: wrong types drop
+        the whole file.
+        """
+        import math
+
+        def _require_counter(val: object) -> int:
+            """int (not bool), 0 <= v <= 2**63, or raise."""
+            if isinstance(val, bool) or not isinstance(val, int):
+                raise ValueError("counter is not int")
+            if val < 0 or val > self._INT_GUARD:
+                raise ValueError("counter out of range")
+            return val
+
+        def _require_ts(val: object) -> float:
+            """int or float (not bool), finite, or raise."""
+            if isinstance(val, bool):
+                raise ValueError("timestamp is bool")
+            if isinstance(val, int):
+                if abs(val) > self._INT_GUARD:
+                    raise ValueError("timestamp too large")
+                return float(val)
+            if isinstance(val, float):
+                if math.isnan(val) or math.isinf(val):
+                    raise ValueError("timestamp non-finite")
+                return val
+            raise ValueError("timestamp wrong type")
+
+        # -- type-check top-level counters; any wrong type -> raise --
         entries = data.get("entries", {})
         if not isinstance(entries, dict):
-            return
-        net_raw = data.get("net_consecutive", 0)
-        if not isinstance(net_raw, (int, float)) or isinstance(net_raw, bool):
-            return
-        ath_raw = data.get("alerts_this_hour", 0)
-        if not isinstance(ath_raw, (int, float)) or isinstance(ath_raw, bool):
-            return
-        hs_raw = data.get("hour_start", 0.0)
-        if not isinstance(hs_raw, (int, float)) or isinstance(hs_raw, bool):
-            return
-        sth_raw = data.get("suppressed_this_hour", 0)
-        if not isinstance(sth_raw, (int, float)) or isinstance(sth_raw, bool):
-            return
-        # R2-5: reject non-finite numbers
-        net = self._finite_int(net_raw)
-        ath = self._finite_int(ath_raw)
-        hs = self._finite_float(hs_raw)
-        sth = self._finite_int(sth_raw)
-        # -- type-check each entry value --
+            raise ValueError("entries is not a dict")
+
+        net = _require_counter(data.get("net_consecutive", 0))
+        ath = _require_counter(data.get("alerts_this_hour", 0))
+        sth = _require_counter(data.get("suppressed_this_hour", 0))
+        hs = _require_ts(data.get("hour_start", 0.0))
+
+        # -- R4-4: full type-check of each entry value --
         now = time.time()
         validated: dict[str, dict] = {}
         for k, v in entries.items():
-            if not isinstance(k, str) or not isinstance(v, dict):
-                continue
-            validated[k] = v
-            # R2-5: future timestamps treated as absent (T9A-5)
-            for ts_field in ("last_alerted", "first_seen", "last_seen"):
+            if not isinstance(k, str):
+                raise ValueError("entry key is not a string")
+            if not isinstance(v, dict):
+                # R4-4: an entry that is a list (or other non-dict) drops file
+                raise ValueError("entry value is not a dict")
+
+            # --- alerted, verified: must be bool if present ---
+            alerted_raw = v.get("alerted")
+            if alerted_raw is not None and not isinstance(alerted_raw, bool):
+                raise ValueError("alerted is not bool")
+            verified_raw = v.get("verified")
+            if verified_raw is not None and not isinstance(verified_raw, bool):
+                raise ValueError("verified is not bool")
+            is_alerted = v.get("alerted", False) is True
+
+            # --- counters: int (not bool), 0 <= v <= 2**63 ---
+            count_raw = v.get("count")
+            if count_raw is not None:
+                v["count"] = _require_counter(count_raw)
+            elif not is_alerted:
+                raise ValueError("non-alert entry missing count")
+            else:
+                v["count"] = 1  # safe default for alerted entries
+            repeats_raw = v.get("repeats")
+            if repeats_raw is not None:
+                v["repeats"] = _require_counter(repeats_raw)
+            else:
+                v["repeats"] = 0  # safe default
+
+            # --- timestamps: int or float (not bool), finite ---
+            for ts_field in ("first_seen", "last_seen", "last_alerted", "hour_start"):
                 ts_val = v.get(ts_field)
-                if isinstance(ts_val, (int, float)):
-                    import math
-                    if math.isnan(ts_val) or math.isinf(ts_val) or ts_val > now:
+                if ts_val is None:
+                    if ts_field in v:
+                        v.pop(ts_field)
+                    continue
+                ts_f = _require_ts(ts_val)
+                if ts_f > now:
+                    # Future timestamp: treat as absent
+                    if ts_field == "last_alerted":
                         v.pop(ts_field, None)
-                        if ts_field == "last_alerted":
-                            v["alerted"] = False
+                        v["alerted"] = False
+                    else:
+                        v[ts_field] = 0.0
+                else:
+                    v[ts_field] = ts_f
+
+            # R4-4: a non-alert entry missing alerted, first_seen or
+            # last_seen drops the file.
+            if not is_alerted:
+                if alerted_raw is None:
+                    raise ValueError("non-alert entry missing alerted")
+                if "first_seen" not in v or "last_seen" not in v:
+                    raise ValueError("non-alert entry missing first_seen or last_seen")
+
+            # --- string fields: must be str if present ---
+            for str_field in ("reason", "outcome_sig", "code", "rid", "key_id", "stage"):
+                sf_val = v.get(str_field)
+                if sf_val is not None and not isinstance(sf_val, str):
+                    raise ValueError(f"{str_field} is not a string")
+
+            # --- status: int or absent ---
+            status_val = v.get("status")
+            if status_val is not None:
+                if isinstance(status_val, bool) or not isinstance(status_val, int):
+                    raise ValueError("status is not int")
+
+            # Ensure first_seen always exists (should_alert needs it)
+            if "first_seen" not in v:
+                v["first_seen"] = 0.0
+
+            validated[k] = v
+
         # Future hour_start treated as absent
         if hs > now:
             hs = 0.0
             ath = 0
             sth = 0
+
+        # R4-10: net_stage must be a string; ignore if not
+        net_stage_raw = data.get("net_stage", "")
+        if not isinstance(net_stage_raw, str):
+            net_stage_raw = ""
+
         self._entries = validated
         self._net_consecutive = net
+        self._net_stage = net_stage_raw
         self._alerts_this_hour = ath
         self._hour_start = hs
         self._suppressed_this_hour = sth
@@ -138,6 +254,7 @@ class DecisionState:
         data = {
             "entries": self._entries,
             "net_consecutive": self._net_consecutive,
+            "net_stage": self._net_stage,
             "alerts_this_hour": self._alerts_this_hour,
             "hour_start": self._hour_start,
             "suppressed_this_hour": self._suppressed_this_hour,
@@ -157,25 +274,35 @@ class DecisionState:
     def net_consecutive(self) -> int:
         return self._net_consecutive
 
-    def note_net_failure(self) -> int:
-        """Increment and return the consecutive network failure count."""
+    def note_net_failure(self, stage: str = "") -> int:
+        """Increment and return the consecutive network failure count.
+
+        *stage* is persisted so the status line can show ``at <stage>``
+        on every cycle, not only after the alert threshold (R4-10).
+        """
         self._net_consecutive += 1
+        if stage:
+            self._net_stage = stage
         return self._net_consecutive
 
     def reset_net_counter(self) -> None:
         self._net_consecutive = 0
+        self._net_stage = ""
 
     # -- dedupe --
 
     def _make_key(self, parts: tuple) -> str:
         return ":".join(str(p) for p in parts)
 
-    def is_first_sighting(self, key_parts: tuple) -> bool:
-        """True if this key has never been seen before."""
-        return self._make_key(key_parts) not in self._entries
+    def note(self, key_parts: tuple, *, reason: str = "",
+             code: str = "", rid: str = "", key_id: str = "",
+             verified: bool = False, stage: str = "",
+             status: object = None) -> dict:
+        """Record a sighting; return the entry.  First sighting -> alerted=False.
 
-    def note(self, key_parts: tuple, *, reason: str = "") -> dict:
-        """Record a sighting; return the entry.  First sighting -> alerted=False."""
+        R3-7: store code, rid, key_id, verified, reason, stage, status
+        in each entry so the reader never needs to split the key.
+        """
         k = self._make_key(key_parts)
         now = time.time()
         if k not in self._entries:
@@ -191,6 +318,19 @@ class DecisionState:
             self._entries[k]["last_seen"] = now
         if reason:
             self._entries[k]["reason"] = reason
+        # R3-7: always store structured fields so the reader never parses keys
+        if code:
+            self._entries[k]["code"] = code
+        if rid:
+            self._entries[k]["rid"] = rid
+        if key_id:
+            self._entries[k]["key_id"] = key_id
+        if verified:
+            self._entries[k]["verified"] = verified
+        if stage:
+            self._entries[k]["stage"] = stage
+        if status is not None:
+            self._entries[k]["status"] = status
         self._evict()
         return self._entries[k]
 
@@ -228,11 +368,6 @@ class DecisionState:
         k = self._make_key(key_parts)
         entry = self._entries.get(k)
         return entry.get("repeats", 0) if entry else 0
-
-    def get_count(self, key_parts: tuple) -> int:
-        k = self._make_key(key_parts)
-        entry = self._entries.get(k)
-        return entry.get("count", 0) if entry else 0
 
     # -- caps --
 
@@ -318,6 +453,7 @@ class NullDecisionState(DecisionState):
         self._hour_start: float = 0.0
         self._suppressed_this_hour: int = 0
         self._net_consecutive: int = 0
+        self._net_stage: str = ""
 
     def _load(self) -> None:
         pass
