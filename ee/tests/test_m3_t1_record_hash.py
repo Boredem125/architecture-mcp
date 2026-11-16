@@ -21,7 +21,7 @@ import psycopg
 import pytest
 from nacl.signing import SigningKey
 
-from .m3_pending import M3T1Pending, require_m3
+from .m3_pending import require_m3
 from .m2_sync_server import (
     make_sync_server, ensure_at_head, create_org, create_project,
     keygen,
@@ -164,7 +164,6 @@ def test_guard_correct_upload_lands(hash_server):
 # ===================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T1Pending)
 def test_changed_float_exponent_hash_mismatch(hash_server):
     """A record whose body differs from record_hash is 400 hash_mismatch,
     with nothing stored.

@@ -274,6 +274,14 @@ def create_app(
         for _r in _esc_r.routes:
             app.router.routes.append(_r)
 
+        from .sync.admin_reads import build_admin_reads_router
+
+        _admin_reads_r = build_admin_reads_router(
+            db_url=settings.db_url, clock=actual_clock
+        )
+        for _r in _admin_reads_r.routes:
+            app.router.routes.append(_r)
+
         from .web.escalations import web_escalation_router
 
         _web_esc_r = web_escalation_router(

@@ -1,0 +1,61 @@
+{
+  "_comment": "T1 admin-read routes: literal (METHOD, path) pairs, task, role, scope. Reviewed in T1_SECURITY_REVIEW.md 'Frozen route set'. Security (L) sign-off required for additions. Registered routes only; removing a line needs a founder row.",
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/api/v1/devices",
+      "task": "T1",
+      "role": "session",
+      "scope": "project"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/devices/{device_id}",
+      "task": "T1",
+      "role": "session",
+      "scope": "project"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/enrollment-codes",
+      "task": "T1",
+      "role": "admin",
+      "scope": "project"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/bundles",
+      "task": "T1",
+      "role": "admin",
+      "scope": "project"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/bundles/{seq}",
+      "task": "T1",
+      "role": "admin",
+      "scope": "project"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/alerts",
+      "task": "T1",
+      "role": "session",
+      "scope": "project"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/audit/verify",
+      "task": "T1",
+      "role": "auditor",
+      "scope": "project"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/audit/export",
+      "task": "T1",
+      "role": "auditor",
+      "scope": "project"
+    }
+  ]
+}

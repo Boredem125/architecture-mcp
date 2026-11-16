@@ -5,8 +5,14 @@ Verifies:
   from the T9 design plus the T8 auth routes and /health, /ready.
 - Every /api route except the 3 pre-auth auth routes declares ``x-agg-rbac``.
 - Positive control: a planted undeclared route is detected by the same checker.
+- (M3 T1) Routes from reviewed data files match ``x-agg-rbac`` role and scope,
+  do not overlap the earlier frozen sets, and any ``/admin/`` entry is ``admin``.
+- Planted-extra and planted-removed controls detect drift.
 """
 from __future__ import annotations
+
+import json
+from pathlib import Path
 
 import pytest
 
@@ -115,7 +121,41 @@ _INFRA_ROUTES = frozenset({
     ("GET", "/ready"),
 })
 
-EXPECTED_ROUTES = _AUTH_PRE_AUTH | _AUTH_SESSION | _T9_ROUTES | _M2_T7_T8_ROUTES | _M2_T9_ROUTES | _M2_ENROLL_PERSIST_ROUTES | _M2_T11_ROUTES | _M2_T12_ROUTES | _M2_T13_ROUTES | _M2_T12B_ROUTES | _M2_T12C_ROUTES | _M2_T12D_ROUTES | _INFRA_ROUTES
+# ---------------------------------------------------------------------------
+# M3 T1 routes loaded from reviewed data file (ruling T0b-11)
+# ---------------------------------------------------------------------------
+
+_FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
+
+
+def _load_reviewed_routes(filename: str) -> tuple[
+    frozenset[tuple[str, str]],
+    list[dict],
+]:
+    """Load literal (METHOD, path) pairs from a reviewed JSON data file.
+
+    Returns ``(frozenset of pairs, list of entry dicts with task/role/scope)``.
+    """
+    path = _FIXTURES_DIR / filename
+    data = json.loads(path.read_text(encoding="utf-8"))
+    entries = data["routes"]
+    pairs: set[tuple[str, str]] = set()
+    for e in entries:
+        pairs.add((e["method"], e["path"]))
+    return frozenset(pairs), entries
+
+
+_M3_T1_ROUTES, _M3_T1_ENTRIES = _load_reviewed_routes("t1_frozen_routes.json")
+
+# The earlier frozen sets (everything before T1)
+_EARLIER_FROZEN = (
+    _AUTH_PRE_AUTH | _AUTH_SESSION | _T9_ROUTES | _M2_T7_T8_ROUTES
+    | _M2_T9_ROUTES | _M2_ENROLL_PERSIST_ROUTES | _M2_T11_ROUTES
+    | _M2_T12_ROUTES | _M2_T13_ROUTES | _M2_T12B_ROUTES
+    | _M2_T12C_ROUTES | _M2_T12D_ROUTES | _INFRA_ROUTES
+)
+
+EXPECTED_ROUTES = _EARLIER_FROZEN | _M3_T1_ROUTES
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +233,32 @@ def _check_all_api_routes_declare_rbac(app) -> list[tuple[str, str]]:
         if route not in rbac_routes:
             undeclared.append(route)
     return sorted(undeclared)
+
+
+def _get_rbac_metadata(app) -> dict[tuple[str, str], dict]:
+    """Return ``{(METHOD, path): {"role": ..., "scope": ...}}`` for all routes."""
+    from starlette.routing import Route
+
+    result: dict[tuple[str, str], dict] = {}
+    for route in app.routes:
+        sub_routes_list = []
+        if isinstance(route, Route):
+            sub_routes_list = [(route, "")]
+        else:
+            sub = getattr(route, "routes", None)
+            prefix = getattr(route, "path", "")
+            if sub:
+                sub_routes_list = [(r, prefix) for r in sub
+                                   if isinstance(r, Route)]
+
+        for r, prefix in sub_routes_list:
+            extra = getattr(r, "openapi_extra", None) or {}
+            rbac = extra.get("x-agg-rbac")
+            if rbac and r.methods:
+                for method in r.methods:
+                    if method in ("GET", "POST", "PUT", "DELETE", "PATCH"):
+                        result[(method, prefix + r.path)] = rbac
+    return result
 
 
 # ===================================================================
@@ -275,4 +341,126 @@ def test_planted_undeclared_route_detected():
     undeclared = _check_all_api_routes_declare_rbac(app)
     assert ("GET", "/api/v1/planted-no-rbac") in undeclared, (
         f"Planted route without x-agg-rbac was NOT detected. Undeclared: {undeclared}"
+    )
+
+
+# ===================================================================
+# M3 T1: reviewed data file route/role/scope checks (ruling T0b-11)
+# ===================================================================
+
+
+def test_reviewed_routes_role_scope_match_rbac():
+    """Each entry in the reviewed data file must match the route's
+    ``x-agg-rbac`` role and scope."""
+    try:
+        from agg_cp.app import create_app
+    except ImportError as exc:
+        raise T9Pending(f"Cannot import agg_cp.app: {exc}") from exc
+
+    try:
+        app = create_app(db_url="postgresql+psycopg://fake:fake@localhost/fake")
+    except Exception as exc:
+        raise T9Pending(f"create_app failed: {exc}") from exc
+
+    rbac_map = _get_rbac_metadata(app)
+    actual = _extract_routes(app)
+
+    errors = []
+    for entry in _M3_T1_ENTRIES:
+        key = (entry["method"], entry["path"])
+        if key not in actual:
+            errors.append(f"  {key}: not registered")
+            continue
+        if key not in rbac_map:
+            errors.append(f"  {key}: no x-agg-rbac metadata")
+            continue
+        actual_rbac = rbac_map[key]
+        if actual_rbac.get("role") != entry["role"]:
+            errors.append(
+                f"  {key}: role={actual_rbac.get('role')!r}, "
+                f"expected={entry['role']!r}"
+            )
+        if actual_rbac.get("scope") != entry["scope"]:
+            errors.append(
+                f"  {key}: scope={actual_rbac.get('scope')!r}, "
+                f"expected={entry['scope']!r}"
+            )
+
+    assert not errors, (
+        f"Reviewed data file role/scope mismatches:\n" + "\n".join(errors)
+    )
+
+
+def test_reviewed_routes_no_overlap_with_earlier_frozen():
+    """Entries in the reviewed data file must not overlap the earlier
+    frozen route sets."""
+    overlap = _M3_T1_ROUTES & _EARLIER_FROZEN
+    assert not overlap, (
+        f"T1 routes overlap earlier frozen sets: {overlap}"
+    )
+
+
+def test_reviewed_routes_admin_entries_are_admin():
+    """Any reviewed entry whose path contains ``/admin/`` must have
+    role ``admin``."""
+    errors = []
+    for entry in _M3_T1_ENTRIES:
+        if "/admin/" in entry["path"] and entry["role"] != "admin":
+            errors.append(
+                f"  {entry['method']} {entry['path']}: "
+                f"role={entry['role']!r}, must be 'admin'"
+            )
+    assert not errors, (
+        f"/admin/ entries must all be admin:\n" + "\n".join(errors)
+    )
+
+
+def test_planted_extra_route_detected():
+    """Positive control: a route added to the app but NOT in any frozen
+    set is detected as Extra by the frozen-set check."""
+    try:
+        from agg_cp.app import create_app
+    except ImportError as exc:
+        raise T9Pending(f"Cannot import agg_cp.app: {exc}") from exc
+
+    try:
+        app = create_app(db_url="postgresql+psycopg://fake:fake@localhost/fake")
+    except Exception as exc:
+        raise T9Pending(f"create_app failed: {exc}") from exc
+
+    # Plant an extra route directly on the app (not via include_router,
+    # which may not register in _extract_routes correctly)
+    @app.get("/api/v1/planted-extra-t1")
+    def planted_extra():
+        return {"planted": True}
+
+    actual = _extract_routes(app)
+    extra = actual - EXPECTED_ROUTES
+    assert ("GET", "/api/v1/planted-extra-t1") in extra, (
+        f"Planted extra route was NOT detected. Extra: {extra}"
+    )
+
+
+def test_planted_removed_route_detected():
+    """Positive control: removing a route from EXPECTED_ROUTES causes a
+    Missing difference (proves exact equality)."""
+    # Simulate by checking that removing one entry from EXPECTED_ROUTES
+    # is detected
+    shrunk = EXPECTED_ROUTES - {("GET", "/ready")}
+    try:
+        from agg_cp.app import create_app
+    except ImportError as exc:
+        raise T9Pending(f"Cannot import agg_cp.app: {exc}") from exc
+
+    try:
+        app = create_app(db_url="postgresql+psycopg://fake:fake@localhost/fake")
+    except Exception as exc:
+        raise T9Pending(f"create_app failed: {exc}") from exc
+
+    actual = _extract_routes(app)
+    missing = shrunk - actual
+    extra = actual - shrunk
+    # ("GET", "/ready") should show up as extra
+    assert ("GET", "/ready") in extra, (
+        f"Removing ('/ready') from expected was NOT detected. Extra: {extra}"
     )

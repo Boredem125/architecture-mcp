@@ -1457,11 +1457,13 @@ def test_load_20_connectors_200_records(audit_server):
         device_id = _seed_connector(info["owner_url"], org_id, project_id, pub)
         token = secrets.token_urlsafe(32)
         _seed_device_token(info["owner_url"], org_id, project_id, device_id, token)
+        session_id = f"sess-load-{i}"
         connectors.append({
             "device_id": device_id,
             "token": token,
             "project_id": project_id,
-            "records": _make_audit_chain(f"sess-load-{i}", 200),
+            "session_id": session_id,
+            "records": _make_audit_chain(session_id, 200),
         })
 
     errors = []
@@ -1473,7 +1475,7 @@ def test_load_20_connectors_200_records(audit_server):
                 resp = client.post(
                     "/api/v1/sync/audit",
                     headers={"Authorization": f"Bearer {c['token']}"},
-                    json={"session_id": f"sess-load-{c['device_id'][:8]}",
+                    json={"session_id": c["session_id"],
                           "records": c["records"]},
                 )
                 if resp.status_code != 200:

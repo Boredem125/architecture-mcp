@@ -169,6 +169,7 @@ Source: `docs/control-plane/M2_PLAN.md` D1-D8 and the founder rulings of 21 Oct 
 3. **Server head.** Each reply returns the server's head. The connector raises `server_head_mismatch` when the server is behind what it acknowledged. `agg-cp audit verify --project` rechecks every stored checkpoint against the recomputed chains and flags gaps.
 4. **`device_silent` (N6).** The server raises it when a device misses its checkpoint window (default 3 x the 60 s poll, configurable). Tested with the injected clock.
 5. **Storage.** `audit_records`, `audit_heads` and `audit_quarantine` are append-only, with triggers as on `admin_audit`. In managed mode `retention.py` never deletes past the cursor.
+6. **Ingest limits (T1, 12 Nov 2026; `T1_SECURITY_REVIEW.md` rounds 3 and 4).** The caps of Amendment A3 item 3 stand (1000 records, 1 MiB per record). Next to the 1 MiB cap: a record body is refused at ingest when its container nesting exceeds 1,000 levels (400 `audit_record_unstorable`, one deduplicated alert per connector, session and position), the same limit on every platform and checked without recursion, so that every stored record can be read by the export, `agg-cp audit verify` and an offline verifier on any supported Python. The same limit applies to a stored bundle envelope: deeper is `corrupt_bundle`. The connector applies the same limit when it writes a record, before hashing (T9b row, `M3_BASELINE.md` 5b).
 
 ### A5. Replay protection and clocks (amends section 6)
 

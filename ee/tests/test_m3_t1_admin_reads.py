@@ -22,7 +22,7 @@ import psycopg
 import pytest
 from nacl.signing import SigningKey
 
-from .m3_pending import M3T1Pending, require_m3
+from .m3_pending import require_m3
 from .m2_sync_server import (
     make_sync_server, ensure_at_head, create_org, create_project,
     keygen, sign_envelope, canonical_json,
@@ -344,7 +344,6 @@ def test_guard_t1_no_session_401_on_existing_route(t1_server):
 # --- Devices list ---------------------------------------------------------
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T1Pending)
 def test_devices_list_returns_devices(t1_server):
     """GET /api/v1/devices?project= returns device list for the project."""
     import httpx
@@ -355,22 +354,28 @@ def test_devices_list_returns_devices(t1_server):
     device_id = _seed_connector(
         info["owner_url"], info["org_id"], info["project_id"], pub)
 
+    # Devices sort by random UUID, so walk every page (ruling T0b-14).
+    items: list = []
+    params = {"project": info["project_id"]}
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
-        r = c.get(f"/api/v1/devices",
-                  params={"project": info["project_id"]},
-                  cookies={"__Host-agg_session": info["alice_cookie"]})
-    require_m3(1, not _route_not_registered(r),
-               "GET /api/v1/devices route not registered")
-    assert r.status_code == 200
-    body = r.json()
-    assert isinstance(body, dict)
-    items = body.get("items", body.get("devices", []))
+        for _page in range(100):
+            r = c.get(f"/api/v1/devices", params=params,
+                      cookies={"__Host-agg_session": info["alice_cookie"]})
+            require_m3(1, not _route_not_registered(r),
+                       "GET /api/v1/devices route not registered")
+            assert r.status_code == 200
+            body = r.json()
+            assert isinstance(body, dict)
+            items.extend(body.get("items", body.get("devices", [])))
+            if not body.get("cursor"):
+                break
+            params = {"project": info["project_id"],
+                      "cursor": body["cursor"]}
     assert any(d.get("id") == device_id or d.get("device_id") == device_id
                for d in items)
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T1Pending)
 def test_devices_detail(t1_server):
     """GET /api/v1/devices/{id} returns device detail with checkpoints."""
     import httpx
@@ -392,7 +397,6 @@ def test_devices_detail(t1_server):
 # --- Foreign org 404 -------------------------------------------------------
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T1Pending)
 def test_foreign_org_devices_404(t1_server):
     """Eve (org B) requesting org A's devices gets 404, not a leak."""
     import httpx
@@ -411,7 +415,6 @@ def test_foreign_org_devices_404(t1_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T1Pending)
 def test_foreign_org_bundles_404(t1_server):
     """Eve (org B) requesting org A's bundles gets 404."""
     import httpx
@@ -428,7 +431,6 @@ def test_foreign_org_bundles_404(t1_server):
 # --- No session 401 --------------------------------------------------------
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T1Pending)
 def test_no_session_devices_401(t1_server):
     """GET /api/v1/devices without a session cookie gets 401."""
     import httpx
@@ -444,7 +446,6 @@ def test_no_session_devices_401(t1_server):
 # --- Non-member refused ----------------------------------------------------
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T1Pending)
 def test_non_member_refused(t1_server):
     """A user who is not an admin or member of a project is refused."""
     import httpx
@@ -475,7 +476,6 @@ def test_non_member_refused(t1_server):
 # --- Cursor bound to org ---------------------------------------------------
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T1Pending)
 def test_cursor_bound_to_org(t1_server):
     """A cursor token from org A used by org B must look identical to a
     garbage cursor: same status and body.  This prevents an attacker from
@@ -534,7 +534,6 @@ def test_cursor_bound_to_org(t1_server):
 # --- Codes list: status only, never code or code_hash ----------------------
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T1Pending)
 def test_codes_list_status_only(t1_server):
     """GET /api/v1/admin/enrollment-codes?project= returns status, never the
     code or code_hash."""
@@ -575,7 +574,6 @@ def test_codes_list_status_only(t1_server):
 # --- Bundles detail carries envelope ----------------------------------------
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T1Pending)
 def test_bundles_detail_carries_envelope(t1_server):
     """GET /api/v1/admin/bundles/{seq} returns the envelope.
 
@@ -611,7 +609,6 @@ def test_bundles_detail_carries_envelope(t1_server):
 # --- Bundles detail: approvals by user and kind ----------------------------
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T1Pending)
 def test_bundles_detail_approvals_by_user_and_kind(t1_server):
     """GET /api/v1/admin/bundles/{seq} shows approvals by user and kind.
 
@@ -652,7 +649,6 @@ def test_bundles_detail_approvals_by_user_and_kind(t1_server):
 # --- Bundles detail: per-section diff from bytes --------------------------
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T1Pending)
 def test_bundles_detail_per_section_diff(t1_server):
     """GET /api/v1/admin/bundles/{seq} includes per-section diff.
 
@@ -693,7 +689,6 @@ def test_bundles_detail_per_section_diff(t1_server):
 # --- Bundles detail: verification label ------------------------------------
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T1Pending)
 def test_bundles_detail_verification_label(t1_server):
     """GET /api/v1/admin/bundles/{seq} includes the verification label.
 
@@ -730,16 +725,16 @@ def test_bundles_detail_verification_label(t1_server):
 # --- Bundles detail: applied-by devices ------------------------------------
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T1Pending)
 def test_bundles_detail_applied_by_devices(t1_server):
-    """GET /api/v1/admin/bundles/{seq} shows which devices applied it.
+    """GET /api/v1/admin/bundles/{seq} returns ``applied_by: null`` with
+    ``applied_by_status: "not_reported"`` (ruling T0b-12, T1-6).
 
-    Uses the seeded bundle at sequence 1 with one device that applied it.
+    No device-signed source for "applied" exists today, so the response
+    must not claim any device applied the bundle.
     """
     import httpx
     info = t1_server
     seq = info["seeded_bundle_sequence"]
-    expected_device = info["seeded_device_id"]
 
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
         r = c.get(f"/api/v1/admin/bundles",
@@ -757,29 +752,17 @@ def test_bundles_detail_applied_by_devices(t1_server):
                    cookies={"__Host-agg_session": info["alice_cookie"]})
     assert r2.status_code == 200
     detail = r2.json()
-    assert "applied_by" in detail or "devices" in detail, \
-        "detail must show which devices applied this bundle"
-    applied_list = detail.get("applied_by") if "applied_by" in detail \
-        else detail.get("devices")
-    assert isinstance(applied_list, list), \
-        f"applied_by must be a list, got {type(applied_list).__name__}"
-    assert len(applied_list) >= 1, \
-        "seeded device applied this bundle; at least one entry expected"
-    device_ids = []
-    for entry in applied_list:
-        if isinstance(entry, str):
-            device_ids.append(entry)
-        elif isinstance(entry, dict):
-            device_ids.append(
-                entry.get("id") or entry.get("device_id", ""))
-    assert expected_device in device_ids, \
-        f"seeded device {expected_device} must be in applied_by list"
+    assert "applied_by" in detail, \
+        "detail must include applied_by key"
+    require_m3(1, detail["applied_by"] is None,
+               f"applied_by must be null (not reported), got {detail['applied_by']!r}")
+    require_m3(1, detail.get("applied_by_status") == "not_reported",
+               f"applied_by_status must be 'not_reported', got {detail.get('applied_by_status')!r}")
 
 
 # --- Alerts list -----------------------------------------------------------
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T1Pending)
 def test_alerts_list(t1_server):
     """GET /api/v1/alerts?project= returns alerts for the project."""
     import httpx
@@ -799,7 +782,6 @@ def test_alerts_list(t1_server):
 # --- Verify per project ----------------------------------------------------
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T1Pending)
 def test_verify_per_project(t1_server):
     """GET /api/v1/audit/verify?project= verifies audit for a project."""
     import httpx
@@ -817,7 +799,6 @@ def test_verify_per_project(t1_server):
 # --- JSONL export -----------------------------------------------------------
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T1Pending)
 def test_jsonl_export(t1_server):
     """GET /api/v1/audit/export?project= returns JSONL with correct content type."""
     import httpx
