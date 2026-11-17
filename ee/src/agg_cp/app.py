@@ -290,6 +290,18 @@ def create_app(
         for _r in _web_esc_r.routes:
             app.router.routes.append(_r)
 
+        from .sync.proposals import proposals_router
+
+        _proposals_r = proposals_router(
+            db_url=settings.db_url, clock=actual_clock
+        )
+        for _r in _proposals_r.routes:
+            app.router.routes.append(_r)
+
+    # Install CSRF exception handler (T3)
+    from .rbac import install_csrf_handler
+    install_csrf_handler(app)
+
     @app.get("/health")
     async def health() -> JSONResponse:
         return JSONResponse({"status": "ok"})

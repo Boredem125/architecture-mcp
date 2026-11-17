@@ -4,8 +4,8 @@ enrollment-code page flow, fresh-session rule, CSRF.
 Spec: M3_PLAN.md T3 row, D2 (A9 items 6-8), D3, threats 39-40, 48,
 ADR 0001 A9, T0B_SECURITY_REVIEW P3, F-3, F-10.
 
-Every target is ``xfail(strict=True, raises=M3T3Pending)``; guard twins
-PASS today.  Marked ``pg``.
+Guard twins PASS today.  Two ``M3T4Pending`` nodes (stale-base) are kept.
+Marked ``pg``.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import psycopg
 import pytest
 from nacl.signing import SigningKey
 
-from .m3_pending import M3T3Pending, require_m3
+from .m3_pending import M3T4Pending, require_m3
 from .m2_sync_server import (
     make_sync_server, ensure_at_head, create_org, create_project,
     keygen, sign_envelope, canonical_json,
@@ -77,6 +77,115 @@ def _make_stale_session(owner_url: str, org_id: str, user_id: str):
     )
     cookie = make_session_cookie(uuid.UUID(org_id), token)
     return cookie, csrf, sid
+
+
+def _make_key_entry(sk, user_id: str, kind: str = "cli",
+                    roles: list[str] | None = None,
+                    added_in: int = 1) -> dict:
+    """Build a registry key entry from a signing key."""
+    pub = bytes(sk.verify_key)
+    kid = hashlib.sha256(pub).hexdigest()
+    return {
+        "key_id": kid,
+        "public_key": pub.hex(),
+        "user_id": user_id,
+        "iss": "https://idp.test",
+        "sub": f"sub-{user_id[:8]}",
+        "alg": "ed25519",
+        "kind": kind,
+        "roles": roles or ["admin", "approver"],
+        "added_in": added_in,
+    }
+
+
+def _payload_hash(payload: dict) -> str:
+    """SHA-256 hex of ``org_id || ':' || canonical_json(payload)``."""
+    cj = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(
+        payload["org_id"].encode("utf-8") + b":" + cj
+    ).hexdigest()
+
+
+def _sign_envelope_multi(kind: str, payload: dict, sks: list) -> dict:
+    """Sign an agg/ envelope with one or more signing keys."""
+    tag = kind.encode("utf-8")
+    canonical = json.dumps(payload, sort_keys=True,
+                           separators=(",", ":")).encode()
+    msg = tag + b"\x00" + canonical
+    sigs = []
+    for sk in sks:
+        pub = bytes(sk.verify_key)
+        kid = hashlib.sha256(pub).hexdigest()
+        sig = sk.sign(msg).signature.hex()
+        sigs.append({"key_id": kid, "alg": "ed25519", "sig": sig})
+    return {
+        "kind": kind,
+        "sig_v": 1,
+        "payload": payload,
+        "signatures": sigs,
+    }
+
+
+def _build_registry_chain(org_id: str, bundle_signer_sk,
+                           alice_sk, bob_sk, carol_sk,
+                           alice_uid: str, bob_uid: str, carol_uid: str):
+    """Build a genesis registry with CLI keys for alice, bob, carol.
+
+    Returns (chain, fingerprint, bundle_signer_pub).
+    Two admin signatures (alice + bob) per T0b-6 counts_for_dual.
+    """
+    import time as _time
+
+    alice_entry = _make_key_entry(alice_sk, alice_uid, "cli",
+                                  ["admin", "approver"])
+    bob_entry = _make_key_entry(bob_sk, bob_uid, "cli",
+                                ["admin", "approver"])
+    carol_entry = _make_key_entry(carol_sk, carol_uid, "cli",
+                                  ["admin", "approver"])
+
+    bs_pub = bytes(bundle_signer_sk.verify_key)
+    bs_kid = hashlib.sha256(bs_pub).hexdigest()
+
+    payload = {
+        "org_id": org_id,
+        "version": 1,
+        "prev_hash": "",
+        "threshold": 2,
+        "admins": [alice_entry["key_id"], bob_entry["key_id"],
+                   carol_entry["key_id"]],
+        "keys": [alice_entry, bob_entry, carol_entry],
+        "bundle_signer": {
+            "key_id": bs_kid,
+            "public_key": bs_pub.hex(),
+            "alg": "ed25519",
+        },
+        "expires_at": _time.time() + 7 * 86400,
+    }
+    # Sign genesis with alice + bob (two admin sigs for counts_for_dual)
+    genesis = _sign_envelope_multi("agg/registry/v1", payload,
+                                   [alice_sk, bob_sk])
+    fp = _payload_hash(payload)
+    return [genesis], fp
+
+
+def _store_chain(owner_url: str, org_id: str, chain: list[dict]) -> None:
+    """Store a pre-built registry chain into key_registry_versions and
+    upsert approver_keys via store_registry_version.
+
+    Skips silently if a genesis already exists for the org (allows
+    multiple tests sharing an org to each try to build the chain).
+    """
+    from agg_cp.sync.registry import store_registry_version
+    from sandbox.protocol.registry import RegistryError
+    conninfo = _conninfo(owner_url)
+    for env in chain:
+        try:
+            with psycopg.connect(conninfo) as conn:
+                store_registry_version(conn, org_id, env)
+        except RegistryError as exc:
+            if "second genesis" in str(exc):
+                return  # chain already stored for this org
+            raise
 
 
 def _route_exists(base_url: str, method: str, path: str,
@@ -137,11 +246,25 @@ def t3_server(pg_url, app_url, owner_url, pg_roles, tmp_path_factory):
         project_id = str(uuid.uuid4())
         create_project(conn, org_id, project_id, "T3 Project")
 
+    # -- Build and store a registry chain for the org --
+    # Signing keys for alice, bob, carol (reusable across tests)
+    alice_sk = SigningKey.generate()
+    bob_sk = SigningKey.generate()
+    carol_sk = SigningKey.generate()
+    chain, fp = _build_registry_chain(
+        org_id, bundle_signer_sk,
+        alice_sk, bob_sk, carol_sk,
+        alice_id, bob_id, carol_id,
+    )
+    _store_chain(owner_url, org_id, chain)
+
     clock = FakeClock()
     a_cookie, a_csrf, a_sid = _make_fresh_session(
         owner_url, org_id, alice_id, clock=clock)
     b_cookie, b_csrf, b_sid = _make_fresh_session(
         owner_url, org_id, bob_id, clock=clock)
+    c_cookie, c_csrf, c_sid = _make_fresh_session(
+        owner_url, org_id, carol_id, clock=clock)
     op_cookie, op_csrf, op_sid = _make_fresh_session(
         owner_url, org_id, operator_id, clock=clock)
 
@@ -155,9 +278,15 @@ def t3_server(pg_url, app_url, owner_url, pg_roles, tmp_path_factory):
         "alice_csrf": a_csrf,
         "bob_cookie": b_cookie,
         "bob_csrf": b_csrf,
+        "carol_cookie": c_cookie,
+        "carol_csrf": c_csrf,
         "op_cookie": op_cookie,
         "op_csrf": op_csrf,
         "bundle_signer_sk": bundle_signer_sk,
+        "alice_sk": alice_sk,
+        "bob_sk": bob_sk,
+        "carol_sk": carol_sk,
+        "chain_fingerprint": fp,
     })
 
     try:
@@ -219,7 +348,7 @@ def test_guard_t3_existing_code_issue(t3_server):
 # ===================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_propose_from_pasted_json(t3_server):
     """POST /api/v1/admin/bundle-proposals creates a proposal from pasted JSON."""
     import httpx
@@ -249,7 +378,7 @@ def test_propose_from_pasted_json(t3_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_propose_unknown_fields_refused(t3_server):
     """Unknown fields in the bundle JSON are refused at proposal."""
     import httpx
@@ -272,7 +401,7 @@ def test_propose_unknown_fields_refused(t3_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_propose_duplicate_keys_refused(t3_server):
     """Duplicate JSON keys in the bundle are refused (A9 item 6)."""
     import httpx
@@ -300,7 +429,7 @@ def test_propose_duplicate_keys_refused(t3_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_propose_nan_infinity_refused(t3_server):
     """NaN and Infinity in the bundle JSON are refused (A9 item 6)."""
     import httpx
@@ -325,7 +454,7 @@ def test_propose_nan_infinity_refused(t3_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_propose_oversize_refused(t3_server):
     """A bundle above BUNDLE_MAX_BYTES is refused (A9 item 6)."""
     import httpx
@@ -347,7 +476,7 @@ def test_propose_oversize_refused(t3_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_propose_change_approvals_refused(t3_server):
     """A proposal carrying change_approvals in any form is refused (A9 item 6)."""
     import httpx
@@ -375,7 +504,7 @@ def test_propose_change_approvals_refused(t3_server):
 # ===================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_proposal_has_hash_and_diff(t3_server):
     """A proposal response includes the hash and a diff."""
     import httpx
@@ -409,7 +538,7 @@ def test_proposal_has_hash_and_diff(t3_server):
 # ===================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_browser_key_approval_refused_wrong_kind(t3_server):
     """A browser-key approval of a proposal is refused with wrong_kind."""
     import httpx
@@ -462,7 +591,7 @@ def test_browser_key_approval_refused_wrong_kind(t3_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_approval_exactly_one_signature(t3_server):
     """An approval with more than one signature is refused (F-3)."""
     import httpx
@@ -516,7 +645,7 @@ def test_approval_exactly_one_signature(t3_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_proposer_approval_refused(t3_server):
     """The proposer's own approval is refused at the approval route."""
     import httpx
@@ -584,98 +713,114 @@ def test_proposer_approval_refused(t3_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+@pytest.mark.xfail(strict=True, raises=M3T4Pending)
 def test_stale_base_refused_at_approval(t3_server):
     """An approval against a stale base_sequence is refused at the
     approval route (A9 item 4: stale base refused at approval).
 
-    Two proposals are created on the same base.  The first is approved
-    and published, which advances the base.  Then approving the second
-    (whose base_sequence is now stale) must be refused 400 with the
-    stale-base reason, and nothing is written to policy_bundles.
+    Fresh project with a server registry chain (CLI keys for alice, bob
+    and carol, two admin sigs per T0b-6).  Carol proposes A and B on the
+    same base.  Bob and carol approve A (two counting approvals), A is
+    published.  Then approving B (whose base_sequence is now stale) must
+    be refused 400, nothing written to policy_bundles.  T4 gate (needs
+    server-side publish verification).
     """
     import httpx
     info = t3_server
+    conninfo = _conninfo(info["owner_url"])
 
-    # Proposal A
+    # -- fresh project --
+    stale_proj_a = str(uuid.uuid4())
+    with psycopg.connect(conninfo, autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)",
+                     [info["org_id"]])
+        create_project(conn, info["org_id"], stale_proj_a,
+                       "Stale Approval Project")
+
+    # -- use the chain keys from the fixture --
+    alice_sk = info["alice_sk"]
+    bob_sk = info["bob_sk"]
+    carol_sk = info["carol_sk"]
+
+    # -- carol proposes A --
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
         r_a = c.post(
             "/api/v1/admin/bundle-proposals",
-            json={"project_id": info["project_id"],
+            json={"project_id": stale_proj_a,
                   "bundle": {"folder_policy": {"allow": ["*.txt"]},
                              "governance_policy": {}, "mcp_policy": {},
                              "approval": {"local_fallback": False,
                                           "allow_requester": False}}},
-            cookies={"__Host-agg_session": info["alice_cookie"]},
-            headers={"X-CSRF-Token": info["alice_csrf"]},
+            cookies={"__Host-agg_session": info["carol_cookie"]},
+            headers={"X-CSRF-Token": info["carol_csrf"]},
         )
-    require_m3(3, r_a.status_code != 404 or r_a.json() != {"detail": "Not Found"},
+    require_m3(4, r_a.status_code != 404 or r_a.json() != {"detail": "Not Found"},
                "POST /api/v1/admin/bundle-proposals route not registered")
     assert r_a.status_code in (200, 201)
     proposal_a_id = r_a.json().get("id") or r_a.json().get("proposal_id")
+    hash_a = r_a.json().get("hash") or r_a.json().get("bundle_hash")
 
-    # Proposal B (same base as A)
+    # -- carol proposes B (same base as A) --
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
         r_b = c.post(
             "/api/v1/admin/bundle-proposals",
-            json={"project_id": info["project_id"],
+            json={"project_id": stale_proj_a,
                   "bundle": {"folder_policy": {"allow": ["*.md"]},
                              "governance_policy": {}, "mcp_policy": {},
                              "approval": {"local_fallback": False,
                                           "allow_requester": False}}},
-            cookies={"__Host-agg_session": info["alice_cookie"]},
-            headers={"X-CSRF-Token": info["alice_csrf"]},
+            cookies={"__Host-agg_session": info["carol_cookie"]},
+            headers={"X-CSRF-Token": info["carol_csrf"]},
         )
     assert r_b.status_code in (200, 201)
     proposal_b_id = r_b.json().get("id") or r_b.json().get("proposal_id")
     bundle_b_hash = r_b.json().get("hash") or r_b.json().get("bundle_hash")
 
-    # Approve and publish proposal A (with bob and carol approvals)
-    # (actual approval and publish steps would go here -- the routes
-    # do not exist yet, so require_m3 will fire at the approval step)
-    # Approve A with bob's CLI key
-    bob_sk = SigningKey.generate()
-    bob_pub = bytes(bob_sk.verify_key)
-    bob_kid = hashlib.sha256(bob_pub).hexdigest()
-    conninfo = _conninfo(info["owner_url"])
-    with psycopg.connect(conninfo, autocommit=True) as conn:
-        conn.execute("SELECT set_config('app.org_id', %s, false)",
-                     [info["org_id"]])
-        conn.execute(
-            "INSERT INTO approver_keys "
-            "(id, org_id, user_id, public_key, alg, kind, key_id, "
-            "registry_version, enrolled_at, created_at) "
-            "VALUES (%s, %s::uuid, %s::uuid, %s, 'ed25519', 'cli', %s, "
-            "1, now(), now()) ON CONFLICT DO NOTHING",
-            [str(uuid.uuid4()), info["org_id"], info["bob_id"],
-             bob_pub.hex(), bob_kid],
-        )
-    hash_a = r_a.json().get("hash") or r_a.json().get("bundle_hash")
     tag = b"agg/policy-change/v1"
+
+    # -- bob approves A --
+    bob_kid = hashlib.sha256(bytes(bob_sk.verify_key)).hexdigest()
     payload_a = {"bundle_hash": hash_a}
     canonical_a = json.dumps(payload_a, sort_keys=True,
                              separators=(",", ":")).encode()
-    msg_a = tag + b"\x00" + canonical_a
-    sig_a = bob_sk.sign(msg_a).signature.hex()
-    env_a = {
+    sig_a_bob = bob_sk.sign(tag + b"\x00" + canonical_a).signature.hex()
+    env_a_bob = {
         "kind": "agg/policy-change/v1", "sig_v": 1,
         "payload": payload_a,
-        "signatures": [{"key_id": bob_kid, "alg": "ed25519", "sig": sig_a}],
+        "signatures": [{"key_id": bob_kid, "alg": "ed25519",
+                        "sig": sig_a_bob}],
     }
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
-        r_approve_a = c.post(
+        r_approve_a_bob = c.post(
             f"/api/v1/admin/bundle-proposals/{proposal_a_id}/approvals",
-            json={"approval": env_a},
+            json={"approval": env_a_bob},
             cookies={"__Host-agg_session": info["bob_cookie"]},
             headers={"X-CSRF-Token": info["bob_csrf"]},
         )
-    require_m3(3, r_approve_a.status_code != 404 or
-               r_approve_a.json() != {"detail": "Not Found"},
+    require_m3(4, r_approve_a_bob.status_code != 404 or
+               r_approve_a_bob.json() != {"detail": "Not Found"},
                "POST .../approvals route not registered")
-    assert r_approve_a.status_code in (200, 201), \
-        f"approval A failed: {r_approve_a.status_code} {r_approve_a.text[:200]}"
+    assert r_approve_a_bob.status_code in (200, 201), \
+        f"approval A by bob failed: {r_approve_a_bob.status_code} {r_approve_a_bob.text[:200]}"
 
-    # Publish A
+    # -- carol co-approves A (two counting approvals for dual control) --
+    carol_kid = hashlib.sha256(bytes(carol_sk.verify_key)).hexdigest()
+    sig_a_carol = carol_sk.sign(tag + b"\x00" + canonical_a).signature.hex()
+    env_a_carol = {
+        "kind": "agg/policy-change/v1", "sig_v": 1,
+        "payload": payload_a,
+        "signatures": [{"key_id": carol_kid, "alg": "ed25519",
+                        "sig": sig_a_carol}],
+    }
+    with httpx.Client(base_url=info["base_url"], timeout=10) as c:
+        r_approve_a_carol = c.post(
+            f"/api/v1/admin/bundle-proposals/{proposal_a_id}/approvals",
+            json={"approval": env_a_carol},
+            cookies={"__Host-agg_session": info["carol_cookie"]},
+            headers={"X-CSRF-Token": info["carol_csrf"]},
+        )
+
+    # -- publish A (alice publishes) --
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
         r_pub_a = c.post(
             f"/api/v1/admin/bundle-proposals/{proposal_a_id}/publish",
@@ -683,18 +828,28 @@ def test_stale_base_refused_at_approval(t3_server):
             cookies={"__Host-agg_session": info["alice_cookie"]},
             headers={"X-CSRF-Token": info["alice_csrf"]},
         )
-    require_m3(3, r_pub_a.status_code != 404 or
+    require_m3(4, r_pub_a.status_code != 404 or
                r_pub_a.json() != {"detail": "Not Found"},
                "POST .../publish route not registered")
+
+    # T4 gate: server publish verification (FR-1)
+    try:
+        _pub_a_error = r_pub_a.json().get("error", "")
+    except Exception:
+        _pub_a_error = ""
+    require_m3(4,
+               not (r_pub_a.status_code == 400
+                    and _pub_a_error == "verification_pending"),
+               "server publish verification (T4)")
+
     assert r_pub_a.status_code in (200, 201), \
         f"publish A failed: {r_pub_a.status_code} {r_pub_a.text[:200]}"
 
-    # Now approving proposal B (whose base is stale) must be refused
+    # -- now approving B (stale base) must be refused --
     payload_b = {"bundle_hash": bundle_b_hash}
     canonical_b = json.dumps(payload_b, sort_keys=True,
                              separators=(",", ":")).encode()
-    msg_b = tag + b"\x00" + canonical_b
-    sig_b = bob_sk.sign(msg_b).signature.hex()
+    sig_b = bob_sk.sign(tag + b"\x00" + canonical_b).signature.hex()
     env_b = {
         "kind": "agg/policy-change/v1", "sig_v": 1,
         "payload": payload_b,
@@ -723,100 +878,133 @@ def test_stale_base_refused_at_approval(t3_server):
             "SELECT count(*) FROM policy_bundles "
             "WHERE org_id = %s::uuid AND project_id = %s::uuid "
             "AND sequence > 1",
-            [info["org_id"], info["project_id"]],
+            [info["org_id"], stale_proj_a],
         ).fetchone()[0]
     assert count == 0, \
         f"stale-base proposal must not produce a bundle row, found {count}"
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+@pytest.mark.xfail(strict=True, raises=M3T4Pending)
 def test_stale_base_refused_at_publish(t3_server):
     """A publish against a stale base_sequence is refused at the publish
     route (A9 item 4: stale base refused at publish).
 
-    Two proposals on the same base, the first published, then publishing
-    the second must be refused 400 with the stale-base reason.
+    Fresh project with a server registry chain (CLI keys for alice, bob
+    and carol, two admin sigs per T0b-6).  Carol proposes C and D on the
+    same base.  Bob and carol approve C (two counting approvals), C is
+    published.  Then publishing D (whose base_sequence is now stale)
+    must be refused 400.  T4 gate (needs server-side publish verification).
     """
     import httpx
     info = t3_server
+    conninfo = _conninfo(info["owner_url"])
 
-    # Proposal C
+    # -- fresh project --
+    stale_proj_p = str(uuid.uuid4())
+    with psycopg.connect(conninfo, autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)",
+                     [info["org_id"]])
+        create_project(conn, info["org_id"], stale_proj_p,
+                       "Stale Publish Project")
+
+    # -- use the chain keys from the fixture --
+    alice_sk = info["alice_sk"]
+    bob_sk = info["bob_sk"]
+    carol_sk = info["carol_sk"]
+
+    # -- carol proposes C --
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
         r_c = c.post(
             "/api/v1/admin/bundle-proposals",
-            json={"project_id": info["project_id"],
+            json={"project_id": stale_proj_p,
                   "bundle": {"folder_policy": {"allow": ["*.rs"]},
                              "governance_policy": {}, "mcp_policy": {},
                              "approval": {"local_fallback": False,
                                           "allow_requester": False}}},
-            cookies={"__Host-agg_session": info["alice_cookie"]},
-            headers={"X-CSRF-Token": info["alice_csrf"]},
+            cookies={"__Host-agg_session": info["carol_cookie"]},
+            headers={"X-CSRF-Token": info["carol_csrf"]},
         )
-    require_m3(3, r_c.status_code != 404 or r_c.json() != {"detail": "Not Found"},
+    require_m3(4, r_c.status_code != 404 or r_c.json() != {"detail": "Not Found"},
                "POST /api/v1/admin/bundle-proposals route not registered")
     assert r_c.status_code in (200, 201)
     proposal_c_id = r_c.json().get("id") or r_c.json().get("proposal_id")
+    hash_c = r_c.json().get("hash") or r_c.json().get("bundle_hash")
 
-    # Proposal D (same base)
+    # -- carol proposes D (same base) --
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
         r_d = c.post(
             "/api/v1/admin/bundle-proposals",
-            json={"project_id": info["project_id"],
+            json={"project_id": stale_proj_p,
                   "bundle": {"folder_policy": {"allow": ["*.go"]},
                              "governance_policy": {}, "mcp_policy": {},
                              "approval": {"local_fallback": False,
                                           "allow_requester": False}}},
-            cookies={"__Host-agg_session": info["alice_cookie"]},
-            headers={"X-CSRF-Token": info["alice_csrf"]},
+            cookies={"__Host-agg_session": info["carol_cookie"]},
+            headers={"X-CSRF-Token": info["carol_csrf"]},
         )
     assert r_d.status_code in (200, 201)
     proposal_d_id = r_d.json().get("id") or r_d.json().get("proposal_id")
 
-    # Approve and publish C (bob approves)
-    hash_c = r_c.json().get("hash") or r_c.json().get("bundle_hash")
-    bob_sk = SigningKey.generate()
-    bob_pub = bytes(bob_sk.verify_key)
-    bob_kid = hashlib.sha256(bob_pub).hexdigest()
-    conninfo = _conninfo(info["owner_url"])
-    with psycopg.connect(conninfo, autocommit=True) as conn:
-        conn.execute("SELECT set_config('app.org_id', %s, false)",
-                     [info["org_id"]])
-        conn.execute(
-            "INSERT INTO approver_keys "
-            "(id, org_id, user_id, public_key, alg, kind, key_id, "
-            "registry_version, enrolled_at, created_at) "
-            "VALUES (%s, %s::uuid, %s::uuid, %s, 'ed25519', 'cli', %s, "
-            "1, now(), now()) ON CONFLICT DO NOTHING",
-            [str(uuid.uuid4()), info["org_id"], info["bob_id"],
-             bob_pub.hex(), bob_kid],
-        )
     tag = b"agg/policy-change/v1"
+
+    # -- bob approves C --
+    bob_kid = hashlib.sha256(bytes(bob_sk.verify_key)).hexdigest()
     payload_c = {"bundle_hash": hash_c}
     canonical_c = json.dumps(payload_c, sort_keys=True,
                              separators=(",", ":")).encode()
-    sig_c = bob_sk.sign(tag + b"\x00" + canonical_c).signature.hex()
-    env_c = {
+    sig_c_bob = bob_sk.sign(tag + b"\x00" + canonical_c).signature.hex()
+    env_c_bob = {
         "kind": "agg/policy-change/v1", "sig_v": 1,
         "payload": payload_c,
-        "signatures": [{"key_id": bob_kid, "alg": "ed25519", "sig": sig_c}],
+        "signatures": [{"key_id": bob_kid, "alg": "ed25519",
+                        "sig": sig_c_bob}],
     }
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
         c.post(
             f"/api/v1/admin/bundle-proposals/{proposal_c_id}/approvals",
-            json={"approval": env_c},
+            json={"approval": env_c_bob},
             cookies={"__Host-agg_session": info["bob_cookie"]},
             headers={"X-CSRF-Token": info["bob_csrf"]},
         )
+
+    # -- carol co-approves C (two counting approvals) --
+    carol_kid = hashlib.sha256(bytes(carol_sk.verify_key)).hexdigest()
+    sig_c_carol = carol_sk.sign(tag + b"\x00" + canonical_c).signature.hex()
+    env_c_carol = {
+        "kind": "agg/policy-change/v1", "sig_v": 1,
+        "payload": payload_c,
+        "signatures": [{"key_id": carol_kid, "alg": "ed25519",
+                        "sig": sig_c_carol}],
+    }
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
         c.post(
+            f"/api/v1/admin/bundle-proposals/{proposal_c_id}/approvals",
+            json={"approval": env_c_carol},
+            cookies={"__Host-agg_session": info["carol_cookie"]},
+            headers={"X-CSRF-Token": info["carol_csrf"]},
+        )
+
+    # -- publish C (alice publishes) --
+    with httpx.Client(base_url=info["base_url"], timeout=10) as c:
+        r_pub_c = c.post(
             f"/api/v1/admin/bundle-proposals/{proposal_c_id}/publish",
             json={},
             cookies={"__Host-agg_session": info["alice_cookie"]},
             headers={"X-CSRF-Token": info["alice_csrf"]},
         )
 
-    # Now try to publish D (stale base) -- must be refused at publish
+    # T4 gate: server publish verification (FR-1)
+    pub_c_status = r_pub_c.status_code
+    try:
+        pub_c_error = r_pub_c.json().get("error", "")
+    except Exception:
+        pub_c_error = ""
+    require_m3(4,
+               not (pub_c_status == 400 and pub_c_error == "verification_pending"),
+               "server publish verification (T4)")
+
+    # -- approve D (bob; may or may not succeed since base is stale) --
     hash_d = r_d.json().get("hash") or r_d.json().get("bundle_hash")
     payload_d = {"bundle_hash": hash_d}
     canonical_d = json.dumps(payload_d, sort_keys=True,
@@ -827,7 +1015,6 @@ def test_stale_base_refused_at_publish(t3_server):
         "payload": payload_d,
         "signatures": [{"key_id": bob_kid, "alg": "ed25519", "sig": sig_d}],
     }
-    # Approve D first (may or may not succeed since base is stale)
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
         c.post(
             f"/api/v1/admin/bundle-proposals/{proposal_d_id}/approvals",
@@ -836,7 +1023,7 @@ def test_stale_base_refused_at_publish(t3_server):
             headers={"X-CSRF-Token": info["bob_csrf"]},
         )
 
-    # Publish D must be refused
+    # -- publish D must be refused (stale base) --
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
         r_pub_d = c.post(
             f"/api/v1/admin/bundle-proposals/{proposal_d_id}/publish",
@@ -858,7 +1045,7 @@ def test_stale_base_refused_at_publish(t3_server):
 # ===================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_publish_route_exists(t3_server):
     """POST .../publish route exists."""
     import httpx
@@ -895,7 +1082,7 @@ def test_publish_route_exists(t3_server):
 # ===================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_proposal_writes_admin_audit(t3_server):
     """Proposal, approval and publish write admin_audit rows (F-10)."""
     import httpx
@@ -933,7 +1120,7 @@ def test_proposal_writes_admin_audit(t3_server):
 # ===================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_code_second_read_404_and_no_store_header(t3_server):
     """Operator reads the code once; second read is 404.
     Response has Cache-Control: no-store."""
@@ -979,7 +1166,7 @@ def test_code_second_read_404_and_no_store_header(t3_server):
 # ===================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_stale_session_refused_for_code_issue(t3_server):
     """Session older than 15 min is refused for code issue (S6)."""
     import httpx
@@ -1004,7 +1191,7 @@ def test_stale_session_refused_for_code_issue(t3_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_stale_session_refused_for_publish(t3_server):
     """Session older than 15 min is refused for publish."""
     import httpx
@@ -1027,7 +1214,7 @@ def test_stale_session_refused_for_publish(t3_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_stale_session_refused_for_revoke(t3_server):
     """Session older than 15 min is refused for device revoke."""
     import httpx
@@ -1055,27 +1242,43 @@ def test_stale_session_refused_for_revoke(t3_server):
 # ===================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_publisher_not_among_approvals(t3_server):
     """The publishing admin may not be among the approvers (A9 item 8g).
 
-    Seed two CLI-key approvals, one from the publishing user (alice).
-    Attempt publish from alice's session.  Assert 400 with the reason,
-    no ``policy_bundles`` row.
+    Fresh project with a server registry chain (CLI keys for alice, bob
+    and carol, counts_for_dual, two admin signatures per T0b-6).
+    Carol proposes, alice and bob approve through the route, alice
+    publishes.  Assert 400 with the reason, no ``policy_bundles`` row.
     """
     import httpx
     info = t3_server
+    conninfo = _conninfo(info["owner_url"])
 
+    # -- fresh project inside the node --
+    pub_project_id = str(uuid.uuid4())
+    with psycopg.connect(conninfo, autocommit=True) as conn:
+        conn.execute("SELECT set_config('app.org_id', %s, false)",
+                     [info["org_id"]])
+        create_project(conn, info["org_id"], pub_project_id,
+                       "Publisher Test Project")
+
+    # -- use the chain keys from the fixture (stored once at module scope) --
+    alice_sk = info["alice_sk"]
+    bob_sk = info["bob_sk"]
+    carol_sk = info["carol_sk"]
+
+    # -- carol proposes --
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
         r = c.post(
             "/api/v1/admin/bundle-proposals",
-            json={"project_id": info["project_id"],
+            json={"project_id": pub_project_id,
                   "bundle": {"folder_policy": {"allow": ["*.c"]},
                              "governance_policy": {}, "mcp_policy": {},
                              "approval": {"local_fallback": False,
                                           "allow_requester": False}}},
-            cookies={"__Host-agg_session": info["alice_cookie"]},
-            headers={"X-CSRF-Token": info["alice_csrf"]},
+            cookies={"__Host-agg_session": info["carol_cookie"]},
+            headers={"X-CSRF-Token": info["carol_csrf"]},
         )
     require_m3(3, r.status_code != 404 or r.json() != {"detail": "Not Found"},
                "POST /api/v1/admin/bundle-proposals route not registered")
@@ -1083,56 +1286,50 @@ def test_publisher_not_among_approvals(t3_server):
     proposal_id = r.json().get("id") or r.json().get("proposal_id")
     bundle_hash = r.json().get("hash") or r.json().get("bundle_hash")
 
-    # Register CLI keys for alice (who will publish) and bob
-    conninfo = _conninfo(info["owner_url"])
     tag = b"agg/policy-change/v1"
     payload = {"bundle_hash": bundle_hash}
     canonical = json.dumps(payload, sort_keys=True,
                            separators=(",", ":")).encode()
     msg = tag + b"\x00" + canonical
 
-    approvals_to_submit = []
-    for user_id, user_cookie, user_csrf, label in [
-        (info["alice_id"], info["alice_cookie"], info["alice_csrf"], "alice"),
-        (info["bob_id"], info["bob_cookie"], info["bob_csrf"], "bob"),
-    ]:
-        sk = SigningKey.generate()
-        pub = bytes(sk.verify_key)
-        kid = hashlib.sha256(pub).hexdigest()
-        with psycopg.connect(conninfo, autocommit=True) as conn:
-            conn.execute("SELECT set_config('app.org_id', %s, false)",
-                         [info["org_id"]])
-            conn.execute(
-                "INSERT INTO approver_keys "
-                "(id, org_id, user_id, public_key, alg, kind, key_id, "
-                "registry_version, enrolled_at, created_at) "
-                "VALUES (%s, %s::uuid, %s::uuid, %s, 'ed25519', 'cli', %s, "
-                "1, now(), now()) ON CONFLICT DO NOTHING",
-                [str(uuid.uuid4()), info["org_id"], user_id,
-                 pub.hex(), kid],
-            )
-        sig = sk.sign(msg).signature.hex()
-        env = {
-            "kind": "agg/policy-change/v1", "sig_v": 1,
-            "payload": payload,
-            "signatures": [{"key_id": kid, "alg": "ed25519", "sig": sig}],
-        }
-        approvals_to_submit.append((env, user_cookie, user_csrf, label))
+    # -- alice approves --
+    alice_kid = hashlib.sha256(bytes(alice_sk.verify_key)).hexdigest()
+    alice_sig = alice_sk.sign(msg).signature.hex()
+    alice_env = {
+        "kind": "agg/policy-change/v1", "sig_v": 1,
+        "payload": payload,
+        "signatures": [{"key_id": alice_kid, "alg": "ed25519",
+                        "sig": alice_sig}],
+    }
+    with httpx.Client(base_url=info["base_url"], timeout=10) as c:
+        r_app_a = c.post(
+            f"/api/v1/admin/bundle-proposals/{proposal_id}/approvals",
+            json={"approval": alice_env},
+            cookies={"__Host-agg_session": info["alice_cookie"]},
+            headers={"X-CSRF-Token": info["alice_csrf"]},
+        )
+    require_m3(3, r_app_a.status_code != 404 or
+               r_app_a.json() != {"detail": "Not Found"},
+               "POST .../approvals route not registered")
 
-    # Submit both approvals (bob first, then alice)
-    for env, cookie, csrf, label in approvals_to_submit:
-        with httpx.Client(base_url=info["base_url"], timeout=10) as c:
-            r_app = c.post(
-                f"/api/v1/admin/bundle-proposals/{proposal_id}/approvals",
-                json={"approval": env},
-                cookies={"__Host-agg_session": cookie},
-                headers={"X-CSRF-Token": csrf},
-            )
-        # Alice's approval may itself be refused (as proposer), which is
-        # tested separately.  We care about the publish refusal here.
+    # -- bob approves --
+    bob_kid = hashlib.sha256(bytes(bob_sk.verify_key)).hexdigest()
+    bob_sig = bob_sk.sign(msg).signature.hex()
+    bob_env = {
+        "kind": "agg/policy-change/v1", "sig_v": 1,
+        "payload": payload,
+        "signatures": [{"key_id": bob_kid, "alg": "ed25519",
+                        "sig": bob_sig}],
+    }
+    with httpx.Client(base_url=info["base_url"], timeout=10) as c:
+        r_app_b = c.post(
+            f"/api/v1/admin/bundle-proposals/{proposal_id}/approvals",
+            json={"approval": bob_env},
+            cookies={"__Host-agg_session": info["bob_cookie"]},
+            headers={"X-CSRF-Token": info["bob_csrf"]},
+        )
 
-    # Publish from alice's session (alice has an approval among the
-    # list)
+    # -- alice publishes (alice has an approval among the list) --
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
         r_pub = c.post(
             f"/api/v1/admin/bundle-proposals/{proposal_id}/publish",
@@ -1155,7 +1352,7 @@ def test_publisher_not_among_approvals(t3_server):
         count = conn.execute(
             "SELECT count(*) FROM policy_bundles "
             "WHERE org_id = %s::uuid AND project_id = %s::uuid",
-            [info["org_id"], info["project_id"]],
+            [info["org_id"], pub_project_id],
         ).fetchone()[0]
     assert count == 0, \
         f"publisher-in-approvals must not produce a bundle row, found {count}"
@@ -1166,7 +1363,7 @@ def test_publisher_not_among_approvals(t3_server):
 # ===================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_code_value_absent_from_admin_audit(t3_server):
     """Threat 39: after issuing a code, the code value and code_hash
     must not appear in any admin_audit row payload.

@@ -296,10 +296,83 @@ def enroll_router(db_url: str, clock=None) -> APIRouter:
         })
 
     # -----------------------------------------------------------------
-    # POST /api/v1/admin/enrollment-codes  (session auth, admin role)
+    # Shared admin role helper (S-3, spec 3.3)
     # -----------------------------------------------------------------
+    def _is_project_admin(conn, user_id, project_id):
+        """True if caller is org admin OR project-scope admin."""
+        row = conn.execute(
+            "SELECT 1 FROM role_bindings WHERE user_id = %s AND ("
+            "(scope_type = 'org' AND role = 'admin')"
+            " OR "
+            "(scope_type = 'project' AND scope_id = %s AND role = 'admin')"
+            ") LIMIT 1",
+            [user_id, project_id],
+        ).fetchone()
+        return row is not None
+
+    def _admin_audit(conn, org_id, action, detail_dict):
+        """Insert an admin_audit row."""
+        import json as _json
+        conn.execute(
+            "INSERT INTO admin_audit (id, org_id, action, detail) "
+            "VALUES (%s, %s::uuid, %s, %s)",
+            [str(uuid.uuid4()), str(org_id), action,
+             _json.dumps(detail_dict)],
+        )
+
+    # -----------------------------------------------------------------
+    # POST /api/v1/admin/enrollment-codes  (signer_or_session, S-1)
+    # -----------------------------------------------------------------
+    def _signer_token_lookup(conn, token: str):
+        """Look up a signer token via SECURITY DEFINER function."""
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        row = conn.execute(
+            "SELECT org_id, user_id, key_id, scope FROM signer_token_lookup(%s)",
+            [token_hash],
+        ).fetchone()
+        if row is None:
+            return None
+        return {"org_id": str(row[0]), "user_id": str(row[1]),
+                "key_id": row[2], "scope": row[3]}
+
+    def _auth_signer_or_session(conn, request):
+        """Auth for signer_or_session routes.  Returns
+        (org_id, user_id, session_id|None, auth, key_id|None, err)."""
+        auth_hdr = request.headers.get("Authorization", "")
+        if auth_hdr.startswith("Bearer "):
+            bearer = auth_hdr[7:]
+            info = _signer_token_lookup(conn, bearer)
+            if info is not None:
+                if info["scope"] != "confirmed":
+                    return None, None, None, None, None, JSONResponse(
+                        {"error": "token scope not accepted"}, status_code=403)
+                # S-1 1a: set org, check cli kind
+                conn.execute("SELECT set_config('app.org_id', %s, true)",
+                             [info["org_id"]])
+                kid = info.get("key_id")
+                # MUST 5: kind check unconditional (drop `if kid:`)
+                kr = conn.execute(
+                    "SELECT kind FROM approver_keys "
+                    "WHERE key_id = %s AND org_id = %s::uuid AND revoked_at IS NULL",
+                    [kid, info["org_id"]],
+                ).fetchone()
+                if kr is None or kr[0] != "cli":
+                    return None, None, None, None, None, JSONResponse(
+                        {"error": "forbidden", "detail": "key not cli or revoked"},
+                        status_code=403)
+                return (info["org_id"], info["user_id"], None,
+                        "signer_token", kid, None)
+            return None, None, None, None, None, JSONResponse(
+                {"error": "unauthorized"}, status_code=401)
+        # Session path
+        result, err = _validate(conn, request)
+        if err:
+            return None, None, None, None, None, err
+        o, u, sid, _, _ = result
+        return str(o), str(u), sid, "session", None, None
+
     @rbac_route(router, "post", "/api/v1/admin/enrollment-codes",
-                role="admin", scope="org")
+                role="signer_or_session", scope="org")
     async def admin_create_code(request: Request) -> JSONResponse:
         body = await request.json()
         project_id = body.get("project_id", "")
@@ -312,10 +385,38 @@ def enroll_router(db_url: str, clock=None) -> APIRouter:
             )
 
         with _conn() as conn:
-            session, err = _validate(conn, request)
-            if err is not None:
-                return err
-            org_id, user_id, _, _, _ = session
+            # signer_or_session auth (MUST 5)
+            org_id, user_id, session_id, auth_method, key_id, aerr = \
+                _auth_signer_or_session(conn, request)
+            if aerr is not None:
+                return aerr
+
+            conn.execute("SELECT set_config('app.org_id', %s, true)",
+                         [str(org_id)])
+
+            # Fresh-session rule (T3 spec 3.2) -- session only
+            if auth_method == "session" and session_id is not None:
+                from agg_cp.auth import require_fresh_session
+                fresh_err = require_fresh_session(conn, session_id, _get_clock())
+                if fresh_err is not None:
+                    return fresh_err
+
+            # S-3: role check -- org admin or admin of project_id
+            if not _is_project_admin(conn, user_id, project_id):
+                return JSONResponse(
+                    {"error": "forbidden"}, status_code=403,
+                )
+
+            # S-3: operator_user_id must be an active user of the org
+            op_row = conn.execute(
+                "SELECT status FROM users "
+                "WHERE id = %s::uuid AND org_id = %s::uuid",
+                [operator_user_id, str(org_id)],
+            ).fetchone()
+            if op_row is None or op_row[0] != "active":
+                return JSONResponse(
+                    {"error": "operator_not_found"}, status_code=404,
+                )
 
             proj_row = conn.execute(
                 "SELECT id FROM projects "
@@ -335,6 +436,16 @@ def enroll_router(db_url: str, clock=None) -> APIRouter:
                 " now() + interval '15 minutes', %s::uuid)",
                 [code_id, str(org_id), project_id, operator_user_id],
             )
+
+            # Audit row with auth method and key_id (S-1 5)
+            _admin_audit(conn, org_id, "enrollment_code.issue", {
+                "code_id": code_id,
+                "project_id": project_id,
+                "operator_user_id": operator_user_id,
+                "auth": auth_method,
+                **({"key_id": key_id} if key_id else {}),
+            })
+
             conn.commit()
 
         return JSONResponse({
@@ -350,10 +461,14 @@ def enroll_router(db_url: str, clock=None) -> APIRouter:
     async def operator_read_code(
         code_id: str, request: Request,
     ) -> JSONResponse:
+        def _no_store(resp):
+            resp.headers["Cache-Control"] = "no-store"
+            return resp
+
         with _conn() as conn:
             session, err = _validate(conn, request)
             if err is not None:
-                return err
+                return _no_store(err)
 
             # T16 F-5: non-uuid code_id returns 404 before any SQL cast
             # (M2_DEMO s7.4).  Reuse escalations._is_uuid.
@@ -367,18 +482,11 @@ def enroll_router(db_url: str, clock=None) -> APIRouter:
 
             # Check session freshness: the session must have been created
             # within 15 min (D1.1 max_age rule for operator code read).
-            sess_row = conn.execute(
-                "SELECT created_at FROM web_sessions WHERE id = %s",
-                [str(session_id)],
-            ).fetchone()
-            if sess_row is not None:
-                created_at = sess_row[0]
-                now = _get_clock().now()
-                age = (now - created_at).total_seconds()
-                if age > SESSION_MAX_AGE:
-                    return JSONResponse(
-                        {"error": "reauth_required"}, status_code=401,
-                    )
+            # M-7: refuse on missing row too.
+            from agg_cp.auth import require_fresh_session
+            fresh_err = require_fresh_session(conn, session_id, _get_clock())
+            if fresh_err is not None:
+                return _no_store(fresh_err)
 
             # Generate code; atomic UPDATE stores only the hash
             code = secrets.token_hex(16)
@@ -397,15 +505,25 @@ def enroll_router(db_url: str, clock=None) -> APIRouter:
 
             if row is None:
                 conn.rollback()
-                return JSONResponse(
+                resp = JSONResponse(
                     {"error": "not_found"}, status_code=404,
                 )
+                resp.headers["Cache-Control"] = "no-store"
+                return resp
+
+            # Audit row: enrollment_code.read with code_id only
+            _admin_audit(conn, org_id, "enrollment_code.read", {
+                "code_id": code_id,
+            })
+
             conn.commit()
 
-        return JSONResponse({"code": code})
+        resp = JSONResponse({"code": code})
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     # -----------------------------------------------------------------
-    # POST /api/v1/admin/devices/revoke  (session auth, admin role)
+    # POST /api/v1/admin/devices/revoke  (session auth only, S-1)
     # -----------------------------------------------------------------
     @rbac_route(router, "post", "/api/v1/admin/devices/revoke",
                 role="admin", scope="org")
@@ -422,7 +540,44 @@ def enroll_router(db_url: str, clock=None) -> APIRouter:
             session, err = _validate(conn, request)
             if err is not None:
                 return err
-            org_id, user_id, _, _, _ = session
+            org_id, user_id, session_id, _, _ = session
+
+            # Fresh-session rule (T3 spec 3.2)
+            from agg_cp.auth import require_fresh_session
+            fresh_err = require_fresh_session(conn, session_id, _get_clock())
+            if fresh_err is not None:
+                return fresh_err
+
+            # S-3: org admin OR admin of the device's project
+            is_org_admin = conn.execute(
+                "SELECT 1 FROM role_bindings "
+                "WHERE user_id = %s AND scope_type = 'org' AND role = 'admin' LIMIT 1",
+                [user_id],
+            ).fetchone() is not None
+
+            if not is_org_admin:
+                # Need to check project-level admin for the device's project
+                dev_row = conn.execute(
+                    "SELECT project_id FROM connectors "
+                    "WHERE id = %s::uuid AND org_id = %s::uuid",
+                    [device_id, str(org_id)],
+                ).fetchone()
+                if dev_row is None:
+                    # Device not found, but non-admin gets 403 first
+                    conn.rollback()
+                    return JSONResponse(
+                        {"error": "forbidden"}, status_code=403)
+                dev_project = str(dev_row[0])
+                is_proj_admin = conn.execute(
+                    "SELECT 1 FROM role_bindings "
+                    "WHERE user_id = %s AND scope_type = 'project' "
+                    "AND scope_id = %s AND role = 'admin' LIMIT 1",
+                    [user_id, dev_project],
+                ).fetchone() is not None
+                if not is_proj_admin:
+                    conn.rollback()
+                    return JSONResponse(
+                        {"error": "forbidden"}, status_code=403)
 
             result = conn.execute(
                 "UPDATE connectors SET revoked_at = now() "
@@ -431,6 +586,13 @@ def enroll_router(db_url: str, clock=None) -> APIRouter:
                 "RETURNING id",
                 [device_id, str(org_id)],
             ).fetchone()
+
+            if result is not None:
+                _admin_audit(conn, org_id, "device.revoke", {
+                    "device_id": device_id,
+                    "auth": "session",
+                })
+
             conn.commit()
 
         if result is None:

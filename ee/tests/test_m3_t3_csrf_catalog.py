@@ -25,7 +25,7 @@ import psycopg
 import pytest
 from nacl.signing import SigningKey
 
-from .m3_pending import M3T3Pending, require_m3
+from .m3_pending import require_m3
 from .m2_sync_server import (
     make_sync_server, ensure_at_head, create_org, create_project,
     keygen,
@@ -238,7 +238,7 @@ def test_guard_csrf_catalog_from_app():
 # ===================================================================
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_csrf_catalog_is_non_empty_and_includes_named_routes(csrf_server):
     """The CSRF catalog from the app is non-empty and includes
     POST /api/v1/admin/enrollment-codes and POST /api/v1/admin/devices/revoke.
@@ -308,7 +308,7 @@ def test_csrf_catalog_is_non_empty_and_includes_named_routes(csrf_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_enrollment_codes_no_csrf_403(csrf_server):
     """POST /api/v1/admin/enrollment-codes without X-CSRF-Token is 403."""
     import httpx
@@ -327,7 +327,7 @@ def test_enrollment_codes_no_csrf_403(csrf_server):
 
 
 @pytest.mark.pg
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_devices_revoke_no_csrf_403(csrf_server):
     """POST /api/v1/admin/devices/revoke without X-CSRF-Token is 403."""
     import httpx

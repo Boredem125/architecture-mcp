@@ -402,16 +402,39 @@ def test_reviewed_routes_no_overlap_with_earlier_frozen():
 
 def test_reviewed_routes_admin_entries_are_admin():
     """Any reviewed entry whose path contains ``/admin/`` must have
-    role ``admin``."""
+    role ``admin``, except the five T3 proposal routes which are
+    ``signer_or_session`` (S-1, founder row 16 Nov; FR-3, founder
+    row 17 Nov).
+    """
+    # S-1 / FR-3: exactly these five T3 proposal routes use
+    # signer_or_session instead of admin.
+    _T3_SIGNER_OR_SESSION_ROUTES = frozenset({
+        ("POST", "/api/v1/admin/bundle-proposals"),
+        ("GET", "/api/v1/admin/bundle-proposals"),
+        ("GET", "/api/v1/admin/bundle-proposals/{proposal_id}"),
+        ("POST", "/api/v1/admin/bundle-proposals/{proposal_id}/approvals"),
+        ("POST", "/api/v1/admin/bundle-proposals/{proposal_id}/publish"),
+    })
     errors = []
     for entry in _M3_T1_ENTRIES:
-        if "/admin/" in entry["path"] and entry["role"] != "admin":
-            errors.append(
-                f"  {entry['method']} {entry['path']}: "
-                f"role={entry['role']!r}, must be 'admin'"
-            )
+        key = (entry["method"], entry["path"])
+        if "/admin/" not in entry["path"]:
+            continue
+        if key in _T3_SIGNER_OR_SESSION_ROUTES:
+            if entry["role"] != "signer_or_session":
+                errors.append(
+                    f"  {entry['method']} {entry['path']}: "
+                    f"role={entry['role']!r}, must be 'signer_or_session' (S-1/FR-3)"
+                )
+        else:
+            if entry["role"] != "admin":
+                errors.append(
+                    f"  {entry['method']} {entry['path']}: "
+                    f"role={entry['role']!r}, must be 'admin'"
+                )
     assert not errors, (
-        f"/admin/ entries must all be admin:\n" + "\n".join(errors)
+        f"/admin/ entries must all be admin (except T3 S-1/FR-3 routes):\n"
+        + "\n".join(errors)
     )
 
 

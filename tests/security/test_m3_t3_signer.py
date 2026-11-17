@@ -20,8 +20,7 @@ New CLI commands under ``sandbox signer``:
     sandbox signer publish <id>
         Publishes a proposal.
 
-CLI tests use CliRunner (as in T12d).  Each target is
-``xfail(strict=True, raises=M3T3Pending)``.  Guards verify existing CLI
+CLI tests use CliRunner (as in T12d).  Guards verify existing CLI
 structure.
 """
 from __future__ import annotations
@@ -35,7 +34,7 @@ import pytest
 from click.testing import CliRunner
 from nacl.signing import SigningKey
 
-from tests.m3_pending import M3T3Pending, require_m3
+from tests.m3_pending import require_m3
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +104,7 @@ def test_guard_signer_approve_exists():
 # T3 TARGETS: issue-code command
 # ===================================================================
 
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_issue_code_command_exists():
     """sandbox signer issue-code command exists."""
     require_m3(3, _command_in_signer("issue-code"),
@@ -113,7 +112,7 @@ def test_issue_code_command_exists():
     assert _command_in_signer("issue-code")
 
 
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_issue_code_help():
     """issue-code --help exits 0."""
     require_m3(3, _command_in_signer("issue-code"),
@@ -128,7 +127,7 @@ def test_issue_code_help():
 # T3 TARGETS: propose-bundle command
 # ===================================================================
 
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_propose_bundle_command_exists():
     """sandbox signer propose-bundle command exists."""
     require_m3(3, _command_in_signer("propose-bundle"),
@@ -136,7 +135,7 @@ def test_propose_bundle_command_exists():
     assert _command_in_signer("propose-bundle")
 
 
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_propose_bundle_help():
     """propose-bundle --help exits 0."""
     require_m3(3, _command_in_signer("propose-bundle"),
@@ -151,7 +150,7 @@ def test_propose_bundle_help():
 # T3 TARGETS: approve-change command
 # ===================================================================
 
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_approve_change_command_exists():
     """sandbox signer approve-change command exists."""
     require_m3(3, _command_in_signer("approve-change"),
@@ -159,7 +158,7 @@ def test_approve_change_command_exists():
     assert _command_in_signer("approve-change")
 
 
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_approve_change_help():
     """approve-change --help exits 0."""
     require_m3(3, _command_in_signer("approve-change"),
@@ -170,7 +169,7 @@ def test_approve_change_help():
     assert result.exit_code == 0, f"approve-change --help: {result.output}"
 
 
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_approve_change_signs_policy_change_v1(tmp_path):
     """approve-change: stub the HTTP layer, verify the tag, the signature,
     exactly one signature, that the diff is computed from local bytes (not
@@ -394,7 +393,7 @@ def test_approve_change_signs_policy_change_v1(tmp_path):
 # T3 TARGETS: publish command
 # ===================================================================
 
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_publish_command_exists():
     """sandbox signer publish command exists."""
     require_m3(3, _command_in_signer("publish"),
@@ -403,7 +402,7 @@ def test_publish_command_exists():
                "a --publish flag on sign-registry)")
 
 
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_publish_help():
     """publish --help exits 0."""
     require_m3(3, _command_in_signer("publish"),
@@ -461,13 +460,12 @@ def _wire_mock_client(MockClient, route_fn):
 # T3 TARGETS: issue-code real behaviour
 # ===================================================================
 
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
-def test_issue_code_sends_project_and_operator(tmp_path):
-    """issue-code sends project_id and operator_user_id with CSRF and
-    session headers.  The code is printed once and never written to disk
-    or the audit log.
 
-    Threat 39: the code must not persist outside the terminal.
+def test_issue_code_sends_project_and_operator(tmp_path):
+    """issue-code sends project_id and operator_user_id.
+    The stub still returns ``code`` (standing in for a hostile or regressed
+    server); the node asserts ``code_id`` is printed and the code value
+    is NOT in the output (D3, threat 39).
     """
     import unittest.mock as mock
 
@@ -477,6 +475,7 @@ def test_issue_code_sends_project_and_operator(tmp_path):
     project_id = str(uuid.uuid4())
     operator_id = str(uuid.uuid4())
     code_value = "SECRET-CODE-12345"
+    code_id_value = str(uuid.uuid4())
 
     captured_posts = []
 
@@ -485,7 +484,7 @@ def test_issue_code_sends_project_and_operator(tmp_path):
         if method.upper() == "POST" and "enrollment-codes" in url_str:
             captured_posts.append(kwargs)
             return _FakeHTTPResponse({
-                "code_id": str(uuid.uuid4()),
+                "code_id": code_id_value,
                 "code": code_value,
             }, 200)
         return _FakeHTTPResponse({"error": "not found"}, 404)
@@ -521,9 +520,13 @@ def test_issue_code_sends_project_and_operator(tmp_path):
     assert posted.get("operator_user_id") == operator_id, \
         f"POST must carry operator_user_id, got {posted}"
 
-    # The code must be printed (shown to the user)
-    assert code_value in result.output, \
-        "issue-code must print the code to the terminal"
+    # code_id must be printed (shown to the user)
+    assert code_id_value in result.output, \
+        "issue-code must print code_id to the terminal"
+
+    # The code value must NOT be printed (D3, threat 39)
+    assert code_value not in result.output, \
+        "issue-code must NOT print the code value to the terminal"
 
     # The code must not be written to any file in tmp_path
     for f in tmp_path.rglob("*"):
@@ -537,7 +540,7 @@ def test_issue_code_sends_project_and_operator(tmp_path):
 # T3 TARGETS: propose-bundle real behaviour
 # ===================================================================
 
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_propose_bundle_sends_canonical_and_verifies_hash(tmp_path):
     """propose-bundle sends canonical bytes and prints the server's hash
     only after it matches a locally computed hash.  A mismatch refuses.
@@ -639,7 +642,7 @@ def test_propose_bundle_sends_canonical_and_verifies_hash(tmp_path):
 # T3 TARGETS: publish real behaviour
 # ===================================================================
 
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_publish_shows_refusal_and_exits_nonzero(tmp_path):
     """publish sends the proposal id.  On 400 it shows the server's
     refusal reason and exits non-zero.
@@ -689,7 +692,7 @@ def test_publish_shows_refusal_and_exits_nonzero(tmp_path):
 # T3 TARGETS: approve-change diff computed independently
 # ===================================================================
 
-@pytest.mark.xfail(strict=True, raises=M3T3Pending)
+
 def test_approve_change_diff_from_local_bytes(tmp_path):
     """approve-change computes the diff from the bytes on the machine,
     not from a server-supplied diff.  The diff matches an independently
@@ -697,6 +700,10 @@ def test_approve_change_diff_from_local_bytes(tmp_path):
 
     This is a separate node from test_approve_change_signs_policy_change_v1
     to isolate the diff-computation check.
+
+    FR-2 fixture: SANDBOX_KEY_HOME set to tmp_path, --expect-fingerprint
+    passed, a valid bare-list registry chain stub served, a token returned
+    on mint.  No assertion changed.
     """
     import unittest.mock as mock
 
@@ -705,6 +712,54 @@ def test_approve_change_diff_from_local_bytes(tmp_path):
 
     org_id = str(uuid.uuid4())
     project_id = str(uuid.uuid4())
+
+    # --- signing keys ---
+    bundle_signer_sk = SigningKey.generate()
+    bs_pub = bytes(bundle_signer_sk.verify_key)
+    bs_kid = hashlib.sha256(bs_pub).hexdigest()
+
+    # The signer key (used for the approval and as a cli key in the chain)
+    sk = SigningKey.generate()
+    signer_pub = bytes(sk.verify_key)
+    signer_kid = hashlib.sha256(signer_pub).hexdigest()
+
+    # --- build a registry chain with the signer key as cli ---
+    genesis_keys = [{
+        "key_id": signer_kid, "public_key": signer_pub.hex(),
+        "user_id": "admin-0", "iss": "https://idp.test",
+        "sub": "admin-0", "alg": "ed25519",
+        "kind": "cli", "roles": ["admin", "approver"], "added_in": 1,
+    }]
+    genesis_payload = {
+        "org_id": org_id, "version": 1, "prev_hash": "",
+        "threshold": 1, "admins": [signer_kid],
+        "keys": genesis_keys,
+        "bundle_signer": {"key_id": bs_kid, "public_key": bs_pub.hex(),
+                          "alg": "ed25519"},
+        "expires_at": 9999999999.0,
+    }
+    genesis_canonical = json.dumps(genesis_payload, sort_keys=True,
+                                   separators=(",", ":")).encode()
+    genesis_sig = sk.sign(
+        b"agg/registry/v1\x00" + genesis_canonical).signature.hex()
+    genesis_env = {
+        "kind": "agg/registry/v1", "sig_v": 1,
+        "payload": genesis_payload,
+        "signatures": [{"key_id": signer_kid, "alg": "ed25519",
+                        "sig": genesis_sig}],
+    }
+    # Fingerprint = sha256(org_id + ":" + canonical(genesis_payload))
+    chain_fp = hashlib.sha256(
+        org_id.encode() + b":" + genesis_canonical
+    ).hexdigest()
+
+    # --- key home with signer.seed ---
+    key_home = tmp_path / "key_home"
+    key_home.mkdir()
+    signer_dir = key_home / "signer"
+    signer_dir.mkdir()
+    seed_file = signer_dir / "signer.seed"
+    seed_file.write_bytes(bytes(sk).hex().encode("ascii"))
 
     base_payload = {
         "org_id": org_id, "project_id": project_id,
@@ -715,15 +770,13 @@ def test_approve_change_diff_from_local_bytes(tmp_path):
     base_canonical = json.dumps(base_payload, sort_keys=True,
                                 separators=(",", ":")).encode()
 
-    bundle_signer_sk = SigningKey.generate()
     base_sig = bundle_signer_sk.sign(
         b"agg/bundle/v1\x00" + base_canonical).signature.hex()
     base_envelope = {
         "kind": "agg/bundle/v1", "sig_v": 1,
         "payload": base_payload,
         "signatures": [{
-            "key_id": hashlib.sha256(
-                bytes(bundle_signer_sk.verify_key)).hexdigest(),
+            "key_id": bs_kid,
             "alg": "ed25519", "sig": base_sig,
         }],
     }
@@ -751,15 +804,18 @@ def test_approve_change_diff_from_local_bytes(tmp_path):
     # Misleading diff: completely wrong
     misleading_diff = {"folder_policy": "TAMPERED_DIFF_CONTENT"}
 
-    seed_file = tmp_path / "cli.seed"
-    sk = SigningKey.generate()
-    seed_file.write_bytes(bytes(sk).hex().encode("ascii"))
     proposal_id = str(uuid.uuid4())
-
-    captured_output = []
+    signer_token_value = "test-signer-token-fr2"
 
     def route_fn(method, url, **kwargs):
-        if method.upper() == "GET" and "bundle-proposals" in str(url):
+        url_str = str(url)
+        # Token mint at the real route
+        if method.upper() == "POST" and "/api/v1/sync/signer/token" in url_str:
+            return _FakeHTTPResponse({"token": signer_token_value}, 200)
+        if method.upper() == "GET" and "registry" in url_str:
+            # Bare list (as the real route returns)
+            return _FakeHTTPResponse([genesis_env])
+        if method.upper() == "GET" and "bundle-proposals" in url_str:
             return _FakeHTTPResponse({
                 "id": proposal_id,
                 "bundle": proposal_payload,
@@ -767,7 +823,7 @@ def test_approve_change_diff_from_local_bytes(tmp_path):
                 "base_sequence": 0,
                 "diff": misleading_diff,
             })
-        if method.upper() == "GET" and "bundle" in str(url):
+        if method.upper() == "GET" and "bundle" in url_str:
             return _FakeHTTPResponse({
                 "envelope": base_envelope,
                 "change_approvals": [],
@@ -792,8 +848,9 @@ def test_approve_change_diff_from_local_bytes(tmp_path):
             "signer", "approve-change", proposal_id,
             "--server", "https://localhost",
             "--key-file", str(seed_file),
+            "--expect-fingerprint", chain_fp,
             "--yes",
-        ])
+        ], env={"SANDBOX_KEY_HOME": str(key_home)})
 
     assert result.exit_code != 2, \
         f"approve-change usage error: {result.output}"

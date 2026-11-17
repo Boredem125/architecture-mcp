@@ -59,6 +59,7 @@ from agg_cp.oidc import (
 _SESSION_ABSOLUTE_S = 12 * 60 * 60   # 12 hours
 _SESSION_IDLE_S = 30 * 60            # 30 minutes
 _LOGIN_TXN_TTL_S = 600               # 10 minutes
+SESSION_MAX_AGE = 900                 # 15 min -- fresh-session rule (T3)
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +193,33 @@ def validate_session(conn, request, clock):
     )
 
     return (org_id, user_id, session_id, token, csrf_hash), None
+
+
+def require_fresh_session(conn, session_id, clock):
+    """Check that the session was created within SESSION_MAX_AGE seconds.
+
+    Returns ``None`` on success or a 401 :class:`JSONResponse` on failure.
+    A missing or unreadable session row is refused with 401 (M-7).
+    Uses the injected *clock*, the same clock ``validate_session`` uses.
+    """
+    row = conn.execute(
+        "SELECT created_at FROM web_sessions WHERE id = %s",
+        [str(session_id)],
+    ).fetchone()
+
+    if row is None:
+        return JSONResponse({"error": "reauth_required"}, status_code=401)
+
+    created_at = row[0]
+    now = clock.now()
+    age = (now - created_at).total_seconds()
+    if age > SESSION_MAX_AGE:
+        return JSONResponse({"error": "reauth_required"}, status_code=401)
+
+    # require_fresh_signer_token removed (T3-R1-14, D4).
+    # Token age 600 s < 900 s rule -- publish skips token age check
+    # because S-1f makes it a tautology.
+    return None
 
 
 # ---------------------------------------------------------------------------

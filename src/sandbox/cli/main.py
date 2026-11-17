@@ -22,6 +22,11 @@ from sandbox.cli.sync_cmds import register as _register_sync
 
 _register_sync(cli)
 
+# T3 change commands (issue-code, propose-bundle, approve-change, publish).
+from sandbox.cli.change_cmds import register as _register_change
+
+_register_change(cli)
+
 
 @cli.command()
 @click.option("--host", default="127.0.0.1", help="Bind host (non-loopback needs both API tokens set)")

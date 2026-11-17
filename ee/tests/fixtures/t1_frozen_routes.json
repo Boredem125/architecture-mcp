@@ -1,5 +1,5 @@
 {
-  "_comment": "T1 admin-read routes: literal (METHOD, path) pairs, task, role, scope. Reviewed in T1_SECURITY_REVIEW.md 'Frozen route set'. Security (L) sign-off required for additions. Registered routes only; removing a line needs a founder row.",
+  "_comment": "M3 reviewed routes (ruling T0b-11): literal (METHOD, path) pairs, task, role, scope. T1 admin reads reviewed in T1_SECURITY_REVIEW.md 'Frozen route set'; T3 proposal routes reviewed in T3_SECURITY_REVIEW.md 'Round 4'. Security (L) sign-off required for additions. Registered routes only; removing a line needs a founder row.",
   "routes": [
     {
       "method": "GET",
@@ -56,6 +56,41 @@
       "task": "T1",
       "role": "auditor",
       "scope": "project"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/bundle-proposals",
+      "task": "T3",
+      "role": "signer_or_session",
+      "scope": "org"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/bundle-proposals",
+      "task": "T3",
+      "role": "signer_or_session",
+      "scope": "org"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/bundle-proposals/{proposal_id}",
+      "task": "T3",
+      "role": "signer_or_session",
+      "scope": "org"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/bundle-proposals/{proposal_id}/approvals",
+      "task": "T3",
+      "role": "signer_or_session",
+      "scope": "org"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/bundle-proposals/{proposal_id}/publish",
+      "task": "T3",
+      "role": "signer_or_session",
+      "scope": "org"
     }
   ]
 }
