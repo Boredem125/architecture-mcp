@@ -544,8 +544,8 @@ def test_browser_key_approval_refused_wrong_kind(t3_server):
     import httpx
     info = t3_server
 
-    # We cannot create a real proposal without the route, so the require_m3
-    # guard at the proposal step will raise M3T3Pending.
+    # T3 route is live; the require_m3(3,...) guard below only fires if
+    # it regresses to 404.
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
         # First, create a proposal
         r = c.post(
@@ -803,30 +803,31 @@ def test_stale_base_refused_at_approval(t3_server):
     assert r_approve_a_bob.status_code in (200, 201), \
         f"approval A by bob failed: {r_approve_a_bob.status_code} {r_approve_a_bob.text[:200]}"
 
-    # -- carol co-approves A (two counting approvals for dual control) --
-    carol_kid = hashlib.sha256(bytes(carol_sk.verify_key)).hexdigest()
-    sig_a_carol = carol_sk.sign(tag + b"\x00" + canonical_a).signature.hex()
-    env_a_carol = {
+    # -- alice co-approves A (two counting approvals for dual control) --
+    # FR-4: carol is the proposer and must not co-approve (A9 item 7).
+    alice_kid = hashlib.sha256(bytes(alice_sk.verify_key)).hexdigest()
+    sig_a_alice = alice_sk.sign(tag + b"\x00" + canonical_a).signature.hex()
+    env_a_alice = {
         "kind": "agg/policy-change/v1", "sig_v": 1,
         "payload": payload_a,
-        "signatures": [{"key_id": carol_kid, "alg": "ed25519",
-                        "sig": sig_a_carol}],
+        "signatures": [{"key_id": alice_kid, "alg": "ed25519",
+                        "sig": sig_a_alice}],
     }
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
-        r_approve_a_carol = c.post(
+        r_approve_a_alice = c.post(
             f"/api/v1/admin/bundle-proposals/{proposal_a_id}/approvals",
-            json={"approval": env_a_carol},
-            cookies={"__Host-agg_session": info["carol_cookie"]},
-            headers={"X-CSRF-Token": info["carol_csrf"]},
+            json={"approval": env_a_alice},
+            cookies={"__Host-agg_session": info["alice_cookie"]},
+            headers={"X-CSRF-Token": info["alice_csrf"]},
         )
 
-    # -- publish A (alice publishes) --
+    # -- publish A (carol publishes; not alice who co-approved) --
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
         r_pub_a = c.post(
             f"/api/v1/admin/bundle-proposals/{proposal_a_id}/publish",
             json={},
-            cookies={"__Host-agg_session": info["alice_cookie"]},
-            headers={"X-CSRF-Token": info["alice_csrf"]},
+            cookies={"__Host-agg_session": info["carol_cookie"]},
+            headers={"X-CSRF-Token": info["carol_csrf"]},
         )
     require_m3(4, r_pub_a.status_code != 404 or
                r_pub_a.json() != {"detail": "Not Found"},
@@ -968,30 +969,31 @@ def test_stale_base_refused_at_publish(t3_server):
             headers={"X-CSRF-Token": info["bob_csrf"]},
         )
 
-    # -- carol co-approves C (two counting approvals) --
-    carol_kid = hashlib.sha256(bytes(carol_sk.verify_key)).hexdigest()
-    sig_c_carol = carol_sk.sign(tag + b"\x00" + canonical_c).signature.hex()
-    env_c_carol = {
+    # -- alice co-approves C (two counting approvals) --
+    # FR-4: carol is the proposer and must not co-approve (A9 item 7).
+    alice_kid = hashlib.sha256(bytes(alice_sk.verify_key)).hexdigest()
+    sig_c_alice = alice_sk.sign(tag + b"\x00" + canonical_c).signature.hex()
+    env_c_alice = {
         "kind": "agg/policy-change/v1", "sig_v": 1,
         "payload": payload_c,
-        "signatures": [{"key_id": carol_kid, "alg": "ed25519",
-                        "sig": sig_c_carol}],
+        "signatures": [{"key_id": alice_kid, "alg": "ed25519",
+                        "sig": sig_c_alice}],
     }
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
         c.post(
             f"/api/v1/admin/bundle-proposals/{proposal_c_id}/approvals",
-            json={"approval": env_c_carol},
-            cookies={"__Host-agg_session": info["carol_cookie"]},
-            headers={"X-CSRF-Token": info["carol_csrf"]},
+            json={"approval": env_c_alice},
+            cookies={"__Host-agg_session": info["alice_cookie"]},
+            headers={"X-CSRF-Token": info["alice_csrf"]},
         )
 
-    # -- publish C (alice publishes) --
+    # -- publish C (carol publishes; not alice who co-approved) --
     with httpx.Client(base_url=info["base_url"], timeout=10) as c:
         r_pub_c = c.post(
             f"/api/v1/admin/bundle-proposals/{proposal_c_id}/publish",
             json={},
-            cookies={"__Host-agg_session": info["alice_cookie"]},
-            headers={"X-CSRF-Token": info["alice_csrf"]},
+            cookies={"__Host-agg_session": info["carol_cookie"]},
+            headers={"X-CSRF-Token": info["carol_csrf"]},
         )
 
     # T4 gate: server publish verification (FR-1)
